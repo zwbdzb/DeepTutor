@@ -25,6 +25,7 @@ import {
   useState,
 } from "react";
 import { useChatRouteSession } from "@/features/chat/controllers/useChatRouteSession";
+import { waitForReplyLanguageSave } from "@/features/chat/controllers/reply-language-save";
 
 import {
   GraduationCap,
@@ -53,7 +54,7 @@ import { buildSessionActivity } from "@/components/chat/home/SessionActivityPane
 import Tooltip from "@/shared/ui/Tooltip";
 import SessionViewerPanel, {
   type SessionViewerPanelHandle,
-} from "@/components/chat/home/SessionViewerPanel";
+} from "@/components/chat/home/LazySessionViewerPanel";
 import {
   QuizFollowupProvider,
   useQuizFollowupController,
@@ -70,6 +71,8 @@ import {
   type MessageRequestSnapshot,
 } from "@/features/chat/ChatStateAdapter";
 import { useAppShell } from "@/context/AppShellContext";
+import { readStoredResponseLanguage } from "@/context/app-shell-storage";
+import { RESPONSE_LANGUAGE_OPTIONS } from "@/features/settings/store";
 
 import { WATCHING_ASK_EVENT } from "@/components/watching/WatchingPane";
 import type { FilePreviewSource } from "@/components/chat/preview/previewerFor";
@@ -278,10 +281,12 @@ export default function ChatWorkspace({
     setLLMSelection,
     setPersonaSelection,
     setResourceSelection,
+    setReplyLanguageOverride,
     sendMessage,
     cancelStreamingTurn,
     submitUserReply,
     regenerateLastMessage,
+    resendLastMessage,
     deleteTurn,
     editMessage,
     switchBranch,
@@ -295,6 +300,25 @@ export default function ChatWorkspace({
   } = useChatStateAdapter();
 
   const entrySessionId = useRef(state.sessionId);
+  const [replyLanguageSavingKey, setReplyLanguageSavingKey] = useState<string | null>(null);
+  const replyLanguageSaveRef = useRef<{ key: string; pending: Promise<void> } | null>(null);
+  const handleReplyLanguageChange = useCallback((value: string) => {
+    const language = value || null;
+    const key = state.sessionKey;
+    const pending = setReplyLanguageOverride(language);
+    replyLanguageSaveRef.current = { key, pending };
+    setReplyLanguageSavingKey(key);
+    void pending
+      .catch((error: unknown) => {
+        notify(error instanceof Error ? error.message : t("Action failed"));
+      })
+      .finally(() => {
+        if (replyLanguageSaveRef.current?.pending === pending) {
+          replyLanguageSaveRef.current = null;
+          setReplyLanguageSavingKey(null);
+        }
+      });
+  }, [setReplyLanguageOverride, state.sessionKey, t]);
 
   const resourceReuse = useResourceReusePolicy(state.sessionKey || "draft", state.messages[0]?.id);
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
@@ -1880,6 +1904,15 @@ export default function ChatWorkspace({
 
   const handleSend = useCallback(
     async (content: string) => {
+      // An existing session saves its selector before the next turn starts.
+      // The composer may be used immediately after changing the dropdown.
+      if (!(await waitForReplyLanguageSave(
+        replyLanguageSaveRef.current?.key === state.sessionKey
+          ? replyLanguageSaveRef.current.pending
+          : null,
+        content,
+        (draft) => prefillInputRef.current?.(draft),
+      ))) return;
       // A turn paused on a question: what the user typed is their answer, not
       // a new message. Routing it here means the card is one way to answer,
       // not the only one — and a card that never rendered no longer strands
@@ -2059,6 +2092,7 @@ export default function ChatWorkspace({
       sendMessage,
       shouldAutoScrollRef,
       state.isStreaming,
+      state.sessionKey,
       subagentBudget,
       selectedPartnerGroup,
       selectedPartner,
@@ -2164,6 +2198,10 @@ export default function ChatWorkspace({
   const handleRegenerateMessage = useCallback(() => {
     regenerateLastMessage();
   }, [regenerateLastMessage]);
+
+  const handleResendMessage = useCallback(() => {
+    resendLastMessage();
+  }, [resendLastMessage]);
 
   const handleToggleKB = useCallback(
     (name: string) => {
@@ -2595,6 +2633,8 @@ export default function ChatWorkspace({
                         language={state.language}
                         onCopyAssistantMessage={copyAssistantMessage}
                         onRegenerateMessage={handleRegenerateMessage}
+                        canResendLastTurn={state.lastTurnFailed}
+                        onResendLastTurn={handleResendMessage}
                         onConfirmOutline={handleConfirmOutline}
                         onPreviewAttachment={handlePreviewMessageAttachment}
                         onOpenConsultation={(events) => {
@@ -2745,6 +2785,13 @@ export default function ChatWorkspace({
                 onPersonaSelectionChange={setPersonaSelection}
                 personaSelectorOpen={personaSelectorOpen}
                 onPersonaSelectorOpenChange={setPersonaSelectorOpen}
+                replyLanguageOverride={state.replyLanguageOverride}
+                replyLanguageOptions={RESPONSE_LANGUAGE_OPTIONS}
+                replyLanguageDefaultLabel={RESPONSE_LANGUAGE_OPTIONS.find(
+                  (option) => option.value === readStoredResponseLanguage(),
+                )?.label ?? "English"}
+                replyLanguageDisabled={replyLanguageSavingKey === state.sessionKey || state.isStreaming}
+                onReplyLanguageChange={handleReplyLanguageChange}
                 resourceCatalog={resourceCatalog}
                 resourceSelection={state.resourceSelection}
                 onResourceSelectionChange={setResourceSelection}
