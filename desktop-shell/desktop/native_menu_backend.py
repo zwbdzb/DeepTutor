@@ -3,7 +3,8 @@
 设计目标（对齐 WorkBuddy 桌面端观感）：
 * 菜单栏位于窗口**第一排**（顶到窗口最上沿），不再挤在系统标题栏下方；
 * 第一排右侧内嵌 最小化 / 最大化 / 关闭 三个窗口按钮（自绘，悬停高亮，
-  关闭钮悬停红色）；
+  关闭钮悬停红色）；紧邻其左是**账号区**（未登录「登录」、已登录用户名，
+  点击弹原生账号菜单，见 ``AccountChip`` 与 docs/adr/ADR-004）；
 * 保留系统级体验：边缘拖拽缩放（WS_THICKFRAME）、Aero Snap（Win+方向键、
   拖到屏幕边缘）、最小化/还主动画、Alt+F4、任务栏预览；
 * 菜单条空白处：按下拖动窗口、双击最大化/还原、右键弹系统菜单。
@@ -34,6 +35,7 @@ import ctypes
 import logging
 import os
 import threading
+import time
 
 from webview.menu import Menu, MenuAction, MenuSeparator
 
@@ -44,7 +46,9 @@ log = logging.getLogger("dt.native_menu")
 # 而顶层 clr 导入会破坏非 Windows 平台兼容性。
 _WF = None
 _Color = _Font = _Pen = _SolidBrush = _Size = _SmoothingMode = None
+_Point = _Action = None
 _Func = _Type = None
+_GraphicsPath = _LinearGradientBrush = _Region = None
 
 # --------------------------------------------------------------------------- #
 # Win32 常量与 ctypes 原型                                                      #
@@ -142,6 +146,79 @@ def _unhook(hwnd: int) -> None:
     entry = _HOOKS.pop(hwnd, None)
     if entry:
         _user32.SetWindowLongPtrW(hwnd, GWL_WNDPROC, entry[0])
+
+
+# --------------------------------------------------------------------------- #
+# 下拉菜单圆角：Win11 走 DWM 原生圆角，Win10 退化为 Region 裁剪                   #
+# --------------------------------------------------------------------------- #
+_DWMWA_WINDOW_CORNER_PREFERENCE = 33
+_DWMWCP_ROUND = 2
+_dwmapi = None
+
+
+def _dwm_round_ok(hwnd: int) -> bool:
+    """请求 DWM 把窗口画成圆角；仅 Windows 11 生效（其余返回 False）。"""
+    global _dwmapi
+    try:
+        if _dwmapi is None:
+            _dwmapi = ctypes.windll.dwmapi
+        pref = ctypes.c_int(_DWMWCP_ROUND)
+        hr = _dwmapi.DwmSetWindowAttribute(
+            ctypes.c_void_p(hwnd), _DWMWA_WINDOW_CORNER_PREFERENCE,
+            ctypes.byref(pref), ctypes.sizeof(pref),
+        )
+        return int(hr) == 0
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _round_path(rect, radius):
+    """(x, y, w, h) → 圆角矩形 GraphicsPath（四角 90° 圆弧）。"""
+    x, y, w, h = rect
+    d = max(2, 2 * radius)
+    p = _GraphicsPath()
+    p.AddArc(x, y, d, d, 180, 90)
+    p.AddArc(x + w - d, y, d, d, 270, 90)
+    p.AddArc(x + w - d, y + h - d, d, d, 0, 90)
+    p.AddArc(x, y + h - d, d, d, 90, 90)
+    p.CloseFigure()
+    return p
+
+
+def _apply_dropdown_shape(dd, scale: float) -> str:
+    """给（已显示的）下拉窗口套圆角；返回实际生效模式 dwm / region。
+
+    DWM 路径（Win11）：系统级圆角 + 原生投影，观感与系统菜单完全一致；
+    Region 路径（Win10）：窗口像素按圆角路径裁剪，必须先关掉 WinForms 的
+    方形投影（DropShadowEnabled），否则阴影四角会从裁剪缺口里露出来。
+    """
+    hwnd = int(dd.Handle.ToInt64())
+    if _dwm_round_ok(hwnd):
+        try:
+            dd.Region = None
+        except Exception:  # noqa: BLE001
+            pass
+        return "dwm"
+    radius = max(4, round(8 * scale))
+    cr = dd.ClientRectangle
+    path = _round_path(
+        (cr.X, cr.Y, cr.Width - 1, cr.Height - 1),
+        min(radius, min(cr.Width, cr.Height) // 2),
+    )
+    dd.Region = _Region(path)
+    return "region"
+
+
+def _make_dropdown_shape_handler(dd, scale: float):
+    """Opened 事件处理器：套圆角并把生效模式记到 Tag（供测试断言）。"""
+
+    def on_opened(sender, e):
+        try:
+            dd.Tag = _apply_dropdown_shape(dd, scale)
+        except Exception:  # noqa: BLE001
+            log.exception("dropdown shape failed")
+
+    return on_opened
 
 
 # --------------------------------------------------------------------------- #
@@ -282,8 +359,13 @@ def _dpi_scale(form) -> float:
         return 1.0
 
 
-def _attach_window_buttons(form, strip):
-    """在菜单条上绘制并接管 最小化/最大化/关闭 按钮；返回命中测试函数。"""
+def _attach_window_buttons(form, strip, right_pad_fn=None):
+    """在菜单条上绘制并接管 最小化/最大化/关闭 按钮；返回命中测试函数。
+
+    ``right_pad_fn``：可选，无参可调用，返回账号区占用的额外右侧宽度
+    （逻辑像素 0 基准的物理像素值）——条带右缩进必须为它让位，菜单项才
+    不会钻到账号区/窗口按钮下面。
+    """
     state = {"scale": _dpi_scale(form), "hover": None}
 
     def rects():
@@ -361,6 +443,9 @@ def _attach_window_buttons(form, strip):
             if e.Button != _WF.MouseButtons.Left:
                 return
             kind = hit(e.X, e.Y)
+            if kind is None:
+                return
+            _close_all_dropdowns()   # 点窗口按钮前先收起打开的下拉（与原生标题栏一致）
             if kind == "min":
                 form.WindowState = _WF.FormWindowState.Minimized
             elif kind == "max":
@@ -403,9 +488,8 @@ def _attach_window_buttons(form, strip):
             w = max(1, round(_BTN_W_DIP * state["scale"]))
             if abs(strip.Height - h) > 1:
                 strip.Height = h
-            strip.Padding = _WF.Padding(
-                round(6 * state["scale"]), 0, 3 * w, 0
-            )
+            extra = right_pad_fn() if right_pad_fn else 0
+            strip.Padding = _WF.Padding(round(6 * state["scale"]), 0, 3 * w + extra, 0)
             strip.Invalidate()
         except Exception:  # noqa: BLE001
             pass
@@ -413,6 +497,520 @@ def _attach_window_buttons(form, strip):
     sync()
     strip.Resize += sync
     return hit
+
+
+# --------------------------------------------------------------------------- #
+# 标题栏账号区（登录 / 账号 chip）                                               #
+# --------------------------------------------------------------------------- #
+# 第一性原理：与窗口按钮一样，账号入口是**窗口 chrome**，不是网页内容。
+# 旧方案往页面注入悬浮按钮（inject.py，ADR-002），永远浮在 DeepTutor 内容
+# 上方，还要靠定时器对抗 SPA 重建 DOM。改为画在标题栏上（窗口按钮左侧）：
+# 不遮内容、不随页面刷新丢失、点击走原生回调，零页面注入。
+# 状态模型由 titlebar_account.AccountStatusSync 推送（见 ADR-004）。
+_ACCOUNT_CFG: dict = {}
+_ACCOUNT_CHIP: "AccountChip | None" = None
+
+
+def configure_account_chip(on_login=None, actions: dict | None = None) -> None:
+    """登记标题栏账号区回调。窗口创建前由 main() 调用（仅 Windows 生效）。
+
+      on_login : 未登录点击账号区时触发（发起 OAuth）
+      actions  : {动作名: 无参可调用}，见 titlebar_account.MENU_ACTIONS
+    """
+    _ACCOUNT_CFG.clear()
+    _ACCOUNT_CFG["on_login"] = on_login
+    _ACCOUNT_CFG["actions"] = dict(actions or {})
+
+
+def account_chip() -> "AccountChip | None":
+    """当前窗口的账号区实例；条带未构建（非 Windows / 构建失败）时为 None。"""
+    return _ACCOUNT_CHIP
+
+
+def set_account_chip_hidden(hidden: bool) -> None:
+    """显示/隐藏标题栏账号区（会话循环导航时调用；跨线程安全）。
+
+    chip 未构建（非 Windows / 构建失败）时为 no-op。
+    """
+    chip = _ACCOUNT_CHIP
+    if chip is not None:
+        chip.set_hidden(hidden)
+
+
+class AccountChip:
+    """标题栏右侧的账号区：未登录「登录」直发 OAuth，已登录弹原生账号菜单。
+
+    与窗口按钮同一套自绘哲学：矩形命中测试 + Paint 自绘，不占用 ToolStrip
+    布局器（ToolStripMenuItem 右对齐的视觉序与集合序相反，曾踩坑）。模型
+    来自后台同步线程（titlebar_account.AccountStatusSync），跨线程经
+    BeginInvoke marshal 到 UI 线程。
+    """
+
+    _PAD_X_DIP = 12.0      # 文字两侧留白（逻辑像素）
+    _MIN_W_DIP = 28.0      # 最小宽度（逻辑像素），避免「登录」两字太挤
+    _CARET = " ▾"          # 有下拉菜单时附加的指示符
+    _FG = None             # 延迟初始化的正文色
+
+    def __init__(self, form, strip, on_login=None, actions: dict | None = None) -> None:
+        self._form = form
+        self._strip = strip
+        self._on_login = on_login
+        self._actions = dict(actions or {})
+        self._font = _Font("Microsoft YaHei UI", 9.0)
+        self._model: dict = {"label": "登录", "title": "登录 Tokengine 账号",
+                             "logged_in": False, "menu": None}
+        self._hover = False
+        self._open = False
+        self._closed_at = 0.0     # 上次下拉关闭时刻（monotonic 秒）——「再点一下=收起」守卫
+        # 初始隐藏：splash 启动 / 登录门控页阶段不显示账号区（登录入口归
+        # 门控页页面按钮，标题栏只做「已登录身份」指示）。进入应用页时由
+        # 会话循环 set_hidden(False) 显示；注销回门控页时 set_hidden(True)。
+        self._hidden = True
+        self._width = 0
+        self._dd = None
+        strip.MouseMove += self._on_move
+        strip.MouseLeave += self._on_leave
+        strip.MouseClick += self._on_click
+        strip.Paint += self._on_paint
+        self._apply_metrics()
+
+    # ---- 状态推送（跨线程入口）------------------------------------------ #
+    def set_model(self, model: dict) -> None:
+        """同步线程推送新模型；marshal 到 UI 线程执行。
+
+        状态跃迁（登录/退出/切换账号）时顺手关掉还开着的旧下拉——它引用的
+        是上一个状态的菜单项，继续展示会误导（旧页面菜单同样如此处理）。
+        """
+        def apply():
+            self._model = dict(model or {})
+            self.close_dropdown()
+            self._dd = None
+            self._apply_metrics()
+
+        try:
+            if self._strip.InvokeRequired:
+                dlg = _Action(apply) if _Action is not None else _Func[_Type](apply)
+                self._strip.BeginInvoke(dlg)
+            else:
+                apply()
+        except Exception:  # noqa: BLE001
+            log.exception("account chip update failed")
+
+    def close_dropdown(self) -> None:
+        """收起当前下拉（幂等；无下拉或已关闭时为空操作）。"""
+        dd = self._dd
+        if dd is not None:
+            try:
+                dd.Close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def set_hidden(self, hidden: bool) -> None:
+        """显示/隐藏账号区（跨线程入口；隐藏时不占宽度、不命中、不绘制）。
+
+        时序语义（ADR-004）：splash 启动与登录门控页阶段隐藏——登录入口
+        由门控页页面按钮承担；仅「已登录进入应用页」时显示用户名。
+        """
+        def apply():
+            self._hidden = bool(hidden)
+            if self._hidden:
+                self.close_dropdown()
+                self._dd = None
+            self._apply_metrics()
+
+        try:
+            if self._strip.InvokeRequired:
+                dlg = _Action(apply) if _Action is not None else _Func[_Type](apply)
+                self._strip.BeginInvoke(dlg)
+            else:
+                apply()
+        except Exception:  # noqa: BLE001
+            log.exception("account chip visibility failed")
+
+    # ---- 几何 ----------------------------------------------------------- #
+    def _scale(self) -> float:
+        return _dpi_scale(self._form)
+
+    def _btn_w(self, s: float | None = None) -> int:
+        s = s if s is not None else self._scale()
+        return max(1, round(_BTN_W_DIP * s))
+
+    def _display_text(self) -> str:
+        label = str(self._model.get("label") or "")
+        return label + self._CARET if self._model.get("menu") else label
+
+    def _apply_metrics(self) -> None:
+        """按当前文案重算宽度，并让条带右缩进为账号区 + 窗口按钮让位。"""
+        try:
+            s = self._scale()
+            if getattr(self, "_hidden", False):
+                self._width = 0
+            else:
+                size = _WF.TextRenderer.MeasureText(
+                    self._display_text(), self._font)
+                self._width = max(
+                    round(self._MIN_W_DIP * s),
+                    int(size.Width) + round(2 * self._PAD_X_DIP * s),
+                )
+            extra = self.extra_right_padding()
+            w = self._btn_w(s)
+            self._strip.Padding = _WF.Padding(round(6 * s), 0, 3 * w + extra, 0)
+            self._strip.Invalidate()
+        except Exception:  # noqa: BLE001
+            log.exception("account chip metrics failed")
+
+    def extra_right_padding(self) -> int:
+        """账号区占用的右侧宽度（含与窗口按钮之间 2px 呼吸缝）。"""
+        return self._width + round(2 * self._scale())
+
+    def rect(self):
+        """账号区矩形（strip 客户区坐标）；宽度未就绪或隐藏时返回 None。"""
+        if getattr(self, "_hidden", False) or self._width <= 0:
+            return None
+        s = self._scale()
+        h = max(1, round(_CAPTION_H_DIP * s))
+        right = self._strip.Width - 3 * self._btn_w(s)
+        return (right - self._width, 0, right, h)
+
+    def hit(self, x, y) -> bool:
+        r = self.rect()
+        return bool(r and r[0] <= x < r[2] and r[1] <= y < r[3])
+
+    # ---- 交互 ------------------------------------------------------------ #
+    def _on_move(self, sender, e) -> None:
+        try:
+            hot = self.hit(e.X, e.Y)
+            if hot != self._hover:
+                self._hover = hot
+                self._strip.Invalidate()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _on_leave(self, sender, e) -> None:
+        try:
+            if self._hover:
+                self._hover = False
+                self._strip.Invalidate()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _on_click(self, sender, e) -> None:
+        try:
+            if e.Button != _WF.MouseButtons.Left or not self.hit(e.X, e.Y):
+                return
+            menu = self._model.get("menu")
+            if menu and (menu.get("items") or menu.get("header")):
+                if self._dd is not None and self._dd.Visible:
+                    self._dd.Close()   # 再点一下账号区 = 收起（兜底，AutoClose 通常已先行关闭）
+                    return
+                if time.monotonic() - self._closed_at < 0.45:
+                    # 本次点击刚把下拉关掉（ContextMenuStrip 的外部点击关闭
+                    # 发生在 MouseUp 之前）→ 视为「收起」，不再立刻重开
+                    return
+                self._open_dropdown()
+            else:
+                self._run(self._on_login)
+        except Exception:  # noqa: BLE001
+            log.exception("account chip click failed")
+
+    def _run(self, fn) -> None:
+        """动作在独立线程执行（回调里可能开浏览器/弹框/刷新页面，别占 UI 线程）。"""
+        if fn is None:
+            return
+
+        def wrap():
+            try:
+                fn()
+            except Exception:  # noqa: BLE001
+                log.exception("account chip action failed")
+
+        threading.Thread(target=wrap, daemon=True).start()
+
+    # ---- 原生下拉菜单 ----------------------------------------------------- #
+    def _open_dropdown(self) -> None:
+        menu = self._model.get("menu") or {}
+        dd = _WF.ContextMenuStrip()
+        dd.Font = self._font
+        dd.ShowImageMargin = False
+        header = menu.get("header") or {}
+        head_text = " · ".join(
+            p for p in (str(header.get("title") or ""), str(header.get("sub") or "")) if p
+        )
+        if head_text:
+            head = _WF.ToolStripMenuItem(head_text)
+            head.Enabled = False
+            dd.Items.Add(head)
+            dd.Items.Add(_WF.ToolStripSeparator())
+        for it in menu.get("items") or []:
+            if not isinstance(it, dict):
+                continue
+            if it.get("type") == "sep":
+                dd.Items.Add(_WF.ToolStripSeparator())
+                continue
+            action = str(it.get("action") or "")
+            item = _WF.ToolStripMenuItem(str(it.get("label") or action))
+            if it.get("danger"):
+                item.ForeColor = _Color.FromArgb(0xD9, 0x30, 0x25)
+            handler = self._actions.get(action)
+            if handler is not None:
+                item.Click += (lambda _s, _e, fn=handler: self._run(fn))
+            else:
+                item.Enabled = False
+            dd.Items.Add(item)
+        dd.Closed += self._on_dd_closed
+        dd.Opened += self._on_dd_opened
+        dd.DropShadowEnabled = False   # Win10 Region 路径必需；Win11 由 DWM 出原生投影
+        self._dd = dd
+        r = self.rect()
+        self._open = True
+        self._strip.Invalidate()
+        # 菜单展开在账号区正下方（贴标题栏下缘），左缘对齐账号区
+        dd.Show(self._strip, _Point(r[0], self._strip.Height))
+
+    def _on_dd_opened(self, sender, e) -> None:
+        try:
+            self._open = True
+            dd = self._dd
+            if dd is not None:
+                dd.Tag = _apply_dropdown_shape(dd, self._scale())
+            self._strip.Invalidate()
+        except Exception:  # noqa: BLE001
+            log.exception("account dropdown shape failed")
+
+    def _on_dd_closed(self, sender, e) -> None:
+        self._open = False
+        self._closed_at = time.monotonic()
+        try:
+            self._strip.Invalidate()
+        except Exception:  # noqa: BLE001
+            pass
+
+    # ---- 自绘 -------------------------------------------------------------- #
+    def _on_paint(self, sender, e) -> None:
+        try:
+            r = self.rect()
+            if r is None:
+                return
+            clip = e.ClipRectangle
+            if (clip.Right <= r[0] or clip.Left >= r[2]
+                    or clip.Bottom <= r[1] or clip.Top >= r[3]):
+                return
+            g = e.Graphics
+            if self._hover or self._open:
+                s = self._scale()
+                # 内缩药丸形高亮（与菜单条圆角项一致），命中区仍是完整矩形
+                x = r[0] + round(1 * s)
+                y = r[1] + round(3 * s)
+                w = (r[2] - r[0]) - round(2 * s)
+                h = (r[3] - r[1]) - round(6 * s)
+                if w > 2 and h > 2:
+                    path = _round_path(
+                        (x, y, w, h), min(max(2, round(5 * s)), h // 2)
+                    )
+                    g.SmoothingMode = _SmoothingMode.AntiAlias
+                    g.FillPath(
+                        _SolidBrush(_Color.FromArgb(0xE9, 0xE9, 0xE9)), path
+                    )
+            text = self._display_text()
+            size = _WF.TextRenderer.MeasureText(text, self._font)
+            tx = r[0] + ((r[2] - r[0]) - int(size.Width)) // 2
+            ty = r[1] + ((r[3] - r[1]) - int(size.Height)) // 2
+            if AccountChip._FG is None:
+                AccountChip._FG = _Color.FromArgb(17, 17, 17)
+            _WF.TextRenderer.DrawText(
+                g, text, self._font, _Point(max(r[0], tx), max(r[1], ty)),
+                AccountChip._FG,
+            )
+        except Exception:  # noqa: BLE001
+            log.exception("account chip paint failed")
+
+
+# --------------------------------------------------------------------------- #
+# 共享状态                                                                      #
+# --------------------------------------------------------------------------- #
+_CURRENT_STRIP = None       # 当前菜单条（WebView2 获焦收起下拉时用）
+
+# 注（2026-09-24）：曾尝试「子类化 ToolStripProfessionalRenderer」实现菜单项
+# 圆角悬停，但本机 pythonnet 3.1.0 的 .NET 子类化失效——连
+# ``class C(Control): pass`` 的 CLR 运行时类型都是基类本身，虚方法重写
+# 永远不会被调用（当日日志有探针记录），该方案已删除。
+# 现状：下拉面板圆角由 DWM（Win11）/ Region（Win10）完成；菜单项悬停保持
+# 原生方形高亮——与 VS Code / Chrome「圆角面板 + 方形 hover」惯例一致；
+# 账号区悬停由 AccountChip 自绘圆角药丸（不经子类化，Paint 事件自绘）。
+
+
+# --------------------------------------------------------------------------- #
+# 点页面收回下拉：WebView2 获焦兜底钩子                                          #
+# --------------------------------------------------------------------------- #
+def _close_all_dropdowns() -> None:
+    """收起账号区下拉 + 菜单条上所有打开的下拉（幂等，异常不外抛）。"""
+    try:
+        chip = _ACCOUNT_CHIP
+        if chip is not None:
+            chip.close_dropdown()
+        strip = _CURRENT_STRIP
+        if strip is not None:
+            for it in strip.Items:
+                dd = getattr(it, "DropDown", None)
+                if dd is not None and dd.Visible:
+                    dd.Close()
+    except Exception:  # noqa: BLE001
+        log.exception("close dropdowns failed")
+
+
+def _attach_webview_focus_hook(form) -> None:
+    """WebView2 获得焦点（= 用户点进页面）时收起所有打开的下拉。
+
+    菜单的原生「点外部收回」走模态菜单过滤器（同线程消息泵），通常有效；
+    但 WebView2 的输入由 Chromium 子窗口自管，是「菜单点开 → 点页面 →
+    不收回」最可疑的通路。获焦钩子作兜底：正常时它只是冗余第二保险，
+    异常时（Chromium 吃掉点击/抢走捕获）它是唯一通路。
+    """
+    def on_focus(sender, e):
+        _close_all_dropdowns()
+
+    def wire(ctrl) -> bool:
+        try:
+            if "WebView2" in str(ctrl.GetType().Name):
+                ctrl.GotFocus += on_focus
+                log.info("chrome: webview focus hook attached")
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+        return False
+
+    def scan(container):
+        try:
+            for c in container.Controls:
+                if not wire(c):
+                    scan(c)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def on_added(sender, e):
+        try:
+            if not wire(e.Control):
+                scan(e.Control)
+        except Exception:  # noqa: BLE001
+            pass
+
+    try:
+        form.ControlAdded += on_added
+        form.Shown += lambda s, e: scan(form)
+    except Exception:  # noqa: BLE001
+        log.exception("webview focus hook wiring failed")
+
+
+# --------------------------------------------------------------------------- #
+# 「点外部收回」消息过滤器：任何鼠标按下落在打开的下拉之外 → 收起                 #
+# --------------------------------------------------------------------------- #
+# 第一性原理：AutoClose 依赖下拉自己的捕获/菜单模式；WebView2 的输入由
+# Chromium 子窗口自管，「菜单点开 → 点页面」可能绕开那条通路（实测复现过
+# 编程式打开时外部点击不收回）。消息过滤器挂在 UI 线程消息泵上，**所有**
+# 派发消息都会路过（含被捕获的、含 WebView2 子窗口的），在这里判断与收起
+# 是确定性兜底。只处理按钮按下消息，其余秒回，不增加每消息开销。
+_OUTSIDE_FILTER = None
+
+
+def _any_dropdown_visible() -> bool:
+    chip = _ACCOUNT_CHIP
+    if chip is not None and chip._dd is not None and chip._dd.Visible:
+        return True
+    strip = _CURRENT_STRIP
+    if strip is not None:
+        for it in strip.Items:
+            dd = getattr(it, "DropDown", None)
+            if dd is not None and dd.Visible:
+                return True
+    return False
+
+
+def _net_rect_has(r, x: int, y: int) -> bool:
+    """判定屏幕坐标 (x, y) 是否落在 .NET Rectangle 内。"""
+    try:
+        return bool(r.Left <= x < r.Right and r.Top <= y < r.Bottom)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _close_dropdowns_outside(x: int, y: int) -> None:
+    """收起所有「点击点不在其内部/其触发区」的打开下拉。
+
+    豁免两处，把「再点一下」的收合交给各自的原生逻辑，避免双击竞争：
+      * 打开中的菜单项标题矩形（MenuStrip 原生 toggle = 收起）；
+      * 账号区矩形（chip 内部有 toggle 守卫）。
+    """
+    strip = _CURRENT_STRIP
+    chip = _ACCOUNT_CHIP
+    try:
+        if strip is not None:
+            for it in strip.Items:
+                dd = getattr(it, "DropDown", None)
+                if dd is None or not dd.Visible:
+                    continue
+                if _net_rect_has(dd.Bounds, x, y):
+                    continue
+                try:
+                    if _net_rect_has(strip.RectangleToScreen(it.Bounds), x, y):
+                        continue
+                except Exception:  # noqa: BLE001
+                    pass
+                dd.Close()
+        if chip is not None and chip._dd is not None and chip._dd.Visible:
+            if _net_rect_has(chip._dd.Bounds, x, y):
+                return
+            r = chip.rect()
+            if r is not None:
+                sp = strip.PointToClient(_Point(x, y))
+                if chip.hit(sp.X, sp.Y):
+                    return
+            chip.close_dropdown()
+    except Exception:  # noqa: BLE001
+        log.exception("outside-click close failed")
+
+
+def _install_outside_click_filter() -> None:
+    """UI 线程安装「点外部收回」看门狗（_build_menu_strip 时调用，幂等）。
+
+    实现选型：本想用 Application.AddMessageFilter(IMessageFilter)，但
+    pythonnet 在此环境实现 .NET 接口不可用（实测实例化报 TypeError:
+    interface takes exactly one argument）。改用 UI 线程 Timer 轮询：
+
+      * 每 60ms 查 GetAsyncKeyState(VK_LBUTTON)：0x8000 位 = 此刻按着，
+        0x0001 位 = 自上次查询以来按下过——再快的点击也不会漏；
+      * 有下拉打开且按下点在所有下拉及其触发区之外 → 收起。
+
+    跑在 UI 线程（WinForms Timer），无跨线程封送问题；WebView2 子窗口
+    的点击同样逃不过（光标位置是全局的）。
+    """
+    global _OUTSIDE_FILTER
+    if _OUTSIDE_FILTER is not None:
+        return
+    try:
+        from System.Windows.Forms import Timer
+
+        timer = Timer()
+        timer.Interval = 60
+
+        def on_tick(s, e):
+            try:
+                vk = int(_user32.GetAsyncKeyState(0x01)) & 0xFFFF  # VK_LBUTTON
+                if not (vk & 0x8000) and not (vk & 0x0001):
+                    return
+                if not _any_dropdown_visible():
+                    return
+                pt = _POINT()
+                if _user32.GetCursorPos(ctypes.byref(pt)):
+                    _close_dropdowns_outside(pt.x, pt.y)
+            except Exception:  # noqa: BLE001
+                log.exception("outside-click watchdog failed")
+
+        timer.Tick += on_tick
+        timer.Start()
+        _OUTSIDE_FILTER = timer
+        log.info("chrome: outside-click watchdog installed")
+    except Exception:  # noqa: BLE001
+        log.exception("outside-click watchdog install failed")
 
 
 # --------------------------------------------------------------------------- #
@@ -438,6 +1036,11 @@ def _convert_entry(entry):
                 item.DropDownItems.Add(converted)
         return item
     return _WF.ToolStripMenuItem(str(entry))
+
+
+def _chip_right_pad() -> int:
+    """账号区当前占用的右侧宽度（供条带右缩进让位；未建区时为 0）。"""
+    return _ACCOUNT_CHIP.extra_right_padding() if _ACCOUNT_CHIP else 0
 
 
 def _build_menu_strip(form, menu_list):
@@ -469,6 +1072,18 @@ def _build_menu_strip(form, menu_list):
             except Exception:  # noqa: BLE001  布局兜底不拦构建
                 pass
             strip.Items.Add(converted)
+        try:
+            dd = getattr(converted, "DropDown", None)
+            if dd is not None:
+                # 样式与账号下拉（ContextMenuStrip）保持一致：
+                # 无图标菜单关掉左侧空白图列；DropShadowEnabled=False 是
+                # Win10 Region 圆角路径的前置（方形阴影四角会外露）；
+                # 圆角由 Opened 事件统一挂 _apply_dropdown_shape。
+                dd.ShowImageMargin = False
+                dd.DropShadowEnabled = False
+                dd.Opened += _make_dropdown_shape_handler(dd, scale)
+        except Exception:  # noqa: BLE001  圆角失败退回原生方角，不拦构建
+            log.exception("dropdown rounding wire failed")
 
     # 绘制顺序 = 订阅顺序：白底 → 窗口按钮 → 底部分隔线（最后覆盖保证连贯）
     brush = _SolidBrush(_Color.White)
@@ -481,7 +1096,24 @@ def _build_menu_strip(form, menu_list):
 
     strip.Paint += on_strip_paint
 
-    caption_hit = _attach_window_buttons(form, strip)
+    caption_hit = _attach_window_buttons(form, strip, right_pad_fn=_chip_right_pad)
+
+    # 标题栏账号区（窗口按钮左侧）：点击路由在 AccountChip 内部——
+    # 未登录直发 OAuth，已登录弹原生账号菜单。模型由后台线程推送。
+    global _ACCOUNT_CHIP
+    _ACCOUNT_CHIP = AccountChip(
+        form, strip,
+        on_login=_ACCOUNT_CFG.get("on_login"),
+        actions=_ACCOUNT_CFG.get("actions") or {},
+    )
+    # 组合「窗口按钮/标题拖拽」与「账号区」两套命中判定。注意必须先把原
+    # 函数捕获到独立名字——若 lambda 直接引用 caption_hit，解析到的是它
+    # 自己，鼠标划过标题栏（WM_NCHITTEST）即无限自递归（实测打满栈）。
+    _btn_caption_hit = caption_hit
+    _chip_ref = _ACCOUNT_CHIP
+    caption_hit = (lambda x, y: (
+        bool(_btn_caption_hit and _btn_caption_hit(x, y))
+        or bool(_chip_ref and _chip_ref.hit(x, y))))
     _attach_strip_behaviors(form, strip, caption_hit)
 
     line_brush = _SolidBrush(_Color.FromArgb(0xE0, 0xE0, 0xE0))
@@ -499,6 +1131,12 @@ def _build_menu_strip(form, menu_list):
     strip.Paint += on_border_paint
 
     form.Controls.Add(strip)
+
+    # WebView2 获焦（点进页面）时收起所有打开的下拉——「点外部收回」兜底
+    global _CURRENT_STRIP
+    _CURRENT_STRIP = strip
+    _attach_webview_focus_hook(form)
+    _install_outside_click_filter()
 
     # 菜单条自己的句柄钩子：顶边/左右边缘保持系统缩放（按钮区除外）
     try:
@@ -519,6 +1157,7 @@ def install_windows_shell_menu() -> bool:
     an inert no-op; the shell currently targets Windows.
     """
     global _WF, _Color, _Font, _Pen, _SolidBrush, _Size, _SmoothingMode, _Func, _Type
+    global _Point, _Action, _GraphicsPath, _LinearGradientBrush, _Region
     if os.name != "nt":
         return False
 
@@ -530,20 +1169,27 @@ def install_windows_shell_menu() -> bool:
 
     # pythonnet 的 System 命名空间此刻已由 winforms 模块激活，可安全导入
     from System import Func as _Func_tmp, Type as _Type_tmp
+    from System import Action as _Action_tmp
     from System.Drawing import (  # noqa: F401
         Color as _Color_tmp,
         Font as _Font_tmp,
         Pen as _Pen_tmp,
+        Point as _Point_tmp,
         SolidBrush as _SolidBrush_tmp,
         Size as _Size_tmp,
+        Region as _Region_tmp,
     )
     from System.Drawing.Drawing2D import SmoothingMode as _SmoothingMode_tmp
+    from System.Drawing.Drawing2D import GraphicsPath as _GP_tmp
+    from System.Drawing.Drawing2D import LinearGradientBrush as _LGB_tmp
 
     _WF = winforms.WinForms
     _Func, _Type = _Func_tmp, _Type_tmp
-    _Color, _Font = _Color_tmp, _Font_tmp
+    _Action = _Action_tmp
+    _Color, _Font, _Point = _Color_tmp, _Font_tmp, _Point_tmp
     _Pen, _SolidBrush, _Size = _Pen_tmp, _SolidBrush_tmp, _Size_tmp
     _SmoothingMode = _SmoothingMode_tmp
+    _GraphicsPath, _LinearGradientBrush, _Region = _GP_tmp, _LGB_tmp, _Region_tmp
 
     def set_window_menu(self, menu_list):
         def _build():

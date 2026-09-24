@@ -70,7 +70,16 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilen
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 
+[InstallDelete]
+; 安装新版时清掉本机遗留的托管运行时缓存（%LOCALAPPDATA%\EduBuddy\runtime）。
+; 它是旧版 runtime.zip 自解压的历史产物，版本可能停在任意旧版（曾以 1.6.9
+; 遮蔽新装的 1.6.10，见 docs/adr/ADR-005）。本安装器自带完整 runtime/ 树，
+; 缓存纯属冗余，删除无任何用户数据损失（学习数据在 %USERPROFILE%\EduBuddy）。
+Type: filesandordirs; Name: "{localappdata}\EduBuddy\runtime"
+
 [UninstallDelete]
-; keep user data (workspace lives in %USERPROFILE%\EduBuddy) — the
-; uninstaller only removes the app dir (incl. the installed runtime copy).
+; 卸载时清掉托管缓存 + 应用目录；keep user data (workspace lives in
+; %USERPROFILE%\EduBuddy) — only the app dir (incl. the installed runtime
+; copy) and the version-locked runtime cache are removed.
+Type: filesandordirs; Name: "{localappdata}\EduBuddy\runtime"
 Type: filesandordirs; Name: "{app}"

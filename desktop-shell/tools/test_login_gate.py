@@ -244,6 +244,11 @@ def scenario_bootstrap_wiring(base: Path) -> None:
     try:
         mgr = make_manager(base)
         api = dt_main.Api("http://127.0.0.1:3782", mgr, debug=False)
+        # 标题栏账号区同步线程（ADR-004）会轮询 auth_status；接到真实管理器上，
+        # 顺带覆盖「同步线程在门控页安静运行、不误触发页面刷新」的回归。
+        api.auth_status = mgr.status
+        api.refresh_models = lambda: {"ok": False, "message": "skip"}
+        api.toast = lambda msg: None
         win = FakeWindow()
         t = threading.Thread(
             target=dt_main.bootstrap, args=(win, api, mgr), daemon=True
@@ -268,9 +273,12 @@ def scenario_bootstrap_wiring(base: Path) -> None:
             logout_evt.set()
         if isinstance(stop_evt, threading.Event):
             stop_evt.set()
-        inj = dt_main._shared.get("injector")
+        inj = dt_main._shared.get("account_sync")
         if inj is not None:
             inj.stop()
+        toaster = dt_main._shared.get("toast_injector")
+        if toaster is not None:
+            toaster.stop()
         t.join(timeout=8)
         check("bootstrap 会话循环随 stop 退出", not t.is_alive())
     finally:

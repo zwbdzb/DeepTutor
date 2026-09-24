@@ -38,15 +38,16 @@
   ├── 解析域名 + 写 model_catalog + DPAPI 落盘                                          │
   └── 会话主循环放行 → load_url 进入应用（页面载入可用模型）                              │
 
-应用内退出登录（左下角账号菜单）
+应用内退出登录（标题栏账号菜单，ADR-004）
   └── 吊销令牌 + 摘除 catalog → load_html 重载登录门控页 → 功能不可用，直到下次登录
 ```
 
-**按钮与 Python 之间怎么通信**：`desktop/inject.py` 用 `evaluate_js` 轮询一个隐藏 input
-（当事件槽）来收点击，而不是依赖 pywebview 的 `js_api` 桥在 `load_url()` 到外站页面后
-仍被注入——后者跨版本不稳。`evaluate_js` 是 pywebview 最底层能力，已验证可用。
-按钮每 2s 自愈一次（SPA 路由切换会重建 DOM），文案随登录态变化：
-`登录` → `等待浏览器…` → `已登录 8899`。
+**账号入口怎么通信**：标题栏账号区是窗口 chrome（`desktop/native_menu_backend.py`
+的 `AccountChip` 自绘 + 原生 ContextMenuStrip），点击直接回调 Python（经
+`desktop/main.py::_chip_actions` 分发），不依赖 `js_api` 桥、也不向页面注入任何
+控件；登录态由 `desktop/titlebar_account.py` 的同步线程轮询推送，账号区随登录态
+变化：`登录` → `等待浏览器…` → `用户名`。历史方案（页面悬浮按钮 + evaluate_js
+轮询隐藏 input 事件槽）已随 ADR-004 退役。
 
 ## 3. 登录拉到了什么，写到了哪里
 
@@ -201,15 +202,16 @@ SKIP_AUTO_MIGRATE=false
 便携 zip 默认不制作，需要时加 `-MakePortable`。
 
 ```powershell
-# 复用已有 runtime staging（快）
-powershell -ExecutionPolicy Bypass -File build\build.ps1 -SkipRuntime
+# 一条命令：runtime 段自带增量（staging 与源码一致时只跑门禁，十几秒），
+# 版本门禁不可跳过（ADR-005）。机制详解见 docs/packaging-guide.md。
+powershell -ExecutionPolicy Bypass -File build\build.ps1
 
 # 产物
 dist\EduBuddyDesktop.exe     # 原生壳（依赖已装的 runtime 或系统 PATH）
 dist\EduBuddySetup.exe       # 点击即装安装器（内置运行时）
 
 # 需要便携包时（+约 8 分钟）
-powershell -ExecutionPolicy Bypass -File build\build.ps1 -SkipRuntime -MakePortable
+powershell -ExecutionPolicy Bypass -File build\build.ps1 -MakePortable
 ```
 
 > ⚠️ **别把这两步放进智能体 Bash 沙箱**：`make_portable.py` / ISCC 在沙箱里会被限流到

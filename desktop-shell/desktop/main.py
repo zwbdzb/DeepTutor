@@ -29,14 +29,19 @@ import webbrowser
 import ctypes
 from collections import deque
 
-from desktop import APP_NAME, __version__, clipboard, dialogs
+from desktop import APP_NAME, __version__, clipboard, dialogs, native_menu_backend
 from desktop.auth import AuthManager
-from desktop.inject import LoginButtonInjector
+from desktop.inject import ToastInjector
 from desktop.menubar import build_native_menu
-from desktop.native_menu_backend import install_windows_shell_menu
+from desktop.native_menu_backend import (
+    configure_account_chip,
+    install_windows_shell_menu,
+    set_account_chip_hidden,
+)
 from desktop.process import DeepTutorProcess, DEFAULT_FRONTEND_PORT
 import desktop.runtime as rt
 from desktop.splash import splash_html
+from desktop.titlebar_account import AccountStatusSync
 
 log = logging.getLogger("dt.main")
 
@@ -213,6 +218,69 @@ def _reload_page() -> None:
             continue
 
 
+def _on_app_page(expect_url: str | None) -> bool:
+    """当前是否停在应用页面（而非启动页/登录门控页）。"""
+    if not expect_url:
+        return True
+    for w in webview_windows:
+        try:
+            cur = w.get_current_url() or ""
+            return cur.startswith(expect_url)
+        except Exception:  # noqa: BLE001
+            continue
+    return False
+
+
+def _chip_actions(api: Api) -> dict:
+    """标题栏账号区下拉菜单的动作分发表（动作名见 titlebar_account.MENU_ACTIONS）。
+
+    与旧页面菜单（ADR-002）行为对齐，两处差异：
+      * 退出登录的「再次点击确认」是自绘 HTML 才有的交互，原生菜单改用
+        系统 MessageBox（确定/取消）二次确认；
+      * 「刷新可用模型」成功后照旧刷新页面，让应用重新读取模型目录。
+    """
+    def refresh() -> None:
+        res = api.refresh_models()
+        if res.get("ok"):
+            api.toast("模型已刷新 ✓")
+            _reload_page()
+        else:
+            api.toast(res.get("message") or res.get("error") or "刷新失败")
+
+    def logout() -> None:
+        # MB_OKCANCEL | MB_ICONWARNING；IDOK == 1
+        if dialogs.message_box("退出登录", "确定要退出当前账号吗？", 0x31) != 1:
+            return
+        res = api.logout()
+        if res.get("ok"):
+            api.toast("已退出登录")
+            evt = _shared.get("logout_requested")
+            if isinstance(evt, threading.Event):
+                evt.set()  # 会话主循环将导航回登录门控页
+        else:
+            api.toast("退出登录失败，请查看日志")
+
+    def about() -> None:
+        info = api.about()
+        lines = [
+            f"{info['app']}  v{info['app_version']}",
+            f"EduBuddy 引擎：v{info['deeptutor_version']}",
+        ]
+        if info.get("relay"):
+            lines.append(f"中继：{info['relay']}")
+        dialogs.message_box(f"关于 {APP_NAME}", "\n".join(lines))
+
+    return {
+        "login": api.login,
+        "switch": api.login,
+        "platform": api.open_platform,
+        "refresh": refresh,
+        "copy": api.copy_relay,
+        "logout": logout,
+        "about": about,
+    }
+
+
 # --------------------------------------------------------------------------- #
 # 登录门控会话循环 ------------------------------------------------------------- #
 def _gate_needed(auth: AuthManager) -> bool:
@@ -282,6 +350,9 @@ def run_session(window, api: Api, url: str, auth: AuthManager,
             api.set_status("ready", "服务已就绪 ✓", f"正在载入本地应用 {url}")
             log.info("navigating to %s", url)
             time.sleep(0.5)  # let the splash repaint the "ready" state
+            # 启动/门控阶段账号区一直隐藏；进应用页才亮出（显示已登录用户名）。
+            # 登录入口归门控页页面按钮，标题栏只做「身份指示 + 账号操作」。
+            set_account_chip_hidden(False)
             window.load_url(url)
 
             # endpoints.json 显式改动后的重绑定提示（改写动作在 main() 早期已完成）
@@ -298,6 +369,7 @@ def run_session(window, api: Api, url: str, auth: AuthManager,
             # ---- 回到登录门控页：应用界面随页面卸载而不可用 ---- #
             log.info("logout detected; returning to login gate")
             api.set_status("login", "登录后开始使用", "")
+            set_account_chip_hidden(True)   # 门控页隐藏账号区（登录入口在页面中间）
             window.load_html(gate_page)
             force_gate = True  # 注销后必须重新登录才能再进应用
         except Exception:  # noqa: BLE001
@@ -364,55 +436,25 @@ def bootstrap(window, api: Api, auth: AuthManager) -> None:
 
         threading.Thread(target=_boot_refresh, daemon=True, name="dt-boot-refresh").start()
 
-        # 5. 应用内「登录/账号」按钮 + 按登录态自绘的下拉菜单（后台线程；
-        #    只在应用页面注入，门控页不受影响）。菜单动作统一装订。
-        def _menu_refresh() -> None:
-            res = api.refresh_models()
-            if res.get("ok"):
-                api.toast("模型已刷新 ✓")
-                _reload_page()          # 让应用重新读取新写入的模型列表
-            else:
-                api.toast(res.get("message") or res.get("error") or "刷新失败")
-
-        def _menu_logout() -> None:
-            res = api.logout()
-            if res.get("ok"):
-                api.toast("已退出登录")
-                # 通知会话主循环：导航回登录门控页
-                evt = _shared.get("logout_requested")
-                if isinstance(evt, threading.Event):
-                    evt.set()
-            else:
-                api.toast("退出登录失败，请查看日志")
-
-        def _menu_about() -> None:
-            info = api.about()
-            lines = [
-                f"{info['app']}  v{info['app_version']}",
-                f"EduBuddy 引擎：v{info['deeptutor_version']}",
-            ]
-            if info.get("relay"):
-                lines.append(f"中继：{info['relay']}")
-            dialogs.message_box(f"关于 {APP_NAME}", "\n".join(lines))
-
-        injector = LoginButtonInjector(
-            window,
-            on_login=api.login,
+        # 5. 标题栏账号区（ADR-004）+ toast 注入（后台线程）。
+        #    账号区的点击与下拉菜单由原生 AccountChip 直接回调（见
+        #    configure_account_chip），这里只负责两件事：
+        #      a) AccountStatusSync —— 轮询登录态推送账号区模型 + 登录/换号
+        #         跃迁时刷新应用页面（重新读取刚写入的模型目录）；
+        #      b) ToastInjector —— 在应用页面维持 toast 浮层（菜单动作反馈）。
+        sync = AccountStatusSync(
+            chip_fn=native_menu_backend.account_chip,
             status_of=api.auth_status,
             on_authenticated=_reload_page,
-            expect_url=url,
-            menu_actions={
-                "switch": api.login,
-                "platform": api.open_platform,
-                "refresh": _menu_refresh,
-                "copy": api.copy_relay,
-                "logout": _menu_logout,
-                "about": _menu_about,
-            },
-            on_toast=api.toast,
+            on_app_page=lambda: _on_app_page(url),
         )
-        _shared["injector"] = injector
-        threading.Thread(target=injector.run, daemon=True).start()
+        _shared["account_sync"] = sync
+        threading.Thread(target=sync.run, daemon=True, name="dt-account-sync").start()
+
+        toaster = ToastInjector(webview_windows[0] if webview_windows else None,
+                                expect_url=url)
+        _shared["toast_injector"] = toaster
+        threading.Thread(target=toaster.run, daemon=True, name="dt-toast").start()
 
         # 6. 登录门控会话主循环（门控 ↔ 应用，退出登录即回门控页）
         stop_evt = threading.Event()
@@ -472,6 +514,10 @@ def main() -> int:
     except Exception:  # noqa: BLE001  对齐失败不拦启动，日志里可查
         log.exception("端点对齐失败（忽略，继续启动）")
         api.endpoint_sync = {}
+
+    # 标题栏账号区回调登记（须在窗口创建前；见 native_menu_backend.AccountChip）
+    configure_account_chip(on_login=api.login, actions=_chip_actions(api))
+
     window = webview.create_window(
         "",
         html=splash_html(debug=DEBUG, version=__version__),
@@ -509,13 +555,14 @@ def _on_closed() -> None:
     stop_evt = _shared.get("session_stop")
     if isinstance(stop_evt, threading.Event):
         stop_evt.set()
-    inj = _shared.get("injector")
-    if inj:
-        try:
-            inj.stop()
-        except Exception:  # noqa: BLE001
-            pass
-        _shared["injector"] = None
+    for key in ("account_sync", "toast_injector"):
+        worker = _shared.get(key)
+        if worker is not None:
+            try:
+                worker.stop()
+            except Exception:  # noqa: BLE001
+                pass
+            _shared[key] = None
     proc = _shared["proc"]
     if proc:
         try:

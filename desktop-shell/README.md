@@ -20,7 +20,7 @@
 ## Tokengine 登录（三步）
 
 ```
-登录门控页「登录」按钮（未登录启动时整页显示；登录后也可从应用左下角账号菜单发起）
+登录门控页「登录」按钮（未登录启动时整页显示；登录后也可从**标题栏右上角账号区**发起）
    → 系统浏览器打开 <平台>/oauth/authorize（PKCE S256 + 本机回环回调 127.0.0.1:<随机端口>）
    → 手机号/账密登录 →「确认授权」→ 平台 302 回本机回环带 code
    → 客户端换取业务令牌，按 model_type 分流写入 ~/EduBuddy/data/user/settings/model_catalog.json
@@ -28,9 +28,10 @@
 ```
 
 - **必须登录才能使用**：服务就绪后检查登录态，未登录停在登录页；登录成功自动进入
-  应用；应用内退出登录（左下角账号菜单）吊销令牌、摘除模型配置并回到登录页。
+  应用；应用内退出登录（标题栏账号菜单）吊销令牌、摘除模型配置并回到登录页。
   离线/开发旁路：环境变量 `DEEPTUTOR_DESKTOP_SKIP_LOGIN=1`。
-- 应用内左下角按钮文案随登录态变化：`登录` → `等待浏览器…` → 用户名（点击弹账号菜单）。
+- 标题栏右上角账号区文案随登录态变化：`登录` → `等待浏览器…` → 用户名（点击弹原生账号菜单）。
+  不再往页面注入任何悬浮控件（ADR-004）。
 - **域名**三层解析，内置默认（生产
   `tokengine.hanyoai.com`）→ `endpoints.json` / 环境变量显式覆盖（联调指向，
   回环地址按本地派生 `/v1`）→ userinfo 下发的中继地址。行为完全可预测。
@@ -65,24 +66,27 @@ py -3.12 -m venv .venv
 便携 zip 默认不制作（它只是同一份运行时的另一种分发形态，每次重压 ~500MB/2.1 万文件、约 8 分钟），
 需要时显式加 `-MakePortable`。
 
+**日常与首次构建都是同一条命令**——`build_runtime.py` 自带增量：staging 运行时与源码
+一致且未变化时只跑冒烟测试 + 版本门禁（十几秒），源码变了自动重装。版本门禁不可跳过
+（曾因跳过把 1.6.9 旧运行时打进新包，见 `docs/adr/ADR-005`）。
+
 ```powershell
-# 日常迭代（复用已建好的离线运行时，最快）
-powershell -ExecutionPolicy Bypass -File build\build.ps1 -SkipRuntime
-
-# 首次构建：连离线运行时一起建（embeddable python + deeptutor + node，约 500MB）
-powershell -ExecutionPolicy Bypass -File build\build.ps1
-
-# 确实需要便携包时
-powershell -ExecutionPolicy Bypass -File build\build.ps1 -SkipRuntime -MakePortable
+powershell -ExecutionPolicy Bypass -File build\build.ps1                    # 日常/首次
+powershell -ExecutionPolicy Bypass -File build\build.ps1 -SkipInstaller    # 只要壳 exe，不编安装包
+powershell -ExecutionPolicy Bypass -File build\build.ps1 -MakePortable     # 额外做便携 zip（~8 分钟）
 ```
+
+打包机制科普（runtime / PyInstaller / 安装位置 / 自检清单）见
+[`docs/packaging-guide.md`](docs/packaging-guide.md)。
 
 也可以分步手动执行（`build.ps1` 做的就是这几步）：
 
 ```powershell
-.\.venv\Scripts\python tools\build_runtime.py --no-zip                                   # 1) 离线运行时
-.\.venv\Scripts\python -m PyInstaller --noconfirm --clean build\EduBuddyDesktop.spec     # 2) 桌面壳 exe
-& "C:\Program Files\Inno Setup 7\ISCC.exe" build\installer.iss                           # 3) 安装向导
-.\.venv\Scripts\python tools\make_portable.py                                            # 4) 便携包（可选）
+.\.venv\Scripts\python tools\build_runtime.py --no-zip                                   # 1) 离线运行时 + 版本门禁
+.\.venv\Scripts\python tools\rebrand.py                                                  # 2) staging 改品牌（幂等）
+.\.venv\Scripts\python -m PyInstaller --noconfirm --clean build\EduBuddyDesktop.spec     # 3) 桌面壳 exe
+& "C:\Program Files\Inno Setup 7\ISCC.exe" /DMyAppVersion=0.2.0+dt<版本> build\installer.iss   # 4) 安装向导（版本号自动读自 deeptutor/__version__.py；裸跑会得到占位版本）
+.\.venv\Scripts\python tools\make_portable.py                                            # 5) 便携包（可选）
 ```
 
 产物都在 `dist/`：
@@ -111,7 +115,9 @@ powershell -ExecutionPolicy Bypass -File build\build.ps1 -SkipRuntime -MakePorta
 ```
 desktop/           桌面壳(Python，pywebview)
   main.py          入口：窗口 + 启动画面 + 生命周期
-  inject.py        往应用页面注入左下角「登录」按钮（evaluate_js 轮询事件槽）
+  inject.py        应用页面 toast 浮层注入（登录/账号入口已迁至标题栏，ADR-004）
+  titlebar_account.py 标题栏账号区状态模型 + 同步线程
+  native_menu_backend.py 自绘标题栏：菜单/窗口按钮/账号区
   process.py       deeptutor 子进程管理 + 端口健康检查
   runtime.py       运行时解析/自动安装/内置运行时
   splash.py        内嵌启动画面

@@ -332,8 +332,21 @@ def build(make_zip: bool = False, source_root: Path | None = None,
                         "deeptutor_cli-*.dist-info", "deeptutor_web",
                         "deeptutor_web-*.dist-info"):
                 for entry in sp.glob(pat):
-                    shutil.rmtree(entry, ignore_errors=True) if entry.is_dir() \
-                        else entry.unlink(missing_ok=True)
+                    # 清理失败必须响：ignore_errors 曾在文件被占用（应用未关/
+                    # 杀毒扫描）时静默残留旧文件，产出「1.6.10 版本 + 1.6.9
+                    # 前端 chunk」的混合运行时且能通过版本门禁（门禁只查
+                    # deeptutor.__version__）。宁可构建失败，不可静默混合。
+                    try:
+                        if entry.is_dir():
+                            shutil.rmtree(entry)
+                        else:
+                            entry.unlink()
+                    except OSError as exc:
+                        raise SystemExit(
+                            f"cannot clean stale {entry.name}: {exc}\n"
+                            f"likely held by a running EduBuddy/deeptutor "
+                            f"process or antivirus — close the app and retry."
+                        ) from exc
             install_deeptutor(STAGING_PY, source_root)
     else:
         install_deeptutor(STAGING_PY, source_root)

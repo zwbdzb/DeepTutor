@@ -128,7 +128,7 @@ cd D:\studio\DeepTutor\desktop-shell
 .\.venv\Scripts\python -m desktop.main
 ```
 
-会弹出一个窗口：启动页 → 自动拉起 DeepTutor → 进应用 → 左下角出现「登录」按钮。
+会弹出一个窗口：启动页 → 自动拉起 DeepTutor → 进应用 → 标题栏右上角出现「登录」账号区。
 **日志**在 `%LOCALAPPDATA%\EduBuddy\logs\app.log`，有问题第一件事是看它。
 
 ### 4.2 改了壳代码 → 重新打 exe
@@ -145,8 +145,9 @@ cd D:\studio\DeepTutor\desktop-shell
 
 ```powershell
 cd D:\studio\DeepTutor\desktop-shell
-powershell -ExecutionPolicy Bypass -File build\build.ps1 -SkipRuntime
+powershell -ExecutionPolicy Bypass -File build\build.ps1
 # 产物：dist\EduBuddyDesktop.exe + dist\EduBuddySetup.exe
+# runtime 段自带增量：staging 与源码一致时只跑门禁（十几秒）；版本门禁不可跳过（ADR-005）
 # 便携 zip 默认不出；确需时加 -MakePortable（多花约 8 分钟）
 ```
 
@@ -155,9 +156,11 @@ powershell -ExecutionPolicy Bypass -File build\build.ps1 -SkipRuntime
 > **2026-09-21 实测修正**：旧版本文档写的是
 > `build_runtime.py --no-zip` + `build.ps1 -SkipRuntime`，
 > 那样打出的 exe **不含运行时**，双击后会回落到系统 PATH 上的旧版
-> deeptutor（横幅显示旧版本号）。另外 `build_runtime.py` 的门禁只比对
-> **版本号**——如果版本号没变但代码变了（常见于团队协作合并），它会
-> 静默跳过重装，导致"本地修改没进包"。按下面 5 步走可避免这两个坑。
+> deeptutor（横幅显示旧版本号）。
+>
+> **2026-09-24 更新**：`build.ps1` 现在无条件跑 `build_runtime.py`（版本门禁不可跳过），
+> 且重装判定从"只比版本号"升级为"版本号 + 源码指纹"——版本没变但代码变了也会自动
+> 重装，"本地修改没进包"的坑已修复。下列命令里的 `-SkipRuntime` 已相应移除。
 
 ```powershell
 # ① 同步上游（版本号一般会变）
@@ -170,22 +173,18 @@ npm run build
 cd D:\studio\DeepTutor\desktop-shell
 .\.venv\Scripts\python D:\studio\DeepTutor\scripts\prepare_web_package.py --skip-build
 
-# ③ 重装 deeptutor 到内嵌 Python + 版本门禁 + 生成 dist\runtime.zip
-#    --force-deeptutor：先卸旧再装本地源。版本号没变但代码变了时必须加，
-#    否则脚本看到"版本相同"会跳过重装（本地修改就丢了）。
-#    不加 --no-zip：这样才会生成 runtime.zip，供 ④ 内嵌。
-.\.venv\Scripts\python tools\build_runtime.py --force-deeptutor
+# ③④ 一条命令：自动重装 deeptutor（版本或指纹变了才装）+ 门禁 + rebrand
+#    + 重打 exe + 编译 Setup。刚做过 ② 的话 runtime 段会很快。
+powershell -ExecutionPolicy Bypass -File build\build.ps1
 
-# ④ rebrand + 重打 exe + 编译 Setup（-SkipRuntime 指"跳过 ②③"，runtime.zip 已就绪）
-powershell -ExecutionPolicy Bypass -File build\build.ps1 -SkipRuntime
-
-# ⑤ 验证（产物应为最新版本号）
-dist\EduBuddyDesktop.exe --version          # 或双击看左下角横幅
-Get-ChildItem dist | Select-Object Name, Length   # exe 约 211MB 才是内嵌了运行时
+# ⑤ 验证（四步自检详见 docs/packaging-guide.md §6）
+Get-ChildItem dist\*.exe | Select-Object Name, Length, LastWriteTime
+# EduBuddySetup.exe 应上百 MB（内含完整运行时）；EduBuddyDesktop.exe 约 14MB（纯壳，
+# 需要 -MakeZip 才会内嵌 runtime.zip 成为 ~211MB 独立包）
 ```
 
 **什么时候能偷懒**：只改了壳工程（`desktop-shell/`）自己的代码、没动
-`deeptutor/`/`web/`，则 ②③ 不用跑，直接 ④ 即可。
+`deeptutor/`/`web/`，`build.ps1` 的 runtime 段会秒过（门禁十几秒），无需任何特殊操作。
 
 ---
 
@@ -233,32 +232,35 @@ $env:TOKENGINE_API_BASE = "http://127.0.0.1:3000"
 
 **不要**为了换平台地址重新打包——配置文件优先级高于内置默认值。
 
-### 5.4 登录后的账号菜单（v2：点击切换下拉）
+### 5.4 登录后的账号菜单（ADR-004：原生标题栏账号区）
 
-左下角「登录/账号」按钮负责两件事：
+标题栏右上角账号区**只在已登录进入应用页后显示**（显示用户名，点击弹
+账号菜单）。启动 splash 阶段与登录门控页阶段一律隐藏——登录入口在门控页
+页面中间的按钮，标题栏只做「身份指示 + 账号操作」，不放第二个登录入口。
 
-- **未登录**：点击 → 发起 Tokengine 登录（浏览器授权）。
-- **已登录 / 已配置**：点击 → 在按钮上方**弹出**账号菜单；**再点一次收起**。
+| 阶段 | 账号区 | 行为 |
+|---|---|---|
+| splash 启动中 | 隐藏 | — |
+| 登录门控页（未登录/已配置令牌/登录中） | 隐藏 | 登录走页面中间按钮 |
+| 应用页（已登录） | 显示用户名 | 点击弹菜单：账号头行（用户名 · 余额 · 模型数）／**刷新可用模型**／打开 Tokengine 平台／切换账号／**退出登录**（MessageBox 确认）／关于 EduBuddy |
 
-**不再劫持页面的右键菜单**——聊天区/输入框/任意处的原生右键（复制、粘贴、
-检查元素等）原样保留。
+点击路由与菜单内容由状态模型决定（`desktop/titlebar_account.py` 的
+`chip_model` / `account_menu_model`），动作接线在 `main.py` 的
+`_chip_actions`，账号区自绘与命中在 `native_menu_backend.py` 的
+`AccountChip`。关闭方式：再点账号区 / Esc / 点菜单外。
 
-| 状态 | 菜单项 |
-|---|---|
-| 已登录 | 账号头行（脱敏手机号 · 余额 · 模型数）／**刷新可用模型**／打开 Tokengine 平台／复制 API 地址／切换账号／**退出登录**（需再次点击确认）／关于 EduBuddy |
-| 未登录 | 登录 Tokengine／打开 Tokengine 平台／关于 EduBuddy |
+> **2026-09-24 交互打磨**：所有下拉面板已做圆角（Win11 走 DWM 原生圆角，
+> Win10 退化为 Region 裁剪）；「点菜单外收回」由 UI 线程看门狗兜底（物理
+> 点击被页面吞掉也能感知），账号区「再点一下 = 收起」带 0.45s 防重开守卫；
+> 菜单栏下拉与账号下拉样式已统一（同字体、同圆角、同外部收回，均无图列）。
+> **同日时序修正**：账号区只在已登录进入应用页后显示（见上方表格），
+> splash 与门控页阶段隐藏。机制与验证记录见
+> `docs/adr/ADR-004-titlebar-account-chip.md` 末两节。
 
-按钮点击路由由菜单模型携带的 `logged_in`/`configured` 标志决定（页面侧见
-`inject.py` 的 ENSURE_JS 与 `__edubuddyMenuUpdate`）。关闭方式：再点按钮 /
-Esc / 点菜单外 / 滚动 / 滚轮 / 窗口失焦。
-
-动作接线表在 `main.py` 的 `bootstrap`（`menu_actions`），菜单文案/结构在
-`inject.py` 的 `_menu_model`。所有动作都走同一套「隐藏事件槽 + 轮询」通道。
-
-**安全检查**：`复制 API 地址` 只复制 `relay_base`，**不会**复制业务 token（防泄露）；
-退出登录会吊销 refresh/device token、清本地凭证、并摘除 catalog 里的
-Tokengine 连接（用户手动配的连接不受影响）。决策细节见
-`docs/adr/ADR-002-login-context-menu.md`。
+**安全检查**：账号菜单**不提供**复制业务 token（防泄露）；退出登录会吊销
+refresh/device token、清本地凭证、并摘除 catalog 里的 Tokengine 连接
+（用户手动配的连接不受影响）。决策细节见
+`docs/adr/ADR-004-titlebar-account-chip.md`。
 
 ---
 

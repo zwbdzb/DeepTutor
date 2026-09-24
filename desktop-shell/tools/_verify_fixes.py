@@ -21,24 +21,25 @@ def check(name, cond, detail=""):
 
 
 # ------------------------------------------------------------------ #
-# 1) resolve_relay：显式覆盖必须压过平台宣告（问题 2 的核心）
+# 1) resolve_relay：显式覆盖必须压过一切远端来源（问题 2 的核心）
+#    （2026-09 起客户端不再读取平台 /api/status 的 server_address，
+#     status 参数已从签名移除，本段随新签名更新）
 # ------------------------------------------------------------------ #
 relay, src = cfg.resolve_relay(
     api_base="https://tokengine-t.hanyoai.com",
-    status={"data": {"server_address": "https://tokengine.hanyoai.com"}},
     fallback="https://tokengine-t.hanyoai.com/v1",
     local_override="https://tokengine-t.hanyoai.com/v1",
 )
-check("显式 relay_base 压过平台宣告", relay == "https://tokengine-t.hanyoai.com/v1"
+check("显式 relay_base 压过其他来源", relay == "https://tokengine-t.hanyoai.com/v1"
       and src == "local-override", f"{relay} ({src})")
 
 relay, src = cfg.resolve_relay(
     api_base="https://tokengine.hanyoai.com",
-    status={"data": {"server_address": "https://tokengine.hanyoai.com"}},
-    fallback="https://tokengine.hanyoai.com/v1",
+    fallback="https://tokengine-t.hanyoai.com/v1",
 )
-check("无显式覆盖时维持旧行为（平台宣告）", relay == "https://tokengine.hanyoai.com/v1"
-      and src == "platform", f"{relay} ({src})")
+check("无覆盖时回退本地配置（不再读平台宣告）",
+      relay == "https://tokengine-t.hanyoai.com/v1" and src == "local-config",
+      f"{relay} ({src})")
 
 relay, src = cfg.resolve_relay(api_base="http://127.0.0.1:3000", local_override="")
 check("回环 api_base 仍走 local-loopback", relay == "http://127.0.0.1:3000/v1"
@@ -139,21 +140,22 @@ with tempfile.TemporaryDirectory() as td:
           st["relay_base"])
 
 # ------------------------------------------------------------------ #
-# 4) inject：按钮文案（问题 1）
+# 4) 标题栏账号区：文案（问题 1；ADR-004 起 inject.py 仅剩 toast）
 # ------------------------------------------------------------------ #
-from desktop.inject import LoginButtonInjector, _fmt_balance, _menu_model
-label, title = LoginButtonInjector._label_for({
+from desktop.titlebar_account import (chip_label, _fmt_balance,
+                                      account_menu_model, _display_name)
+label, title = chip_label({
     "logged_in": True,
     "account": {"phone": "15512348602", "models": ["a", "b"]},
 })
-check("按钮显示脱敏用户名", label == "155****8602", f"{label!r} / {title!r}")
-label2, _ = LoginButtonInjector._label_for({"logged_in": True, "account": {"models": []}})
+check("账号区显示脱敏用户名", label == "155****8602", f"{label!r} / {title!r}")
+label2, _ = chip_label({"logged_in": True, "account": {"models": []}})
 check("无手机号时回退「已登录」", label2 == "已登录", repr(label2))
-label3, _ = LoginButtonInjector._label_for({"logged_in": False, "configured": False})
+label3, _ = chip_label({"logged_in": False, "configured": False})
 check("未登录仍是「登录」", label3 == "登录", repr(label3))
 
 # ------------------------------------------------------------------ #
-# 5) inject：菜单（2026-09-16 二轮反馈）
+# 5) 标题栏账号区：下拉菜单（2026-09-16 二轮反馈）
 # ------------------------------------------------------------------ #
 check("余额格式化：平台成品字符串", _fmt_balance("¥16.769472 额度") == "16.77",
       repr(_fmt_balance("¥16.769472 额度")))
@@ -164,7 +166,7 @@ check("余额格式化：千分位", _fmt_balance(1234567.891) == "1,234,567.89"
 check("余额格式化：空/无数字", _fmt_balance("") == "" and _fmt_balance("额度") == "",
       f"{_fmt_balance('')!r} {_fmt_balance('额度')!r}")
 
-m_logged = _menu_model({"logged_in": True, "configured": True,
+m_logged = account_menu_model({"logged_in": True, "configured": True,
                         "account": {"phone": "15512348602",
                                     "balance": "¥16.769472 额度",
                                     "models": ["a"] * 8}})
@@ -173,18 +175,17 @@ check("已登录菜单无「复制 API 地址」", "copy" not in acts, str(acts)
 check("余额副标题干净", m_logged["header"]["sub"] == "余额 ¥16.77 · 8 个模型",
       repr(m_logged["header"]["sub"]))
 
-m_cfg = _menu_model({"logged_in": False, "configured": True, "account": {}})
+m_cfg = account_menu_model({"logged_in": False, "configured": True, "account": {}})
 acts_cfg = [it.get("action") for it in m_cfg["items"] if isinstance(it, dict)]
 check("已配置令牌菜单也无「复制 API 地址」", "copy" not in acts_cfg, str(acts_cfg))
 
-m_out = _menu_model({"logged_in": False, "configured": False, "account": {"balance": None}})
+m_out = account_menu_model({"logged_in": False, "configured": False, "account": {"balance": None}})
 check("无余额时不显示余额段", "余额" not in m_out["header"]["sub"],
       repr(m_out["header"]["sub"]))
 
 # ------------------------------------------------------------------ #
-# 6) inject + manager：用户名显示（2026-09-16 三轮反馈）
+# 6) 标题栏账号区 + manager：用户名显示（2026-09-16 三轮反馈）
 # ------------------------------------------------------------------ #
-from desktop.inject import _display_name
 check("显示用户名 admin", _display_name({"username": "admin", "phone": "15512348602"}) == "admin",
       repr(_display_name({"username": "admin", "phone": "15512348602"})))
 check("用户名是未脱敏手机号时强制打码",
@@ -194,13 +195,13 @@ check("无用户名回退脱敏手机号", _display_name({"phone": "15512348602"
       repr(_display_name({"phone": "15512348602"})))
 check("全空回退「已登录」", _display_name({}) == "已登录", repr(_display_name({})))
 
-label4, _ = LoginButtonInjector._label_for({
+label4, _ = chip_label({
     "logged_in": True,
     "account": {"username": "admin", "phone": "15512348602", "models": []},
 })
-check("按钮显示用户名而非手机号", label4 == "admin", repr(label4))
+check("账号区显示用户名而非手机号", label4 == "admin", repr(label4))
 
-m_name = _menu_model({"logged_in": True, "configured": False,
+m_name = account_menu_model({"logged_in": True, "configured": False,
                       "account": {"username": "admin", "phone": "15512348602",
                                   "balance": "¥16.673331 额度", "models": ["a"]}})
 check("菜单标题显示用户名", m_name["header"]["title"] == "admin",
@@ -219,6 +220,57 @@ with tempfile.TemporaryDirectory() as td:
     st2 = mgr2.status()
     check("status() 透出 username（从 raw 提取）",
           st2["account"].get("username") == "admin", str(st2["account"]))
+
+# ------------------------------------------------------------------ #
+# 7) 运行时解析顺序（2026-09-23 事故：旧托管缓存 1.6.9 遮蔽新装 1.6.10）
+# ------------------------------------------------------------------ #
+from desktop import runtime as rt
+
+
+def _mk_runtime_tree(root: Path, version: str, with_runner: bool = False) -> Path:
+    sp = root / "python" / "Lib" / "site-packages"
+    dist = sp / f"deeptutor-{version}.dist-info"
+    dist.mkdir(parents=True)
+    (dist / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: deeptutor\nVersion: %s\n" % version,
+        encoding="utf-8")
+    (root / "python" / "python.exe").write_bytes(b"")
+    if with_runner:
+        (root / "python" / "run_deeptutor.py").write_text("# runner\n",
+                                                         encoding="utf-8")
+    return root
+
+
+with tempfile.TemporaryDirectory() as td:
+    # 候选路径固定叫 <exe_dir>/runtime，所以 shipped 树必须叫这个名字
+    shipped = _mk_runtime_tree(Path(td) / "runtime", "1.6.10", with_runner=True)
+    orig_exe_dir, orig_runtime = rt.EXE_DIR, rt.RUNTIME
+    try:
+        # 场景 A（事故本尊）：exe 旁自带 1.6.10，托管缓存残留 1.6.9 → 自带胜出
+        rt.EXE_DIR = Path(td)
+        stale = _mk_runtime_tree(Path(td) / "stale-managed", "1.6.9")
+        rt.RUNTIME = stale
+        got = rt.select_runtime_base()
+        check("exe 旁运行时压过旧托管缓存（1.6.10 > 1.6.9）", got == shipped, str(got))
+        check("版本读取与所选树同源", rt.resolve_deeptutor_version() == "1.6.10",
+              str(rt.resolve_deeptutor_version()))
+        cmd = rt.resolve_deeptutor_cmd()
+        check("启动命令指向所选树", bool(cmd) and cmd[2].endswith("run_deeptutor.py"),
+              str(cmd))
+
+        # 场景 B：托管缓存版本严格更新 → 允许越位（缓存是可刷新的正式来源）
+        newer = _mk_runtime_tree(Path(td) / "newer-managed", "1.6.11")
+        rt.RUNTIME = newer
+        got = rt.select_runtime_base()
+        check("托管缓存仅在其版本严格更新时胜出", got == newer, str(got))
+
+        # 场景 C：版本平手 → exe 旁优先（确定性，避免环境差异漂移）
+        same = _mk_runtime_tree(Path(td) / "same-managed", "1.6.10")
+        rt.RUNTIME = same
+        got = rt.select_runtime_base()
+        check("版本平手时 exe 旁运行时优先", got == shipped, str(got))
+    finally:
+        rt.EXE_DIR, rt.RUNTIME = orig_exe_dir, orig_runtime
 
 print()
 if failures:
