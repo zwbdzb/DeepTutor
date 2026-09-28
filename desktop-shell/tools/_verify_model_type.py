@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
-"""验证 userinfo model_type 分流的快速自检（不依赖网络，用临时目录模拟真实数据流）。
+"""验证模型名单分流的快速自检（不依赖网络，用临时目录模拟真实数据流）。
 
 覆盖：
   1) split_models_by_service：model_type 权威 > 名称启发式兜底；
   2) 4=重排序确定性丢弃（含名字无线索的模型）；
   3) 0/缺失/非法值回退名称启发式（旧平台行为不变）;
-  4) AuthManager._derive 对 model_types 的提取与容错；
+  4) fetch_relay_models 解析契约（file:// 本地数据，零网络）；
+  4.5) 业务令牌：严格按契约取 userinfo.ai_token（无 token 响应回退）；
   5) ensure_tokengine_catalog 全链路：各服务 profile 按类型落位。
 """
 import json
@@ -13,10 +14,11 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))   # desktop-shell（desktop 包）
 
 from desktop.auth import config as cfg
 from desktop.auth.catalog import ensure_tokengine_catalog, split_models_by_service
+from desktop.auth.client import OAuthError, fetch_relay_models
 from desktop.auth.manager import AuthManager
 
 failures = []
@@ -64,7 +66,8 @@ def st(entries):
 split = split_models_by_service(MODELS, MODEL_TYPES)
 check("文生文(1) -> llm", sn(split["llm"]) == ["deepseek-ai/DeepSeek-V4-Flash-0731",
       "glm-4v-image-understand"], str(split["llm"]))
-check("llm 同步复制进 task（含类型）", split["task"] == split["llm"], str(split["task"]))
+check("task 恒为空（1.6.11：task 留空 = inherit 跟随对话模型，不再双挂载）",
+      split["task"] == [], str(split["task"]))
 check("llm 每条带 model_type=1",
       all(mt == 1 for mt in st(split["llm"]).values()), str(st(split["llm"])))
 check("名字带 image 但标注 1 不被启发式错归 imagegen",
@@ -126,25 +129,55 @@ check("全标1：embedding/imagegen/videogen 为空",
       and split_bad["videogen"] == [], str(sn_bad))
 
 # ------------------------------------------------------------------ #
-# 4) _derive：严格按契约解析（models = [{"model_name","model_type"}]）
+# 4) fetch_relay_models 解析契约（file:// 本地数据，零网络）
+#    模型名单唯一来源 = 中继 /v1/models（2026-09-24 起，无 userinfo 兜底）
 # ------------------------------------------------------------------ #
 with tempfile.TemporaryDirectory() as td:
+    payload = {"data": [
+        {"id": "a/chat-1", "model_type": 1},
+        {"id": "b/embed-1", "model_type": 5},
+        {"id": "c/rerank-1", "model_type": 4},
+        {"id": "no-type"},
+        "bare-name",
+        {"model": "d/alt-field", "model_type": 2.0},
+        {"id": "  a/chat-1  "},   # 重复：去重保序
+        {"id": ""},               # 空名：跳过
+        42,                       # 非法项：跳过
+    ]}
+    models_file = Path(td) / "models"
+    models_file.write_text(json.dumps(payload), encoding="utf-8")
+    names, mts = fetch_relay_models(Path(td).as_uri(), "sk-test")
+    check("解析 id/model/model_name 字段并去重保序",
+          names == ["a/chat-1", "b/embed-1", "c/rerank-1", "no-type",
+                    "bare-name", "d/alt-field"], str(names))
+    check("model_type 归一 int（含 float 2.0）",
+          mts == {"a/chat-1": 1, "b/embed-1": 5, "c/rerank-1": 4,
+                  "d/alt-field": 2}, str(mts))
+
+    empty_dir = Path(td) / "empty"
+    empty_dir.mkdir()
+    (empty_dir / "models").write_text(json.dumps({"data": []}), encoding="utf-8")
+    try:
+        fetch_relay_models(empty_dir.as_uri(), "sk-test")
+        check("空名单必须抛错（防网关抖动清空 catalog）", False, "no exception")
+    except OAuthError:
+        check("空名单必须抛错（防网关抖动清空 catalog）", True)
+
+    bad_dir = Path(td) / "bad"
+    bad_dir.mkdir()
+    (bad_dir / "models").write_text("not-json", encoding="utf-8")
+    try:
+        fetch_relay_models(bad_dir.as_uri(), "sk-test")
+        check("非法 JSON 必须抛错", False, "no exception")
+    except OAuthError:
+        check("非法 JSON 必须抛错", True)
+
+    # _derive 瘦身后只管账号与中继推导（模型解析已迁至 fetch_relay_models）
     mgr = AuthManager(root=Path(td) / "root", home=Path(td) / "home")
-    structured = [{"model_name": n, "model_type": t} for n, t in MODEL_TYPES.items()]
-    models, mts, _, _, _ = mgr._derive({"models": structured, "phone": "15512348602"})
-    check("_derive 解析契约结构体数组", models == MODELS and mts == MODEL_TYPES,
-          f"{models} / {mts}")
-    check("空数组 = 平台明确无授权模型（不用本地兜底）",
-          mgr._derive({"models": []})[0] == [], "")
-    check("缺 models 字段才用 DEFAULT_MODELS 兜底",
-          mgr._derive({})[0] == list(cfg.DEFAULT_MODELS), "")
-    models, mts, _, _, _ = mgr._derive(
-        {"models": [{"model_name": "x", "model_type": 5.0},
-                    {"model_type": 1},
-                    {"model_name": ""},
-                    "not-a-dict"]})
-    check("缺名/非 dict 项跳过，类型归一 int",
-          models == ["x"] and mts == {"x": 5}, f"{models} / {mts}")
+    phone, relay, src = mgr._derive({"phone": "15512348602"})
+    check("_derive 返回 (phone, relay_base, relay_source)",
+          phone == "15512348602" and relay and src,
+          f"{phone} / {relay} / {src}")
 
 # ------------------------------------------------------------------ #
 # 4.5) 业务令牌：严格按契约取 userinfo.ai_token（无 token 响应回退）
@@ -187,13 +220,77 @@ with tempfile.TemporaryDirectory() as td:
           types_of("embedding") == [5, 5], str(types_of("embedding")))
     check("catalog imagegen 落位", names("imagegen") == ["seedream-4.0"], str(names("imagegen")))
     check("catalog videogen 落位", names("videogen") == ["seedance-pro"], str(names("videogen")))
-    check("catalog task 与 llm 一致", names("task") == names("llm"), str(names("task")))
-    check("catalog task 带 model_type=1",
-          all(t == 1 for t in types_of("task")), str(types_of("task")))
+    check("catalog task 无 tokengine profile（不再双挂载）",
+          tok_profiles("task") == [], str(tok_profiles("task")))
     check("重排序模型未写入任何服务",
           "secret-rerank-model-x" not in sum((names(s) for s in
                                               ("llm", "task", "embedding", "imagegen", "videogen")), []),
           "")
+
+# ------------------------------------------------------------------ #
+# 6) 历史残留清理：1.6.9 时代双挂载写入的 task profile，在新的登录/
+#    刷新（ensure 空授权分支）与设置页 Apply（reconcile 不回插 task）下
+#    都必须被清掉，提供商页计数随之从 17 回到 9（llm 8 + embedding 1）。
+# ------------------------------------------------------------------ #
+with tempfile.TemporaryDirectory() as td:
+    home = Path(td) / "workspace"
+    ensure_tokengine_catalog(
+        home=home, api_key="sk-test-token",
+        base_url="https://tokengine.hanyoai.com/v1",
+        models=MODELS, model_types=MODEL_TYPES,
+    )
+    # 手工造一份 1.6.9 形状的残留：task profile 带 llm 的复制模型
+    cat_path = home / "data/user/settings/model_catalog.json"
+    cat = json.loads(cat_path.read_text(encoding="utf-8"))
+    cat["services"]["task"]["profiles"] = [{
+        "id": "task-profile-tokengine-legacy",
+        "name": "Tokengine (OpenAI API)",
+        "binding": "openai",
+        "base_url": "https://tokengine.hanyoai.com/v1",
+        "api_key": "sk-test-token",
+        "models": [{"id": "t-0", "name": "deepseek-ai/DeepSeek-V4-Flash-0731",
+                    "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+                    "model_type": 1}],
+        "connection_id": "tokengine",
+    }]
+    cat["services"]["task"]["active_profile_id"] = "task-profile-tokengine-legacy"
+    cat_path.write_text(json.dumps(cat, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # 路径 A：再次登录/刷新（ensure 空授权分支摘除 task profile）
+    ensure_tokengine_catalog(
+        home=home, api_key="sk-test-token",
+        base_url="https://tokengine.hanyoai.com/v1",
+        models=MODELS, model_types=MODEL_TYPES,
+    )
+    cat = json.loads(cat_path.read_text(encoding="utf-8"))
+    check("残留 task profile 被再次登录清掉（ensure 空授权分支）",
+          [p for p in cat["services"]["task"]["profiles"]
+           if p.get("connection_id") == "tokengine"] == [],
+          str(cat["services"]["task"]["profiles"]))
+
+    # 路径 B：设置页整包 Apply（reconcile 以 live 为权威，但 task 不在
+    # 托管清单里 → 陈旧 task profile 不会被回插复活）
+    # 注：tokengine_reconcile 是纯标准库自包含模块（无相对导入），这里用
+    # importlib 按文件路径加载，绕开 deeptutor.services.config.__init__
+    # 的重导入链（会级联拉起 tools.builtin → yaml 等本 venv 不需要的依赖）。
+    import importlib.util
+    _recon_path = (Path(__file__).resolve().parents[2]
+                   / "deeptutor" / "services" / "config" / "tokengine_reconcile.py")
+    _spec = importlib.util.spec_from_file_location("_tokengine_reconcile", _recon_path)
+    _recon = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_recon)
+    reconcile_tokengine_catalog_update = _recon.reconcile_tokengine_catalog_update
+    proposed = json.loads(cat_path.read_text(encoding="utf-8"))
+    proposed["services"]["task"]["profiles"] = []
+    merged = reconcile_tokengine_catalog_update(cat, proposed)
+    check("残留 task profile 不被 Apply 回插复活（reconcile）",
+          [p for p in merged["services"]["task"]["profiles"]
+           if p.get("connection_id") == "tokengine"] == [],
+          str(merged["services"]["task"]["profiles"]))
+    check("reconcile 仍保护 llm 托管 profile（不误伤）",
+          any(p.get("connection_id") == "tokengine"
+              for p in merged["services"]["llm"]["profiles"]),
+          str(merged["services"]["llm"]["profiles"]))
 
 print()
 if failures:

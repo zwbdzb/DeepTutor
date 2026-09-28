@@ -25,6 +25,8 @@ Accepted（2026-09-18）
 1. **启动门控回归**：本地服务就绪后检查登录态（`AuthManager.has_usable_token()`，
    含用户手配令牌的兜底），未登录则窗口停留在重做的登录门控页——浅色、居中
    吉祥物 + 「EduBuddy，我帮你」+ 黑色胶囊登录按钮（`desktop/splash.py` 重写）。
+   （2026-09-24 补注：登录页主标语已换为品牌 slogan「懂了的那一下，很爽。」，
+   交互结构不变；本条保留决策原文。）
 2. **登录成功 → 自动进入应用**：会话主循环（`desktop/main.py::run_session`）
    在门控页等待 OAuth 完成（PKCE + 本机回环，链路与二代完全一致），成功后
    令牌与按 `model_type` 分流的可用模型写入 `model_catalog.json`，然后

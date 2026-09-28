@@ -2567,10 +2567,14 @@ export default function ChatWorkspace({
                   <div className="w-full max-w-[960px] flex items-center justify-center gap-4">
                     <img
                       src="/logo.png"
-                      alt="EduBuddy"
+                      alt="ThinkBuddy"
                       width={40}
                       height={40}
-                      className="h-10 w-10 select-none"
+                      // CJK glyphs sit low in their line box (measured: the
+                      // 40px heading's ink center runs 2px below the box
+                      // center), so box-centering leaves the logo floating
+                      // high. Nudge it down to meet the glyph ink center.
+                      className="h-10 w-10 translate-y-[2px] select-none"
                       draggable={false}
                     />
                     <h1 className="font-serif text-[40px] font-medium leading-[1.1] tracking-[-0.015em] text-[var(--foreground)]">

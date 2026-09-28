@@ -1,13 +1,14 @@
 """Tokengine 托管实体的 catalog 写入保护。
 
 桌面端登录 Tokengine 平台后，``desktop-shell/desktop/auth/catalog.py``
-会把 ``/oauth/userinfo`` 下发的授权模型按 ``model_type`` 分拣写入
-model catalog：
+会把登录流程拿到的模型名单（2026-09-24 起唯一来源是中继 ``/v1/models``）
+按 ``model_type`` 分拣写入 model catalog：
 
   - ``id == "tokengine"`` 的 connection（携带 sk- 业务令牌）；
-  - llm/task/embedding/imagegen/videogen 各服务里
-    ``connection_id == "tokengine"`` 的 profile（模型名单唯一来源是
-    userinfo，绝不请求网关 /v1/models 全量列表）。
+  - llm/embedding/imagegen/videogen 各服务里
+    ``connection_id == "tokengine"`` 的 profile（模型名单来自登录流程，
+    见 catalog.py）。task 不再由登录写入：1.6.11 里 task 留空即
+    inherit（跟随对话模型）。
 
 设置页的整包写入（PUT /catalog、POST /apply、POST /apply/registry、
 POST /apply/provider、POST /apply/service）都携带浏览器内存中的 catalog
@@ -39,9 +40,12 @@ TOKENGINE_CONNECTION_ID = "tokengine"
 _CONNECTION_EDITABLE_FIELDS = ("name",)
 _PROFILE_EDITABLE_FIELDS = ("name", "user_name")
 
-# 桌面端按 model_type 分拣写入的服务（与 _TYPED_SERVICES + llm 一致；
-# search 走独立 provider 结构，tokengine 不写入）。
-_TOKENGINE_SERVICES = ("llm", "task", "embedding", "imagegen", "videogen")
+# 桌面端按 model_type 分拣写入的服务（与 _TYPED_SERVICES 一致，但**不含
+# task**：1.6.11 起登录不写 task profile——task 留空即 inherit。task 不进
+# 本表意味着 live 里的历史 task profile 不会被 Apply 回插复活，设置页
+# 保存一次即被自然清掉；用户在设置页手动给 task 配 Tokengine（1.6.11
+# 合法操作）也不受 reconcile 干扰。search 走独立 provider 结构，不写入）。
+_TOKENGINE_SERVICES = ("llm", "embedding", "imagegen", "videogen")
 
 
 def _live_connection(current: Mapping[str, Any]) -> dict[str, Any] | None:

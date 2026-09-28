@@ -13,6 +13,7 @@ desktop.main.run_session，验证新的登录交互闭环：
  10. 退出登录清除陈旧登录结果（wait_done 不再秒过，2026-09-18 事故根因）
  11. 会话级复现：未消费登录 + 注销 → 停在门控页等待全新登录
  12. 注销后 catalog 残留密钥仍强制门控（force_gate）
+ 13. 门控期残留退出信号不闪回登录页（2026-09-28 事故根因）
 
 运行：.venv/Scripts/python tools/test_login_gate.py
 """
@@ -441,8 +442,64 @@ def scenario_logout_with_residual_catalog_key(base: Path) -> None:
     check("会话循环随 stop 退出", not t.is_alive())
 
 
+def scenario_stale_logout_signal(base: Path) -> None:
+    """[13] 门控期残留的退出信号不得打断下一次登录（2026-09-28 事故根因）。
+
+    事故时间线（app.log 14:49~14:52）：应用内退出登录（信号被正常消费）
+    → 回门控后账号菜单「退出登录」又被触发一次（evt 置位，但会话循环
+    阻塞在 _wait_gate_login，无人消费）→ 用户重新登录成功 → 进入应用
+    分支时 wait() 立即拿到残留信号，登录完成 0.5s 后闪回登录页。
+    修复：进入应用分支前 logout_evt.clear()（与 [10] 的 _done 清理互为镜像）。
+    """
+    print("[13] 门控期残留退出信号不闪回登录页（陈旧退出回归）")
+    mgr = make_manager(base)
+    mgr._client.revoke = lambda *a, **k: None
+    api, win = FakeApi(), FakeWindow()
+    stop = threading.Event()
+    t = threading.Thread(
+        target=dt_main.run_session, args=(win, api, "http://127.0.0.1:3782", mgr, stop),
+        daemon=True,
+    )
+    t.start()
+    time.sleep(1.2)
+    check("启动停在门控", any(p == "login" for p, _ in api.calls))
+
+    finalize_login(mgr)                    # 第 1 次登录：门控消费
+    time.sleep(1.5)
+    check("第 1 次登录进入应用", len(win.loaded_urls) == 1)
+
+    # 应用内退出登录（完整真实路径：清凭据 + 置位信号）
+    mgr.logout()
+    logout_evt = dt_main._shared.get("logout_requested")
+    check("会话主循环注册了 logout 信号", isinstance(logout_evt, threading.Event))
+    if isinstance(logout_evt, threading.Event):
+        logout_evt.set()
+    time.sleep(2.0)
+    check("退出后停在登录门控页（load_html）", len(win.loaded_html) == 1)
+    check("退出后未进入应用（无新 load_url）", len(win.loaded_urls) == 1)
+
+    # 事故核心：门控等待期间退出信号再次被置位（门控页上重复触发的
+    # 「退出登录」菜单 + 确认框），会话循环阻塞在 _wait_gate_login 不消费
+    if isinstance(logout_evt, threading.Event):
+        logout_evt.set()
+    time.sleep(0.5)
+    check("前置：退出信号残留置位", isinstance(logout_evt, threading.Event)
+          and logout_evt.is_set())
+
+    finalize_login(mgr)                    # 重新登录（事故中的第 2 次登录）
+    time.sleep(2.0)
+    check("登录成功后正常进入应用（不被残留信号打断）",
+          len(win.loaded_urls) == 2, f"loaded_urls={len(win.loaded_urls)}")
+    check("登录后未闪回登录页（无新 load_html）", len(win.loaded_html) == 1,
+          f"loaded_html={len(win.loaded_html)}")
+
+    stop_session(stop, dt_main._shared.get("logout_requested") or threading.Event())
+    t.join(timeout=6)
+    check("会话循环随 stop 退出", not t.is_alive())
+
+
 def main() -> int:
-    print("=== EduBuddy 登录门控会话循环 无头验证 ===")
+    print("=== ThinkBuddy 登录门控会话循环 无头验证 ===")
     with tempfile.TemporaryDirectory(prefix="edubuddy-gate-test-") as td:
         base = Path(td)
         scenario_gate_then_login(base)
@@ -454,6 +511,7 @@ def main() -> int:
         scenario_stale_login_result(base)
         scenario_logout_stays_on_gate(base)
         scenario_logout_with_residual_catalog_key(base)
+        scenario_stale_logout_signal(base)
     print(f"\n通过 {len(PASS)} 项，失败 {len(FAIL)} 项")
     if FAIL:
         print("失败项：", "、".join(FAIL))

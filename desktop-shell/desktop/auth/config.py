@@ -6,7 +6,7 @@
 2. ``<ROOT>/endpoints.json``（打包版可外部覆盖，免重建就能指向本地平台）
 3. 内置默认（当前兜底为生产地址 ``PROD_API_BASE``；本地联调用 endpoints.json / 环境变量覆盖）
 
-``endpoints.json`` 示例（放在 ``%LOCALAPPDATA%\\EduBuddy\\endpoints.json``）::
+``endpoints.json`` 示例（放在 ``%LOCALAPPDATA%\\ThinkBuddy\\endpoints.json``）::
 
     {
       "api_base": "http://127.0.0.1:3000",
@@ -34,7 +34,7 @@ log = logging.getLogger("dt.auth.config")
 # 当前构建兜底为**生产地址**（分发给别人的机器上没有 endpoints.json / 环境变量，
 # 落到的就是这个兜底值——必须是收件人能访问的地址）。本地联调不要改这里，
 # 用优先级更高的覆盖方式指回联调环境：
-#   * 用户级覆盖文件 %LOCALAPPDATA%\EduBuddy\endpoints.json 写 "api_base"
+#   * 用户级覆盖文件 %LOCALAPPDATA%\ThinkBuddy\endpoints.json 写 "api_base"
 #   * 或启动前设环境变量 TOKENGINE_API_BASE=http://127.0.0.1:3000
 #
 # 注意：``TOKENGINE_DEFAULT_API_BASE`` 是**运行时**在启动机器上读取的，
@@ -166,12 +166,6 @@ USERINFO_RELAY_FIELDS: list[str] = [
 RELAY_AUTO_V1 = os.environ.get("TOKENGINE_RELAY_AUTO_V1", "1").lower() not in (
     "0", "false", "no", "off",
 )
-
-# 兜底模型：userinfo 没给模型列表时使用
-_DEFAULT_MODELS = os.environ.get(
-    "TOKENGINE_DEFAULT_MODELS", "deepseek-ai/DeepSeek-V4-Flash-0731"
-).split(",")
-DEFAULT_MODELS = [m.strip() for m in _DEFAULT_MODELS if m.strip()]
 
 # 登录单次等待上限（默认 15 分钟）
 LOGIN_TIMEOUT = int(os.environ.get("TOKENGINE_LOGIN_TIMEOUT", "900"))

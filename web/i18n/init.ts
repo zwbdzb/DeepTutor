@@ -19,7 +19,7 @@ export function initI18n(language?: unknown) {
   i18n.use(initReactI18next).init({
     resources,
     lng: normalizeLanguage(language),
-    fallbackLng: "zh",
+    fallbackLng: "en",
     // Use a single default namespace to keep lookups simple.
     // We intentionally keep keySeparator disabled so keys like "Generating..." remain valid.
     defaultNS: "app",

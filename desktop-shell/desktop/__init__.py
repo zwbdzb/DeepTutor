@@ -1,4 +1,4 @@
-"""EduBuddy Desktop — a native shell around the DeepTutor web app.
+"""ThinkBuddy Desktop — a native shell around the DeepTutor web app.
 
 Layers:
     shell  : pywebview (WebView2) window + splash  -> desktop/main.py
@@ -8,4 +8,4 @@ Layers:
 """
 
 __version__ = "0.1.3"
-APP_NAME = "EduBuddy"
+APP_NAME = "ThinkBuddy"

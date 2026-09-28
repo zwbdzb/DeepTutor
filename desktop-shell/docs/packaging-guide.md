@@ -212,7 +212,13 @@ cd D:\studio\DeepTutor\desktop-shell
   沙箱限流 + 批量删除守卫会干扰。在普通 PowerShell 窗口跑；
 - **别手动改 `installer.iss` 里的版本号**：由 build.ps1 自动注入，手改会在下次构建被覆盖；
 - **`pip install --target` 不卸旧版本**（会叠加 dist-info）：build_runtime.py 已在重装前
-  先清旧 `deeptutor*`，且清理失败会显式报错，不要绕过。
+  先清旧 `deeptutor*`，且清理失败会显式报错，不要绕过；
+- **[1/3] 阶段 pip 报 `SSL: UNEXPECTED_EOF_WHILE_READING` / "Could not find a version
+  ... PyYAML"**：国内直连 pypi.org 被掐（实测 curl 12s 无响应），不是代码问题。
+  2026-09-24 起 `build_runtime.py` 的 pip 默认走清华镜像（`DEFAULT_PIP_INDEX_URL`）；
+  想换源/走代理，在跑 build.ps1 前设置环境变量 `PIP_INDEX_URL`（脚本 setdefault，
+  用户设置优先）。注意 `-SkipRuntime` 救不了这个——它只是兼容保留，运行时构建与
+  版本门禁无条件执行。
 
 ## 8. 参考
 

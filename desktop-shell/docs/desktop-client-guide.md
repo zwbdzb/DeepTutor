@@ -1,4 +1,4 @@
-# EduBuddy 桌面客户端 · 工程化全局指南
+# ThinkBuddy 桌面客户端 · 工程化全局指南
 
 > 面向 Python 新手 · 2026-09-21 版
 > 目标：读完这一篇，你能独立完成「拉代码 → 改功能 → 出安装包」的完整闭环。
@@ -10,7 +10,7 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  EduBuddy 桌面客户端（用户双击的东西）                          │
+│  ThinkBuddy 桌面客户端（用户双击的东西）                          │
 │                                                              │
 │  ┌──────────────┐   装进 exe 里，启动后干三件事：               │
 │  │  桌面壳(壳工程) │   ① 在本机拉起 DeepTutor 后端(:8001)+前端(:3782) │
@@ -89,7 +89,7 @@ git push origin main
 | Python | 3.11+ | 跑壳、跑后端、打包 | `python --version` |
 | Node.js | 20+ | 构建 DeepTutor 前端 | `node --version` |
 | Git | 任意新版 | 版本管理 | `git --version` |
-| Inno Setup 7 | 7.x | 出安装向导 | 装 `dist\EduBuddySetup.exe` 需要它 |
+| Inno Setup 7 | 7.x | 出安装向导 | 装 `dist\ThinkBuddySetup.exe` 需要它 |
 
 ### 3.2 壳工程的 Python 虚拟环境
 
@@ -129,14 +129,14 @@ cd D:\studio\DeepTutor\desktop-shell
 ```
 
 会弹出一个窗口：启动页 → 自动拉起 DeepTutor → 进应用 → 标题栏右上角出现「登录」账号区。
-**日志**在 `%LOCALAPPDATA%\EduBuddy\logs\app.log`，有问题第一件事是看它。
+**日志**在 `%LOCALAPPDATA%\ThinkBuddy\logs\app.log`，有问题第一件事是看它。
 
 ### 4.2 改了壳代码 → 重新打 exe
 
 ```powershell
 cd D:\studio\DeepTutor\desktop-shell
-.\.venv\Scripts\python -m PyInstaller --noconfirm --clean build\EduBuddyDesktop.spec
-# 产物：dist\EduBuddyDesktop.exe
+.\.venv\Scripts\python -m PyInstaller --noconfirm --clean build\ThinkBuddyDesktop.spec
+# 产物：dist\ThinkBuddyDesktop.exe
 # dist\runtime.zip 存在时会被内嵌（约 211MB，可独立分发）；
 # 不存在则约 14MB，双击后回落系统 PATH 上的 deeptutor（仅开发态够用）。
 ```
@@ -146,7 +146,7 @@ cd D:\studio\DeepTutor\desktop-shell
 ```powershell
 cd D:\studio\DeepTutor\desktop-shell
 powershell -ExecutionPolicy Bypass -File build\build.ps1
-# 产物：dist\EduBuddyDesktop.exe + dist\EduBuddySetup.exe
+# 产物：dist\ThinkBuddyDesktop.exe + dist\ThinkBuddySetup.exe
 # runtime 段自带增量：staging 与源码一致时只跑门禁（十几秒）；版本门禁不可跳过（ADR-005）
 # 便携 zip 默认不出；确需时加 -MakePortable（多花约 8 分钟）
 ```
@@ -179,7 +179,7 @@ powershell -ExecutionPolicy Bypass -File build\build.ps1
 
 # ⑤ 验证（四步自检详见 docs/packaging-guide.md §6）
 Get-ChildItem dist\*.exe | Select-Object Name, Length, LastWriteTime
-# EduBuddySetup.exe 应上百 MB（内含完整运行时）；EduBuddyDesktop.exe 约 14MB（纯壳，
+# ThinkBuddySetup.exe 应上百 MB（内含完整运行时）；ThinkBuddyDesktop.exe 约 14MB（纯壳，
 # 需要 -MakeZip 才会内嵌 runtime.zip 成为 ~211MB 独立包）
 ```
 
@@ -216,13 +216,13 @@ Get-ChildItem dist\*.exe | Select-Object Name, Length, LastWriteTime
 | OAuth 请求的构造 | `desktop\auth\client.py` |
 | 启动流程/窗口行为 | `desktop\main.py` |
 | 启动页样式 | `desktop\splash.py` |
-| 打包配置 | `build\EduBuddyDesktop.spec`（PyInstaller）、`build\installer.iss`（安装器） |
+| 打包配置 | `build\ThinkBuddyDesktop.spec`（PyInstaller）、`build\installer.iss`（安装器） |
 
 ### 5.3 指向哪个平台（联调 vs 线上）
 
 ```powershell
 # 方式一（推荐，装好的包也能改）：写配置文件
-# %LOCALAPPDATA%\EduBuddy\endpoints.json
+# %LOCALAPPDATA%\ThinkBuddy\endpoints.json
 { "api_base": "http://127.0.0.1:3000" }        # 本地联调
 { "api_base": "https://tokengine.hanyoai.com" } # 线上
 
@@ -242,7 +242,7 @@ $env:TOKENGINE_API_BASE = "http://127.0.0.1:3000"
 |---|---|---|
 | splash 启动中 | 隐藏 | — |
 | 登录门控页（未登录/已配置令牌/登录中） | 隐藏 | 登录走页面中间按钮 |
-| 应用页（已登录） | 显示用户名 | 点击弹菜单：账号头行（用户名 · 余额 · 模型数）／**刷新可用模型**／打开 Tokengine 平台／切换账号／**退出登录**（MessageBox 确认）／关于 EduBuddy |
+| 应用页（已登录） | 显示用户名 | 点击弹菜单：账号头行（用户名 · 余额 · 模型数）／**刷新可用模型**／打开 Tokengine 平台／切换账号／**退出登录**（MessageBox 确认）／关于 ThinkBuddy |
 
 点击路由与菜单内容由状态模型决定（`desktop/titlebar_account.py` 的
 `chip_model` / `account_menu_model`），动作接线在 `main.py` 的
@@ -314,7 +314,7 @@ runtime-build\staging\python\python.exe -c "from deeptutor.__version__ import __
 1. **改前先建分支**：`git switch -c feat/xxx`。改坏了随时弃车保帅。
 2. **小步提交**：一个功能拆成几个小 commit，写清做了什么。
 3. **提交前自测**：至少跑通 §4.1 开发态 + 看一遍 `app.log` 无 ERROR。
-4. **不确定就看日志**：`%LOCALAPPDATA%\EduBuddy\logs\app.log` 是你的眼睛。
+4. **不确定就看日志**：`%LOCALAPPDATA%\ThinkBuddy\logs\app.log` 是你的眼睛。
 5. **读代码顺序建议**：`main.py`（入口）→ `inject.py`（注入）→ `auth/manager.py`（登录编排）。
    每个文件开头都有中文注释讲设计取舍。
 6. **别怕 PyInstaller**：它只是把 Python 代码+依赖打成一个 exe。spec 文件就是配置，

@@ -1,7 +1,7 @@
 """Runtime resolution & provisioning.
 
-EduBuddy Desktop decouples the shell from whatever is installed system-wide.
-The managed runtime lives under %LOCALAPPDATA%\\EduBuddy\\runtime:
+ThinkBuddy Desktop decouples the shell from whatever is installed system-wide.
+The managed runtime lives under %LOCALAPPDATA%\\ThinkBuddy\\runtime:
 
     runtime/
       venv/   # python venv with `deeptutor` pip-installed (managed, v1)
@@ -27,12 +27,41 @@ log = logging.getLogger("dt.runtime")
 
 # -- paths ------------------------------------------------------------------ #
 LOCALAPPDATA = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
+
+
+def _migrate_legacy_dir(legacy: Path, target: Path) -> Path:
+    """品牌迁移（EduBuddy -> ThinkBuddy）：旧目录一次性改名到新目录。
+
+    - 旧目录不存在 / 新目录已存在 → 直接用新目录（新装或已迁移过）。
+    - rename 失败（被占用/权限）→ 沿用旧目录，行为与旧版一致，绝不丢数据。
+    - 同盘 rename 是元数据操作，瞬时完成；auth.json / runtime 缓存 /
+      工作区学习数据随目录整体迁移，登录态与数据无缝延续。
+    """
+    if not legacy.exists() or target.exists():
+        return target
+    try:
+        legacy.rename(target)
+        log.info("migrated legacy dir %s -> %s", legacy, target)
+        return target
+    except OSError:
+        log.warning("cannot migrate %s (locked?) — keeping legacy path", legacy)
+        return legacy
+
+
 # Overridable for tests / portable (USB) installs.
-ROOT = Path(os.environ.get("DEEPTUTOR_DESKTOP_ROOT") or (LOCALAPPDATA / "EduBuddy"))
+_env_root = os.environ.get("DEEPTUTOR_DESKTOP_ROOT")
+ROOT = (
+    Path(_env_root) if _env_root
+    else _migrate_legacy_dir(LOCALAPPDATA / "EduBuddy", LOCALAPPDATA / "ThinkBuddy")
+)
 RUNTIME = ROOT / "runtime"
 MANAGED_VENV = RUNTIME / "venv"
 NODE_RUNTIME = RUNTIME / "node"
-WORKSPACE_HOME = Path(os.environ.get("DEEPTUTOR_DESKTOP_HOME") or (Path.home() / "EduBuddy"))
+_env_home = os.environ.get("DEEPTUTOR_DESKTOP_HOME")
+WORKSPACE_HOME = (
+    Path(_env_home) if _env_home
+    else _migrate_legacy_dir(Path.home() / "EduBuddy", Path.home() / "ThinkBuddy")
+)
 
 # Where the PyInstaller bundle keeps an embedded runtime.zip (onefile build)
 # or extracted tree (onedir build). sys._MEIPASS works for both.
@@ -215,7 +244,7 @@ def resolve_deeptutor_cmd() -> list[str] | None:
 def resolve_deeptutor_version() -> str | None:
     """Best-effort 读取运行时里 deeptutor 的版本号（不 import，读 dist-info METADATA）。
 
-    供「关于 EduBuddy」等信息展示用。**与 resolve_deeptutor_cmd 同源**：
+    供「关于 ThinkBuddy」等信息展示用。**与 resolve_deeptutor_cmd 同源**：
     先经 select_runtime_base() 选中实际运行的那棵树，再读它的 dist-info——
     否则可能出现「跑的是 A 树、显示的是 B 树版本」的错位。打包版运行时在
     ``<runtime>/python/Lib/site-packages/deeptutor-<ver>.dist-info/METADATA``；
@@ -283,7 +312,7 @@ def extract_bundled_runtime() -> bool:
             else:
                 log.info("provisioning managed runtime from %s", src.name)
 
-            # RUNTIME is the shell-owned cache under EduBuddy; the user's
+            # RUNTIME is the shell-owned cache under ThinkBuddy; the user's
             # learning workspace is WORKSPACE_HOME and is never touched here.
             if RUNTIME.exists():
                 shutil.rmtree(RUNTIME)

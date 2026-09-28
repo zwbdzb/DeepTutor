@@ -1,4 +1,4 @@
-"""Windows 自定义标题栏 + 原生菜单（EduBuddy 桌面壳）。
+"""Windows 自定义标题栏 + 原生菜单（ThinkBuddy 桌面壳）。
 
 设计目标（对齐 WorkBuddy 桌面端观感）：
 * 菜单栏位于窗口**第一排**（顶到窗口最上沿），不再挤在系统标题栏下方；
@@ -757,6 +757,7 @@ class AccountChip:
             else:
                 item.Enabled = False
             dd.Items.Add(item)
+            _attach_menu_hover_paint(item)   # 悬停药丸与菜单条同一套（见节首注释）
         dd.Closed += self._on_dd_closed
         dd.Opened += self._on_dd_opened
         dd.DropShadowEnabled = False   # Win10 Region 路径必需；Win11 由 DWM 出原生投影
@@ -830,13 +831,148 @@ class AccountChip:
 # --------------------------------------------------------------------------- #
 _CURRENT_STRIP = None       # 当前菜单条（WebView2 获焦收起下拉时用）
 
-# 注（2026-09-24）：曾尝试「子类化 ToolStripProfessionalRenderer」实现菜单项
-# 圆角悬停，但本机 pythonnet 3.1.0 的 .NET 子类化失效——连
-# ``class C(Control): pass`` 的 CLR 运行时类型都是基类本身，虚方法重写
-# 永远不会被调用（当日日志有探针记录），该方案已删除。
-# 现状：下拉面板圆角由 DWM（Win11）/ Region（Win10）完成；菜单项悬停保持
-# 原生方形高亮——与 VS Code / Chrome「圆角面板 + 方形 hover」惯例一致；
-# 账号区悬停由 AccountChip 自绘圆角药丸（不经子类化，Paint 事件自绘）。
+# --------------------------------------------------------------------------- #
+# 菜单项悬停统一：灰色圆角药丸（与账号区 chip 同一 #E9E9E9 家族）                 #
+# --------------------------------------------------------------------------- #
+# 用户反馈（2026-09-28）：菜单条顶层项悬停是 WinForms 默认渲染器的蓝色渐变
+# 方块，与账号 chip 的灰色圆角药丸不一致。渲染器子类化路线不可行——
+# tools/_probe_clr_subclass.py 实证：pythonnet 3.1.0 连 ProfessionalColorTable /
+# ToolStripProfessionalRenderer 的 CLR 子类化都失效（运行时类型=基类，属性/
+# 方法重写在 CLR 虚分派下永不进入 Python 实现；2026-09-24 只测过 Control，
+# 本探针把纯数据类与渲染器也堵死了）。故沿用 AccountChip / 窗口按钮的
+# Paint 事件自绘哲学：
+#
+#   ToolStripItem.Paint 事件在默认渲染器画完「蓝底 + 文字」**之后**触发 →
+#     1) 整项涂底色矩形（顶层项=白、下拉项=面板同色，取自
+#        renderer.ColorTable.ToolStripDropDownBackground）——盖掉蓝色渐变
+#        与选中项边框线（不盖会留一圈淡蓝毛边）；
+#     2) 悬停药丸（几何与 AccountChip 完全一致）；
+#     3) 文字重画：矩形/格式反射读 item 内部 InternalLayout.TextRectangle /
+#        .TextFormat（与 ToolStripMenuItem.OnPaint 同一来源，零布局复制），
+#        绘制调 owner.Renderer.DrawMenuItemText（下拉项传 ContentAlignment、
+#        顶层项传 TextFormat，对应 OnPaint 两个分支）→ 最终同走
+#        TextRenderer.DrawText，悬停/非悬停两态文字像素一致；
+#     4) 颜色固定 SystemColors.MenuText：默认渲染器悬停态给 HighlightText
+#        （白字），在浅灰药丸上会隐形。
+# 生效范围：菜单条顶层项 + 其全部下拉项 + 账号 chip 下拉项（同一挂载函数）。
+# 下拉面板圆角仍由 DWM（Win11）/ Region（Win10）完成，不受影响。
+
+_HOVER_PILL_RGB = (0xE9, 0xE9, 0xE9)   # 与 AccountChip / 窗口按钮悬停同色
+_HOVER: dict = {}                      # 懒初始化的 CLR 类型 / 反射元数据缓存
+
+
+def _hover_meta(item):
+    """按需初始化悬停自绘所需的 CLR 引用与反射元数据（幂等）。"""
+    if _HOVER.get("ready"):
+        return _HOVER
+    try:
+        from System.Drawing import ContentAlignment, SystemColors
+        from System.Reflection import BindingFlags
+        from System.Windows.Forms import ToolStripItemTextRenderEventArgs
+
+        _HOVER["args_t"] = ToolStripItemTextRenderEventArgs
+        _HOVER["align_t"] = ContentAlignment
+        _HOVER["text_color"] = SystemColors.MenuText
+        refl = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic
+        # InternalLayout / TextRectangle / TextFormat 都是 internal —— 与
+        # ToolStripMenuItem.OnPaint 用同一来源，必须反射读，保证零偏差。
+        prop = item.GetType().GetProperty("InternalLayout", refl)
+        if prop is not None:
+            layout = prop.GetValue(item)
+            if layout is not None:
+                ltp = layout.GetType()
+                _HOVER["layout_prop"] = prop
+                _HOVER["rect_prop"] = ltp.GetProperty("TextRectangle", refl)
+                _HOVER["fmt_prop"] = ltp.GetProperty("TextFormat", refl)
+        _HOVER["ready"] = True
+    except Exception:  # noqa: BLE001  元数据缺失时降级为仅涂药丸不重画文字
+        log.exception("menu hover meta init failed")
+        _HOVER["ready"] = True
+    return _HOVER
+
+
+def _draw_menu_hover(g, item) -> None:
+    """悬停自绘：底色矩形 → 灰色药丸 → 文字重画（item 本地坐标系）。
+
+    调用方已确认 item.Enabled 且（Selected 或 Pressed）。
+    """
+    meta = _hover_meta(item)
+    s = _dpi_scale(item.Owner) if item.Owner is not None else 1.0
+    # 顶层项判定：Owner 是 MenuStrip 才算（ContextMenuStrip 的项 OwnerItem
+    # 同样为 None，不能用它判定——误判会把面板底涂成白色块）。
+    top_level = isinstance(item.Owner, _WF.MenuStrip)
+
+    # 1) 底色矩形：整项覆盖，消除默认渲染器的蓝色渐变 + 选中边框毛边
+    try:
+        if top_level:
+            base = _Color.White
+        else:
+            base = item.Owner.Renderer.ColorTable.ToolStripDropDownBackground
+        g.FillRectangle(_SolidBrush(base), 0, 0, item.Width, item.Height)
+    except Exception:  # noqa: BLE001  底色失败不阻断药丸
+        log.exception("menu hover base fill failed")
+
+    # 2) 悬停药丸：顶层项与 AccountChip 完全同几何；下拉项走 Win11 菜单惯例
+    if top_level:
+        x, y = round(1 * s), round(3 * s)
+        w = item.Width - 2 * round(1 * s)
+        h = item.Height - 2 * round(3 * s)
+        radius = min(max(2, round(5 * s)), h // 2)
+    else:
+        x, y = round(4 * s), round(1 * s)
+        w = item.Width - 2 * round(4 * s)
+        h = item.Height - 2 * round(1 * s)
+        radius = min(max(2, round(4 * s)), h // 2)
+    if w > 2 and h > 2:
+        try:
+            g.SmoothingMode = _SmoothingMode.AntiAlias
+            path = _round_path((x, y, w, h), radius)
+            g.FillPath(_SolidBrush(_Color.FromArgb(*_HOVER_PILL_RGB)), path)
+            path.Dispose()
+        except Exception:  # noqa: BLE001
+            log.exception("menu hover pill paint failed")
+
+    # 3) 文字重画：矩形/格式反射自 InternalLayout，绘制走渲染器同一原语
+    try:
+        layout = meta["layout_prop"].GetValue(item) if meta.get("layout_prop") else None
+        rect_prop = meta.get("rect_prop")
+        if layout is None or rect_prop is None:
+            return
+        renderer = item.Owner.Renderer
+        name = meta.get("draw_name")
+        if name is None:
+            name = "DrawMenuItemText" if hasattr(renderer, "DrawMenuItemText") else "DrawItemText"
+            meta["draw_name"] = name
+        rect = rect_prop.GetValue(layout)
+        args_t, color = meta["args_t"], meta["text_color"]
+        if top_level:
+            flags = meta["fmt_prop"].GetValue(layout)
+            args = args_t(g, item, item.Text, rect, color, item.Font, flags)
+        else:
+            args = args_t(g, item, item.Text, rect, color, item.Font,
+                          meta["align_t"].MiddleLeft)
+        getattr(renderer, name)(args)
+    except Exception:  # noqa: BLE001
+        log.exception("menu hover text redraw failed")
+
+
+def _attach_menu_hover_paint(item) -> None:
+    """给 ToolStripMenuItem 挂自绘悬停（Paint 事件；见节首注释）。"""
+
+    def on_paint(sender, e):
+        try:
+            it = sender
+            if it is None or not it.Enabled:
+                return
+            if it.Selected or it.Pressed:
+                _draw_menu_hover(e.Graphics, it)
+        except Exception:  # noqa: BLE001  绘制异常绝不外抛进 WinForms
+            log.exception("menu hover paint failed")
+
+    try:
+        item.Paint += on_paint
+    except Exception:  # noqa: BLE001
+        log.exception("menu hover paint attach failed")
 
 
 # --------------------------------------------------------------------------- #
@@ -1027,6 +1163,7 @@ def _convert_entry(entry):
                 target=fn, daemon=True
             ).start()
         )
+        _attach_menu_hover_paint(item)
         return item
     if isinstance(entry, Menu):
         item = _WF.ToolStripMenuItem(entry.title)
@@ -1034,8 +1171,11 @@ def _convert_entry(entry):
             converted = _convert_entry(child)
             if converted is not None:
                 item.DropDownItems.Add(converted)
+        _attach_menu_hover_paint(item)
         return item
-    return _WF.ToolStripMenuItem(str(entry))
+    item = _WF.ToolStripMenuItem(str(entry))
+    _attach_menu_hover_paint(item)
+    return item
 
 
 def _chip_right_pad() -> int:
@@ -1214,7 +1354,7 @@ def install_windows_shell_menu() -> bool:
         try:
             form.ShowIcon = False
             if not form.Text:
-                form.Text = "EduBuddy"  # Alt-Tab / 任务栏悬停显示
+                form.Text = "ThinkBuddy"  # Alt-Tab / 任务栏悬停显示
             hwnd = int(form.Handle.ToInt64())
             _install_hook(hwnd, _make_form_handler(hwnd))
             # 窗口可见前重算非客户区 → 标题栏无声消失，无闪烁

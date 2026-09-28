@@ -116,6 +116,7 @@ export default function AppShell({ sidebar, children }: AppShellProps) {
                 alt="EduBuddy"
                 width={20}
                 height={20}
+                unoptimized
                 className="h-5 w-5"
               />
               <span className="text-[14px] font-semibold tracking-tight text-[var(--foreground)]">

@@ -5,7 +5,7 @@
 ## 1. 一句话
 
 桌面客户端是**登录门控**的：启动后先拉起本地服务（期间显示品牌启动页），服务就绪后
-检查登录态——**未登录则整页停在「EduBuddy，我帮你」登录页**（WorkBuddy 同款：居中
+检查登录态——**未登录则整页停在「懂了的那一下，很爽。」登录页**（WorkBuddy 同款：居中
 吉祥物 + 黑色登录按钮）；点「登录」用系统浏览器打开平台授权页，完成手机号/账密登录
 并点「确认授权」后，平台回调到本机回环服务；客户端换取令牌，并把**域名、业务令牌、
 可用模型**三样东西按 `model_type` 分流写进 DeepTutor 配置，随后自动进入应用——用户
@@ -55,7 +55,7 @@
 | --- | --- | --- | --- |
 | **域名**（中继 base_url） | 按下面 §3.1 的优先级链解析 | `model_catalog.json` 的 `connections[tokengine].base_url` 与活动 profile 的 `base_url` | 回退到本地配置（`endpoints.json` / 环境变量 / 内置默认） |
 | **业务令牌** | `/oauth/token` 响应的 `token` 字段（`sk-Tok...`） | 同上两处的 `api_key`；同时 DPAPI 加密存入 `auth.json` | 视为登录失败并提示 |
-| **可用模型** | `userinfo` 的 `models` 字段 | 活动 profile 的 `models`（首模型设为活动） | 回退到 `TOKENGINE_DEFAULT_MODELS` |
+| **可用模型** | 中继 `GET /v1/models`（每项自带 `model_type`，2026-09-24 起为唯一来源） | 活动 profile 的 `models`（首模型设为活动）并按 `model_type` 分流各服务 | 登录不阻断：模型列表保持现状；刷新报错返回、不写盘 |
 
 DeepTutor 1.6.9 的设置页可能先生成一个只带 `provider_ref.connection_id` 的
 OpenAI 连接 profile。桌面登录刷新会同时识别顶层的 `connection_id` 和 1.6.9
@@ -133,7 +133,6 @@ OpenAI 连接 profile。桌面登录刷新会同时识别顶层的 `connection_i
 | `TOKENGINE_CALLBACK_PORT` | `0`（随机） | 回环端口；设固定值便于比对平台日志 |
 | `TOKENGINE_LOGIN_TIMEOUT` | `900` | 单次登录等待上限（秒） |
 | `TOKENGINE_USERINFO_RELAY_FIELDS` | 见 §3 | 中继域名候选字段 |
-| `TOKENGINE_DEFAULT_MODELS` | `deepseek-ai/DeepSeek-V4-Flash-0731` | 模型列表兜底 |
 | `DEEPTUTOR_DESKTOP_SKIP_LOGIN` | — | 设为 `1` 跳过登录门控（离线/开发用） |
 
 ## 5. 文件位置

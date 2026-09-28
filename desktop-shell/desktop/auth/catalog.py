@@ -126,16 +126,18 @@ _MODEL_TYPE_SERVICE: dict[int, str] = {
 }
 
 # 服务名 -> model_type 反推：名称启发式归类后仍给每条盖上权威类型章。
-# task 是对话模型的双挂载服务，与 llm 同为文生文（1）。
+# 注意 task 不在表内：1.6.11 起 task 服务不再由登录写入（见
+# split_models_by_service）——task 留空即 inherit，跟随对话模型。
 _SERVICE_MODEL_TYPE: dict[str, int] = {
     "llm": _MT_LLM,
-    "task": _MT_LLM,
     "imagegen": _MT_IMAGEGEN,
     "videogen": _MT_VIDEOGEN,
     "embedding": _MT_EMBEDDING,
 }
 
-# 除 llm 外由登录流程自动挂 tokengine profile 的服务
+# 除 llm 外由登录流程自动挂 tokengine profile 的服务。
+# task 刻意保留在表内：split 对 task 恒产空列表，驱动 ensure 的
+# 「空授权摘除」分支把 1.6.9 时代双挂载写入的历史 task profile 清掉。
 _TYPED_SERVICES = ("task", "embedding", "imagegen", "videogen")
 
 
@@ -151,19 +153,23 @@ def split_models_by_service(
     models: list[str],
     model_types: Optional[dict[str, Any]] = None,
 ) -> dict[str, list[dict[str, Any]]]:
-    """把 userinfo 授权的模型名列表按平台 ``model_type`` 分拣到各服务。
+    """把登录拿到的模型名单按平台 ``model_type`` 分拣到各服务。
 
     纯 model_type 分流，不做名称启发式兜底：
-      1=文生文 → llm + task
+      1=文生文 → llm
       2=文生图 → imagegen
       3=文生视频 → videogen
       4=重排序 → 丢弃（DeepTutor 无重排服务）
       5=向量 → embedding
-      0/缺失/未知 → 保守归对话（llm + task）
+      0/缺失/未知 → 保守归对话（llm）
 
-    对话类型（llm）同时复制进 task（文生文对话服务双挂载）。
-    每条都带确定的 model_type（见 ``_SERVICE_MODEL_TYPE``），供
-    ``_model_entries`` 落库。
+    **task 恒为空**（2026-09-24 起，对齐 1.6.11 语义）：DeepTutor 的 task
+    服务留空即 ``inherit``——所有任务调用跟随对话模型（见
+    ``deeptutor/services/model_selection/tasks.py``："Leaving the whole
+    thing empty is the default"）。1.6.9 时代「把对话模型复制进 task」的
+    双挂载不再做——它曾把提供商页计数撑成 17（llm 8 + task 8 + embedding 1）。
+    key 仍保留在返回值里（恒为空列表），供 ``ensure_tokengine_catalog``
+    的空授权分支摘除历史残留的 task profile。
     """
     types = model_types if isinstance(model_types, dict) else {}
     seen: set[str] = set()
@@ -199,8 +205,9 @@ def split_models_by_service(
         elif mt == _MT_IMAGEGEN:
             _emit("imagegen", name, _MT_IMAGEGEN)
         else:
+            # 只进 llm。不复制进 task：1.6.11 里 task 留空 = inherit
+            # （跟随对话模型），复制一份只会把提供商页计数翻倍。
             _emit("llm", name, mt if mt == _MT_LLM else None)
-            _emit("task", name, _MT_LLM)
     return out
 
 
@@ -438,11 +445,11 @@ def ensure_tokengine_catalog(
 ) -> Path:
     """把业务令牌写入 DeepTutor model catalog，返回被修改的文件路径。
 
-    ``models``：平台 userinfo 返回的授权模型名（登录实测 8 个）——
-    它是**唯一**名单来源，绝不请求网关 /v1/models（那是全量列表，
-    会把设置页撑爆）。
+    ``models``：落库的模型名单，由调用方（manager）提供——2026-09-24 起
+    唯一来源是中继 ``/v1/models``（网关当前暴露的全量名单，每项自带
+    model_type），无 userinfo 兜底。本模块自身**零网络**，只做文件手术。
 
-    ``model_types``：userinfo 同步下发的 名称->model_type 映射
+    ``model_types``：名称->model_type 映射
     （1=文生文 2=文生图 3=文生视频 4=重排序 5=向量）——分流的**权威**
     依据；缺失/未标注的模型回退名称启发式。分流结果：对话模型进
     llm/task，向量模型进 embedding，图像/视频各归其位，重排序丢弃；
@@ -504,8 +511,8 @@ def ensure_tokengine_catalog(
             or _effective_connection_id(candidate) != connection_id
         ]
 
-    # 3) 模型列表：models（userinfo 授权名单）是唯一来源，按平台下发的
-    #    model_type 分流（缺类型时回退名称启发式）到各服务；
+    # 3) 模型列表：models（调用方提供，现优先来自中继 /v1/models），
+    #    按平台下发的 model_type 分流（缺类型时回退名称启发式）到各服务；
     #    models=None（端点对齐等零网络路径）不碰列表。
     split = (split_models_by_service(models, model_types)
              if models is not None else None)
@@ -525,9 +532,11 @@ def ensure_tokengine_catalog(
         first = (profile["models"] or [{}])[0]
         llm["active_model_id"] = first.get("id")
 
-    # 3.5) task / embedding / imagegen / videogen：按名称分流各挂一条
+    # 3.5) task / embedding / imagegen / videogen：按类型各挂一条
     #      tokengine profile；该类型授权为空时摘除我们之前写的 profile，
-    #      避免上一次（可能超授权的）名单残留。
+    #      避免上一次（可能超授权的）名单残留。task 恒为空授权（1.6.11 起
+    #      登录不再写 task）→ 此处每次登录/刷新都会把 1.6.9 时代双挂载
+    #      写入的历史 task profile 摘掉。
     if split is not None:
         for service_name in _TYPED_SERVICES:
             if split.get(service_name):

@@ -1,4 +1,4 @@
-"""Capture the running EduBuddy window to assets/window-shot.png."""
+"""Capture the running ThinkBuddy window to assets/window-shot.png."""
 import ctypes
 import time
 from ctypes import wintypes
@@ -7,7 +7,7 @@ from pathlib import Path
 from PIL import ImageGrab
 
 user32 = ctypes.windll.user32
-hwnd = user32.FindWindowW(None, "EduBuddy")
+hwnd = user32.FindWindowW(None, "ThinkBuddy")
 if not hwnd:
     print("WINDOW NOT FOUND")
     raise SystemExit(1)

@@ -1,12 +1,12 @@
 """Assemble the offline portable distribution as a single zip.
 
-    dist/EduBuddyPortable.zip
-        EduBuddy/EduBuddyDesktop.exe
-        EduBuddy/assets/icon.ico
-        EduBuddy/runtime/python/...   # embeddable python + deeptutor
-        EduBuddy/runtime/node/...     # portable Node.js
+    dist/ThinkBuddyPortable.zip
+        ThinkBuddy/ThinkBuddyDesktop.exe
+        ThinkBuddy/assets/icon.ico
+        ThinkBuddy/runtime/python/...   # embeddable python + deeptutor
+        ThinkBuddy/runtime/node/...     # portable Node.js
 
-Unzip anywhere, then double-click EduBuddyDesktop.exe. The shell looks for the
+Unzip anywhere, then double-click ThinkBuddyDesktop.exe. The shell looks for the
 runtime/ tree right next to the exe (runtime.py: EXE_DIR/runtime), so the zip is
 written directly from runtime-build/staging with a runnable top-level layout.
 
@@ -24,23 +24,23 @@ ROOT = Path(__file__).resolve().parents[1]
 DIST = ROOT / "dist"
 PORTABLE = DIST / "portable"
 STAGING = ROOT / "runtime-build" / "staging"
-PREFIX = "EduBuddy"  # top-level folder inside the zip
+PREFIX = "ThinkBuddy"  # top-level folder inside the zip
 
 
 def _newest_exe() -> Path:
-    candidates = list(DIST.glob("EduBuddyDesktop.exe")) + [
-        p for p in DIST.parent.glob("dist*/EduBuddyDesktop.exe")
-        if p != DIST / "EduBuddyDesktop.exe"
+    candidates = list(DIST.glob("ThinkBuddyDesktop.exe")) + [
+        p for p in DIST.parent.glob("dist*/ThinkBuddyDesktop.exe")
+        if p != DIST / "ThinkBuddyDesktop.exe"
     ]
     if not candidates:
-        return DIST / "EduBuddyDesktop.exe"
+        return DIST / "ThinkBuddyDesktop.exe"
     return max(candidates, key=lambda p: p.stat().st_mtime)
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--exe", default=None,
-                    help="path to EduBuddyDesktop.exe (default: newest under dist*/)")
+                    help="path to ThinkBuddyDesktop.exe (default: newest under dist*/)")
     ap.add_argument("--stored", action="store_true",
                     help="store without compression (fast, much bigger zip)")
     ap.add_argument("--level", type=int, default=6, help="deflate level 0-9")
@@ -57,7 +57,7 @@ def main() -> None:
 
     mode = zipfile.ZIP_STORED if args.stored else zipfile.ZIP_DEFLATED
     level = 0 if args.stored else args.level
-    out_zip = DIST / "EduBuddyPortable.zip"
+    out_zip = DIST / "ThinkBuddyPortable.zip"
     out_zip.unlink(missing_ok=True)
     nfiles = 0
     with zipfile.ZipFile(out_zip, "w", mode, compresslevel=level) as zf:

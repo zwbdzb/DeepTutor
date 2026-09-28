@@ -105,7 +105,7 @@ def find_windows(pid=None, title_contains=None):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--pid", type=int, default=None)
-    ap.add_argument("--title", default="EduBuddy")
+    ap.add_argument("--title", default="ThinkBuddy")
     args = ap.parse_args()
 
     wins = find_windows(pid=args.pid, title_contains=args.title)

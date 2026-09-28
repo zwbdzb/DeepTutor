@@ -197,6 +197,7 @@ export function SidebarShell({
               alt="EduBuddy"
               width={22}
               height={22}
+              unoptimized
               className="h-[22px] w-[22px] rounded-md"
             />
           </Link>
@@ -260,6 +261,7 @@ export function SidebarShell({
             alt="EduBuddy"
             width={22}
             height={22}
+            unoptimized
             className="h-[22px] w-[22px] transition-transform duration-200 group-hover:scale-105"
           />
           <span

@@ -1,9 +1,9 @@
-"""打包期品牌重写：staging 里的 DeepTutor → EduBuddy（只动构建产物，不动源码）。
+"""打包期品牌重写：staging 里的 DeepTutor → ThinkBuddy（只动构建产物，不动源码）。
 
 为什么需要这个脚本
 ------------------
 DeepTutor 是开源上游项目名（Python 包名、import、类名、仓库地址都是它），
-EduBuddy 是桌面发行版面向最终用户的品牌。改源码会产生上百个文件的 diff、
+ThinkBuddy 是桌面发行版面向最终用户的品牌。改源码会产生上百个文件的 diff、
 持续制造合并冲突；因此品牌重写放在打包阶段：build_runtime 把源码装进 staging
 之后、打 runtime.zip / ISCC 之前，对 staging 产物做一次文本重写。
 
@@ -17,10 +17,14 @@ minify 不会拆开字符串字面量，"DeepTutor" 在 chunk 里永远连续完
 
 替换规则（安全边界）
 --------------------
-1. 只替换驼峰品牌名 ``DeepTutor`` → ``EduBuddy``；
+1. 只替换驼峰品牌名 ``DeepTutor`` → ``ThinkBuddy``；
+     - 同时把上一任发行版品牌 ``EduBuddy``（旧 staging 产物）升级为
+       ``ThinkBuddy``（见 LEGACY_BRANDS）；
      - ``deeptutor`` 小写（Python 包名 / import / 路径 / pip 包名 /
        indexedDB 库名 / docs.deeptutor.info 域名）不碰；
-     - ``DEEPTUTOR_*`` 大写（环境变量）不碰。
+     - ``DEEPTUTOR_*`` 大写（环境变量）不碰；
+     - ``edubuddy-desktop``（OAuth client_id）、``__edubuddyToast``（前端
+       JS 契约）、``edubuddy_oauth``（服务端路由）等小写技术标识符不碰。
 2. 品牌词必须带【标识符边界】：前后紧贴字母/数字/下划线时不替换。
    ``DeepTutorApp`` / ``DeepTutorParser`` / ``DeepTutorError`` 因此全部
    豁免，包括它们出现在字符串内部时（如 ``__all__``、
@@ -29,7 +33,7 @@ minify 不会拆开字符串字面量，"DeepTutor" 在 chunk 里永远连续完
    引号配对——避免撇号/嵌套引号跨行错位把真实代码吞进"伪字符串"。
 4. 任何 URL 中的品牌名受保护（如 github.com/HKUDS/DeepTutor），换了会 404。
 5. bytes 字面量（b"..."）不替换（长度变化对二进制协议有风险）。
-6. 幂等：产物已是 EduBuddy 时再次运行替换 0 处，无副作用。
+6. 幂等：产物已是 ThinkBuddy 时再次运行替换 0 处，无副作用。
 
 Usage:
     python tools/rebrand.py                 # 重写默认 staging
@@ -59,7 +63,13 @@ PLAINTEXT_SUFFIXES = {
 SKIP_SUFFIXES = {".pyc", ".pyo", ".map"}
 
 BRAND = "DeepTutor"
-NEW_BRAND = "EduBuddy"
+NEW_BRAND = "ThinkBuddy"
+# 上一任发行版品牌：staging 是按 fingerprint 复用的（fingerprint 不含本脚本），
+# 上轮 rebrand 产物里的品牌名是它。升级重写把它也推向 NEW_BRAND，否则源码
+# 未变时 staging 复用旧产物，DeepTutor 已被换光、本轮替换 0 处，包里品牌
+# 停留在 EduBuddy。只匹配驼峰独立词，小写技术标识符（edubuddy-desktop
+# client_id、__edubuddyToast、edubuddy_oauth 路由）天然不受影响。
+LEGACY_BRANDS = ("EduBuddy",)
 
 # 含品牌名的 URL —— 仓库/官网等真实地址，必须原样保留。
 # 同时覆盖 JS 编译产物里的转义形式（https:\/\/... 斜杠前带反斜杠）。
@@ -70,12 +80,12 @@ URL_RE = re.compile(
 REPO_PATH_RE = re.compile(
     r"HKUDS(?:\\?/)+" + BRAND + r"(?:(?:\\?/)[^\s\"'<>）)]*)?")
 
-# 品牌词必须是“独立词”：前后不能紧贴标识符字符。
+# 品牌词必须是“独立词”：前后不能紧贴标识符字符（替换时逐品牌动态构造，
+# 见 _brand_bounded）。
 # DeepTutorApp / DeepTutorParser / xxxDeepTutor 一律不换；
 # “你是 DeepTutor，”/“DeepTutor.”/“DeepTutor's” 正常替换。
-BRAND_BOUNDED_RE = re.compile(r"(?<![A-Za-z0-9_])" + BRAND + r"(?![A-Za-z0-9_])")
 
-# 自检用：EduBuddy 与标识符字符相邻，说明有技术标识符被误伤
+# 自检用：ThinkBuddy 与标识符字符相邻，说明有技术标识符被误伤
 BAD_IDENT_RE = re.compile(r"[A-Za-z0-9_]" + NEW_BRAND + r"|" + NEW_BRAND + r"[A-Za-z0-9_]")
 
 # Python 3.12 起 f-string 被词法拆成 FSTRING_START/MIDDLE/END
@@ -103,11 +113,16 @@ def _restore_urls(text: str, stash: list[str]) -> str:
 
 
 def _brand_bounded(text: str) -> tuple[str, int]:
-    """带标识符边界的品牌替换。返回 (新文本, 替换次数)。"""
-    hits = len(BRAND_BOUNDED_RE.findall(text))
-    if not hits:
-        return text, 0
-    return BRAND_BOUNDED_RE.sub(NEW_BRAND, text), hits
+    """带标识符边界的品牌替换（DeepTutor + 历任发行版品牌 → NEW_BRAND）。
+
+    返回 (新文本, 替换次数)。
+    """
+    hits = 0
+    for brand in (BRAND, *LEGACY_BRANDS):
+        pat = re.compile(r"(?<![A-Za-z0-9_])" + brand + r"(?![A-Za-z0-9_])")
+        hits += len(pat.findall(text))
+        text = pat.sub(NEW_BRAND, text)
+    return text, hits
 
 
 def rebrand_plain(text: str) -> tuple[str, int]:
@@ -264,7 +279,7 @@ def self_check(site_packages: Path) -> None:
             checks.append((needle in p.read_text(encoding="utf-8"),
                            f"{rel} 保留 {needle!r}"))
 
-    # 2) 全包扫描：EduBuddy 不得与标识符字符相邻（类名/反射路径误伤检测）
+    # 2) 全包扫描：ThinkBuddy 不得与标识符字符相邻（类名/反射路径误伤检测）
     bad_ident: list[str] = []
     # 3) URL 保护检测
     bad_urls = 0
@@ -285,7 +300,7 @@ def self_check(site_packages: Path) -> None:
             m = BAD_IDENT_RE.search(src)
             if m:
                 bad_ident.append(f"{f.relative_to(site_packages)}: …{m.group(0)}…")
-            if "HKUDS/EduBuddy" in src or "HKUDS\\/EduBuddy" in src:
+            if "HKUDS/ThinkBuddy" in src or "HKUDS\\/ThinkBuddy" in src:
                 bad_urls += 1
             if f.suffix == ".py":
                 try:
@@ -294,11 +309,11 @@ def self_check(site_packages: Path) -> None:
                     py_syntax_errors.append(f"{f.relative_to(site_packages)}: {e}")
 
     checks.append((len(bad_ident) == 0,
-                   f"无标识符相邻误伤（EduBuddy 紧贴字母/下划线：{len(bad_ident)} 处，应为 0）"))
+                   f"无标识符相邻误伤（ThinkBuddy 紧贴字母/下划线：{len(bad_ident)} 处，应为 0）"))
     for sample in bad_ident[:5]:
         print(f"    [FAIL] 误伤样本: {sample}")
     checks.append((bad_urls == 0,
-                   f"仓库 URL 未被误改（HKUDS/EduBuddy 出现 {bad_urls} 处，应为 0）"))
+                   f"仓库 URL 未被误改（HKUDS/ThinkBuddy 出现 {bad_urls} 处，应为 0）"))
     checks.append((len(py_syntax_errors) == 0,
                    f"全部 .py 语法可解析（失败 {len(py_syntax_errors)} 个）"))
     for sample in py_syntax_errors[:5]:
@@ -307,8 +322,8 @@ def self_check(site_packages: Path) -> None:
     # 4) 品牌确实进入 prompt（AI 身份）与前端产物
     zh_chat = site_packages / "deeptutor" / "agents" / "chat" / "prompts" / "zh" / "chat_agent.yaml"
     if zh_chat.exists():
-        checks.append(("EduBuddy" in zh_chat.read_text(encoding="utf-8"),
-                       "中文 chat 身份 prompt 已含 EduBuddy"))
+        checks.append(("ThinkBuddy" in zh_chat.read_text(encoding="utf-8"),
+                       "中文 chat 身份 prompt 已含 ThinkBuddy"))
 
     ok = True
     for passed, msg in checks:

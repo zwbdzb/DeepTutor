@@ -1,4 +1,4 @@
-"""Capture the running EduBuddy window (DPI-aware, PID-tree matched).
+"""Capture the running ThinkBuddy window (DPI-aware, PID-tree matched).
 
 铁律（skills/windows-gui-evidence）：
   1. 截图前声明 PER_MONITOR_AWARE_V2，GetWindowRect 才给物理坐标；
@@ -80,7 +80,7 @@ def main() -> int:
     root_pid = int(sys.argv[1])
     out = Path(sys.argv[2])
     tree = descendants(root_pid)
-    wins = [(h, p) for h, p in find_windows("EduBuddy") if p in tree]
+    wins = [(h, p) for h, p in find_windows("ThinkBuddy") if p in tree]
     if len(wins) != 1:
         print(f"EVIDENCE-FAIL: expected 1 window in pid-tree {sorted(tree)}, got {wins}")
         return 2

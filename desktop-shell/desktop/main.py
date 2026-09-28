@@ -1,4 +1,4 @@
-"""EduBuddy Desktop — application entry point.
+"""ThinkBuddy Desktop — application entry point.
 
 Brings up a native WebView2 window. While `deeptutor start` boots, a splash
 page shows live status; once 127.0.0.1:3782 answers, the window enters a
@@ -162,7 +162,7 @@ class Api:
         return self._auth.open_platform()
 
     def refresh_models(self) -> dict:
-        """重拉 userinfo + /api/status → 重写 model_catalog → 回写账号信息。"""
+        """重拉中继 /v1/models → 重写 model_catalog → 回写账号信息。"""
         return self._auth.refresh_models()
 
     def copy_relay(self) -> dict:
@@ -175,7 +175,7 @@ class Api:
         return {"ok": True, "url": url}
 
     def about(self) -> dict:
-        """『关于 EduBuddy』信息：壳版本 + deeptutor 版本 + 中继域名。"""
+        """『关于 ThinkBuddy』信息：壳版本 + deeptutor 版本 + 中继域名。"""
         return {
             "app": f"{APP_NAME} 桌面端",
             "app_version": __version__,
@@ -264,7 +264,7 @@ def _chip_actions(api: Api) -> dict:
         info = api.about()
         lines = [
             f"{info['app']}  v{info['app_version']}",
-            f"EduBuddy 引擎：v{info['deeptutor_version']}",
+            f"ThinkBuddy 引擎：v{info['deeptutor_version']}",
         ]
         if info.get("relay"):
             lines.append(f"中继：{info['relay']}")
@@ -347,6 +347,15 @@ def run_session(window, api: Api, url: str, auth: AuthManager,
                     return      # 窗口已关闭，会话循环随之结束
 
             # ---- 进入应用 ---- #
+            # 丢弃门控等待期间残留的退出信号。注销回门控后，账号菜单的
+            # 「退出登录」仍可能被再次触发（菜单 + 确认框），把 evt 置位；
+            # 此刻会话循环阻塞在 _wait_gate_login，无人消费——若不清理，
+            # 下一次登录成功进入应用时会立即误判为退出，闪回登录页
+            # （2026-09-28 事故：登录完成 0.5s 后 logout detected）。
+            # 与 AuthManager.logout() 清理陈旧 _done/_result（09-18 事故）
+            # 互为镜像：陈旧成功信号导致「退出后闪回应用」，陈旧退出信号
+            # 导致「登录后闪回登录页」。门控页本就处于未登录态，丢弃安全。
+            logout_evt.clear()
             api.set_status("ready", "服务已就绪 ✓", f"正在载入本地应用 {url}")
             log.info("navigating to %s", url)
             time.sleep(0.5)  # let the splash repaint the "ready" state
@@ -388,23 +397,23 @@ def bootstrap(window, api: Api, auth: AuthManager) -> None:
     proc: DeepTutorProcess | None = None
     try:
         # 1. runtime (venv/portable-node/deeptutor; dev = system PATH)
-        api.set_status("boot", "正在准备运行环境…", "检查 Python / Node / EduBuddy")
+        api.set_status("boot", "正在准备运行环境…", "检查 Python / Node / ThinkBuddy")
         deeptutor, node_dir = rt.ensure_runtime(on_line=api.push_line)
         if deeptutor is None:
             raise RuntimeError(
-                "未找到 EduBuddy / Node.js 运行时。\n"
+                "未找到 ThinkBuddy / Node.js 运行时。\n"
                 "请先安装：pip install -U deeptutor 和 Node.js 20+\n"
                 "（打包版安装器内置运行时，无需手动处理）"
             )
         if node_dir is None:
             raise RuntimeError(
-                "未找到 Node.js（EduBuddy 需要 Node 20+ 才能启动前端）。请安装 Node.js。"
+                "未找到 Node.js（ThinkBuddy 需要 Node 20+ 才能启动前端）。请安装 Node.js。"
             )
 
         # 2. workspace
         home = rt.default_workspace()
         home.mkdir(parents=True, exist_ok=True)
-        api.set_status("boot", "正在启动 EduBuddy 本地服务…", f"工作区：{home}")
+        api.set_status("boot", "正在启动 ThinkBuddy 本地服务…", f"工作区：{home}")
 
         # 3. spawn hidden subprocess
         proc = DeepTutorProcess(
@@ -488,7 +497,7 @@ def main() -> int:
 
             ctypes.windll.user32.MessageBoxW(
                 0,
-                "EduBuddy 已在运行，请直接切换到已打开的窗口。",
+                "ThinkBuddy 已在运行，请直接切换到已打开的窗口。",
                 APP_NAME,
                 0x40,  # MB_ICONINFORMATION
             )

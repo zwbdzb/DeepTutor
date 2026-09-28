@@ -1,10 +1,10 @@
-"""EduBuddy 登录门控 / 启动页（WorkBuddy 风格浅色版）。
+"""ThinkBuddy 登录门控 / 启动页（WorkBuddy 风格浅色版）。
 
 同一个页面承担两种状态：
 
 * **启动态**：本地服务拉起期间显示品牌吉祥物 + 轻量进度反馈；
-* **登录门控态**：服务就绪但未登录时，页面停在「EduBuddy，我帮你 +
-  黑色登录按钮」——与 WorkBuddy 桌面端的登录页同款交互。点击按钮用
+* **登录门控态**：服务就绪但未登录时，页面停在品牌 slogan +
+  黑色登录按钮——与 WorkBuddy 桌面端的登录页同款交互。点击按钮用
   系统浏览器打开 Tokengine 平台完成注册/登录（PKCE + 本机回环回调），
   成功后由 Python 侧写入令牌与模型目录，再导航进应用。
 
@@ -26,7 +26,7 @@ SPLASH_HTML_TEMPLATE = """<!doctype html>
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>EduBuddy</title>
+<title>ThinkBuddy</title>
 <style>
   :root {
     --text:#1a1a1a; --muted:#8a8f98; --faint:#b8bcc4;
@@ -108,8 +108,8 @@ SPLASH_HTML_TEMPLATE = """<!doctype html>
 </head>
 <body>
   <div class="wrap">
-    <div class="logo"><img alt="EduBuddy" src="__LOGO_SRC__"/></div>
-    <h1>EduBuddy，我帮你</h1>
+    <div class="logo"><img alt="ThinkBuddy" src="__LOGO_SRC__"/></div>
+    <h1>懂了的那一下，很爽。</h1>
     <div class="status" id="status"><span class="dot"></span>正在启动本地服务…</div>
     <div class="bar" id="bar"><i></i></div>
     <div class="login" id="login">
@@ -123,7 +123,7 @@ SPLASH_HTML_TEMPLATE = """<!doctype html>
       <button class="btn" id="btnQuit">退出</button>
     </div>
   </div>
-  <div class="footer">EduBuddy 桌面端 v__VERSION__<span>·</span>本地运行，学习数据仅保存在本机</div>
+  <div class="footer">ThinkBuddy 桌面端 v__VERSION__<span>·</span>本地运行，学习数据仅保存在本机</div>
 
 <script>
   let phase = "boot";

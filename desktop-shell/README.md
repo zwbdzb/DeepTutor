@@ -1,21 +1,21 @@
-# EduBuddy
+# ThinkBuddy
 
-把港大开源的学习工作区 **DeepTutor**（[deeptutor.info](https://deeptutor.info/zh-cn/)）一键装成桌面客户端 **EduBuddy**。
+把港大开源的学习工作区 **DeepTutor**（[deeptutor.info](https://deeptutor.info/zh-cn/)）一键装成桌面客户端 **ThinkBuddy**。
 以前要 `pip install -U deeptutor && deeptutor init && deeptutor start` 再开浏览器；
-现在双击 `EduBuddyDesktop.exe`，弹出原生窗口，本地服务自动静默拉起，关窗口即停止。
+现在双击 `ThinkBuddyDesktop.exe`，弹出原生窗口，本地服务自动静默拉起，关窗口即停止。
 
 ## 它做了什么
 
 - 原生 **WebView2 窗口**（1280×860）承载 DeepTutor 前端 `127.0.0.1:3782`
 - **登录门控**（WorkBuddy 同款交互）：启动时若未登录，窗口停留在登录页
-  （居中吉祥物 + 「EduBuddy，我帮你」+ 黑色登录按钮）；点击用系统浏览器打开
+  （居中吉祥物 + 「懂了的那一下，很爽。」+ 黑色登录按钮）；点击用系统浏览器打开
   Tokengine 平台注册/登录 → 客户端自动取回**域名 / 业务令牌 / 可用模型**写进
   DeepTutor 并进入应用。**退出登录即回到登录页，软件功能不可用**，重新登录后恢复
   （详见 [`docs/tokengine-integration.md`](docs/tokengine-integration.md) 与
   [`docs/adr/ADR-003-login-gate.md`](docs/adr/ADR-003-login-gate.md)）
 - `deeptutor start` 以**隐藏子进程**运行；关闭窗口用 `taskkill /T` 连后端(:8001)+前端(:3782)一起停
 - **单实例**
-- 工作区数据在 `~/EduBuddy`, 日志落盘 `%LOCALAPPDATA%\EduBuddy\logs\app.log`、
+- 工作区数据在 `~/ThinkBuddy`, 日志落盘 `%LOCALAPPDATA%\ThinkBuddy\logs\app.log`、
 
 ## Tokengine 登录（三步）
 
@@ -23,7 +23,7 @@
 登录门控页「登录」按钮（未登录启动时整页显示；登录后也可从**标题栏右上角账号区**发起）
    → 系统浏览器打开 <平台>/oauth/authorize（PKCE S256 + 本机回环回调 127.0.0.1:<随机端口>）
    → 手机号/账密登录 →「确认授权」→ 平台 302 回本机回环带 code
-   → 客户端换取业务令牌，按 model_type 分流写入 ~/EduBuddy/data/user/settings/model_catalog.json
+   → 客户端换取业务令牌，按 model_type 分流写入 ~/ThinkBuddy/data/user/settings/model_catalog.json
      （对话→llm/task、向量→embedding、图像/视频各归其位），随后自动进入应用
 ```
 
@@ -37,7 +37,7 @@
   回环地址按本地派生 `/v1`）→ userinfo 下发的中继地址。行为完全可预测。
 - 只有**业务令牌**（`sk-Tok...`）会写进 DeepTutor；`access_token`/`refresh_token` 仅用于换码与吊销，
   DPAPI 加密落盘，**绝不进入对话请求**。
-- 联调期指向本地平台：把 `api_base` 写进 `%LOCALAPPDATA%\EduBuddy\endpoints.json`，
+- 联调期指向本地平台：把 `api_base` 写进 `%LOCALAPPDATA%\ThinkBuddy\endpoints.json`，
   或设 `TOKENGINE_API_BASE=http://127.0.0.1:3000`。**装好的包无需重新打包即可改指向。**
 - 登录按钮默认就绪，无需额外开关；界面调试可用 `DEEPTUTOR_DESKTOP_DEBUG=1` 打开登录页的技术面板。
 
@@ -45,9 +45,9 @@
 
 | 形态 | 谁用 | 需要什么 | 默认产出 |
 |---|---|---|---|
-| `EduBuddyDesktop.exe`（单文件） | 开发者 / 已有 deeptutor 的机器 | 系统里有 Python+Node+`deeptutor` | ✅ |
-| `EduBuddySetup.exe`（Inno 安装器） | 分发 | 安装向导 + 开始菜单 + 卸载器，自带运行时 | ✅ |
-| `EduBuddyPortable.zip`（内置运行时） | 免安装场景 | **什么都不用装**，解压即用 | 加 `-MakePortable` |
+| `ThinkBuddyDesktop.exe`（单文件） | 开发者 / 已有 deeptutor 的机器 | 系统里有 Python+Node+`deeptutor` | ✅ |
+| `ThinkBuddySetup.exe`（Inno 安装器） | 分发 | 安装向导 + 开始菜单 + 卸载器，自带运行时 | ✅ |
+| `ThinkBuddyPortable.zip`（内置运行时） | 免安装场景 | **什么都不用装**，解压即用 | 加 `-MakePortable` |
 
 ## 快速开始（本仓库开发态）
 
@@ -62,7 +62,7 @@ py -3.12 -m venv .venv
 
 ## 构建
 
-**默认只出两个包**：`EduBuddyDesktop.exe` + `EduBuddySetup.exe`。
+**默认只出两个包**：`ThinkBuddyDesktop.exe` + `ThinkBuddySetup.exe`。
 便携 zip 默认不制作（它只是同一份运行时的另一种分发形态，每次重压 ~500MB/2.1 万文件、约 8 分钟），
 需要时显式加 `-MakePortable`。
 
@@ -84,7 +84,7 @@ powershell -ExecutionPolicy Bypass -File build\build.ps1 -MakePortable     # 额
 ```powershell
 .\.venv\Scripts\python tools\build_runtime.py --no-zip                                   # 1) 离线运行时 + 版本门禁
 .\.venv\Scripts\python tools\rebrand.py                                                  # 2) staging 改品牌（幂等）
-.\.venv\Scripts\python -m PyInstaller --noconfirm --clean build\EduBuddyDesktop.spec     # 3) 桌面壳 exe
+.\.venv\Scripts\python -m PyInstaller --noconfirm --clean build\ThinkBuddyDesktop.spec     # 3) 桌面壳 exe
 & "C:\Program Files\Inno Setup 7\ISCC.exe" /DMyAppVersion=0.2.0+dt<版本> build\installer.iss   # 4) 安装向导（版本号自动读自 deeptutor/__version__.py；裸跑会得到占位版本）
 .\.venv\Scripts\python tools\make_portable.py                                            # 5) 便携包（可选）
 ```
@@ -93,11 +93,11 @@ powershell -ExecutionPolicy Bypass -File build\build.ps1 -MakePortable     # 额
 
 | 文件 | 说明 | 默认 |
 |---|---|---|
-| `EduBuddyDesktop.exe` | 桌面壳单文件（~14MB），机器上需已有 Python+Node+`deeptutor` | ✅ |
-| `EduBuddySetup.exe` | 安装向导，内置运行时装进 `{app}\runtime`（~170MB，lzma2）；装完自动启动，卸载保留 `~/EduBuddy` 学习数据 | ✅ |
-| `EduBuddyPortable.zip` | 解压即用的离线包，**默认不制作** | 加 `-MakePortable` |
+| `ThinkBuddyDesktop.exe` | 桌面壳单文件（~14MB），机器上需已有 Python+Node+`deeptutor` | ✅ |
+| `ThinkBuddySetup.exe` | 安装向导，内置运行时装进 `{app}\runtime`（~170MB，lzma2）；装完自动启动，卸载保留 `~/ThinkBuddy` 学习数据 | ✅ |
+| `ThinkBuddyPortable.zip` | 解压即用的离线包，**默认不制作** | 加 `-MakePortable` |
 
-> 安装器直接从 `dist\EduBuddyDesktop.exe` + `runtime-build\staging` 打包，**不依赖便携 zip**，
+> 安装器直接从 `dist\ThinkBuddyDesktop.exe` + `runtime-build\staging` 打包，**不依赖便携 zip**，
 > 所以「两个包」这条路径是自洽的。
 >
 > 构建耗时提醒：**别把 `make_portable.py` / ISCC 放进智能体沙箱**。沙箱会限流到
@@ -127,7 +127,7 @@ tools/
   make_portable.py 组装便携包
   make_icon.py     生成图标
 build/
-  EduBuddyDesktop.spec   PyInstaller 配置
+  ThinkBuddyDesktop.spec   PyInstaller 配置
   installer.iss            Inno Setup 安装向导
   build.ps1                一键全流程
 assets/             图标、截图
@@ -143,5 +143,5 @@ docs/architecture.md 架构说明
 
 ## License
 
-EduBuddy 只是 DeepTutor 的桌面壳，DeepTutor 本体遵循其仓库
+ThinkBuddy 只是 DeepTutor 的桌面壳，DeepTutor 本体遵循其仓库
 [HKUDS/DeepTutor](https://github.com/HKUDS/DeepTutor) 的开源协议。

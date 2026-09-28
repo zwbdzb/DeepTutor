@@ -172,7 +172,7 @@ m_logged = account_menu_model({"logged_in": True, "configured": True,
                                     "models": ["a"] * 8}})
 acts = [it.get("action") for it in m_logged["items"] if isinstance(it, dict)]
 check("已登录菜单无「复制 API 地址」", "copy" not in acts, str(acts))
-check("余额副标题干净", m_logged["header"]["sub"] == "余额 ¥16.77 · 8 个模型",
+check("余额副标题干净（不含模型数）", m_logged["header"]["sub"] == "余额 ¥16.77",
       repr(m_logged["header"]["sub"]))
 
 m_cfg = account_menu_model({"logged_in": False, "configured": True, "account": {}})

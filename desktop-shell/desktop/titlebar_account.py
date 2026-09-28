@@ -123,15 +123,14 @@ def account_menu_model(status: dict) -> dict:
 
     if logged:
         models = acct.get("models") or []
-        parts = []
+        # 菜单头只放余额：模型数量是维护性信息（「刷新可用模型」动作本身
+        # 就在菜单里），用户反馈数字展示无价值，砍掉（2026-09-28）。
         amount = _fmt_balance(acct.get("balance"))
-        if amount:
-            parts.append(f"余额 ¥{amount}")
-        parts.append(f"{len(models)} 个模型")
+        sub = f"余额 ¥{amount}" if amount else ""
         return {
             **base,
             "header": {"title": _display_name(acct),
-                       "sub": " · ".join(parts)},
+                       "sub": sub},
             "items": [
                 {"action": "refresh", "label": "刷新可用模型"},
                 {"type": "sep"},
@@ -140,7 +139,7 @@ def account_menu_model(status: dict) -> dict:
                 {"type": "sep"},
                 {"action": "logout", "label": "退出登录", "danger": True},
                 {"type": "sep"},
-                {"action": "about", "label": "关于 EduBuddy"},
+                {"action": "about", "label": "关于 ThinkBuddy"},
             ],
         }
     if configured:
@@ -151,7 +150,7 @@ def account_menu_model(status: dict) -> dict:
                 {"action": "switch", "label": "登录 / 切换账号"},
                 {"action": "platform", "label": "打开 Tokengine 平台"},
                 {"type": "sep"},
-                {"action": "about", "label": "关于 EduBuddy"},
+                {"action": "about", "label": "关于 ThinkBuddy"},
             ],
         }
     if status.get("in_progress"):
@@ -162,17 +161,17 @@ def account_menu_model(status: dict) -> dict:
                 {"action": "switch", "label": "重新发起登录"},
                 {"action": "platform", "label": "打开 Tokengine 平台"},
                 {"type": "sep"},
-                {"action": "about", "label": "关于 EduBuddy"},
+                {"action": "about", "label": "关于 ThinkBuddy"},
             ],
         }
     return {
         **base,
-        "header": {"title": "EduBuddy", "sub": "未登录 Tokengine"},
+        "header": {"title": "ThinkBuddy", "sub": "未登录 Tokengine"},
         "items": [
             {"action": "switch", "label": "登录 Tokengine"},
             {"action": "platform", "label": "打开 Tokengine 平台"},
             {"type": "sep"},
-            {"action": "about", "label": "关于 EduBuddy"},
+            {"action": "about", "label": "关于 ThinkBuddy"},
         ],
     }
 

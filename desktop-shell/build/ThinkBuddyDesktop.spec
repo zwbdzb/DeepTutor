@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for EduBuddyDesktop.exe (onefile, windowed).
+"""PyInstaller spec for ThinkBuddyDesktop.exe (onefile, windowed).
 
 The exe bundles:
   * desktop shell (pywebview + launcher)  — the actual app
@@ -48,7 +48,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="EduBuddyDesktop",
+    name="ThinkBuddyDesktop",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
