@@ -1,11 +1,13 @@
 "use client";
 
+import Tooltip from "@/shared/ui/Tooltip";
 import { stageRegistryAction, type RegistryEdit } from "@/lib/provider-registry";
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { ArrowRight, Cable, Plus, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import ProviderIcon from "@/components/common/ProviderIcon";
+import { randomUuid } from "@/lib/random-uuid";
 import {
   useSettings,
   type CatalogConnection,
@@ -107,7 +109,7 @@ export function ProvidersWorkspace() {
       setAdding(false);
       return;
     }
-    const id = `conn-${crypto.randomUUID()}`;
+    const id = `conn-${randomUuid()}`;
     const entry: CatalogConnection = {
       id,
       name: option.label,
@@ -386,27 +388,27 @@ export function ProvidersWorkspace() {
                   )}
                   <div className="flex flex-wrap items-center gap-2 border-t border-[var(--border)] pt-4">
 
-                    <button
-                      type="button"
-                      disabled={
-                        applying || providerUsage(draft, source) > 0 || managed
-                      }
-                      title={
+                      <Tooltip label={
                         providerUsage(draft, source)
-                          ? t(
-                              "Change or remove the models using this provider first.",
-                            )
-                          : undefined
-                      }
-                      onClick={async () => {
-                        await stageRegistry({ kind: "provider", ref: source.ref, delete: true });
-                        setSelected(null);
-                      }}
-                      className={`${registryDanger} ml-auto`}
-                    >
-                      <Trash2 size={13} />
-                      {t("Remove provider")}
-                    </button>
+                          ? t("Change or remove the models using this provider first.")
+                          : t("Remove provider")
+                      } side="top">
+                      <button
+                        type="button"
+                        disabled={
+                          applying || providerUsage(draft, source) > 0 || managed
+                        }
+                        aria-label={t("Remove provider")}
+                        onClick={async () => {
+                          await stageRegistry({ kind: "provider", ref: source.ref, delete: true });
+                          setSelected(null);
+                        }}
+                        className={`${registryDanger} ml-auto`}
+                      >
+                        <Trash2 size={13} />
+                        {t("Remove provider")}
+                      </button>
+                    </Tooltip>
                   </div>
                   {source && (
                     <div className="flex flex-wrap gap-2 border-t border-[var(--border)] pt-4">

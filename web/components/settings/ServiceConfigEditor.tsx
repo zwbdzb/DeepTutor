@@ -56,6 +56,7 @@ import {
   SectionHead,
 } from "./ModelCards";
 import { nextProfileName } from "./profile-naming";
+import Tooltip from "@/shared/ui/Tooltip";
 import { searchProviderFields } from "./search-providers";
 import {
   activeProfileDetail,
@@ -65,6 +66,7 @@ import {
   selectOptionClass,
   stringifyExtraHeaders,
 } from "./shared";
+import type { AppLanguage } from "@/i18n/init";
 
 // The protocol an endpoint speaks. Labels and hints are keyed by the backend
 // value so the select never invents a format the registry does not know.
@@ -1023,20 +1025,20 @@ export function ServiceConfigEditor({
                                               <span>
                                                 {t("Send dimensions")}
                                               </span>
-                                              <span
-                                                tabIndex={0}
-                                                className="group/info relative inline-flex cursor-help focus:outline-none"
+                                              <Tooltip
+                                                side="bottom"
+                                                label={t("Send dimensions")}
+                                                description={t(
+                                                  "Some embedding models (e.g. Qwen text-embedding-v4) reject the `dimensions` request param. Turn this off if your provider returns HTTP 400.",
+                                                )}
                                               >
-                                                <Info className="h-3 w-3 opacity-50 transition-opacity group-hover/info:opacity-100 group-focus/info:opacity-100" />
                                                 <span
-                                                  role="tooltip"
-                                                  className="pointer-events-none absolute top-full left-1/2 z-20 mt-1.5 w-64 -translate-x-1/2 rounded-lg border border-[var(--border)] bg-[var(--card)] p-2.5 text-[11px] leading-relaxed text-[var(--foreground)] opacity-0 shadow-lg transition-opacity duration-75 group-hover/info:opacity-100 group-focus/info:opacity-100"
+                                                  tabIndex={0}
+                                                  className="inline-flex cursor-help focus:outline-none"
                                                 >
-                                                  {t(
-                                                    "Some embedding models (e.g. Qwen text-embedding-v4) reject the `dimensions` request param. Turn this off if your provider returns HTTP 400.",
-                                                  )}
+                                                  <Info className="h-3 w-3 opacity-50 transition-opacity hover:opacity-100 focus:opacity-100" />
                                                 </span>
-                                              </span>
+                                              </Tooltip>
                                             </label>
                                           </div>
                                           <DimensionField
@@ -1321,9 +1323,15 @@ export function ServiceConfigEditor({
   );
 }
 
-function defaultModelLabel(language: "en" | "zh", index: number): string {
+function defaultModelLabel(language: AppLanguage, index: number): string {
   const safeIndex = index > 0 ? index : 1;
-  return language === "zh" ? `模型${safeIndex}` : `Model ${safeIndex}`;
+  return language === "zh"
+    ? `模型${safeIndex}`
+    : language === "fr"
+      ? `Modèle ${safeIndex}`
+      : language === "de"
+        ? `Modell ${safeIndex}`
+        : `Model ${safeIndex}`;
 }
 
 function formatCompactTokens(value: string | number | undefined): string {
@@ -1708,21 +1716,22 @@ function ProfileFields({
               }
               placeholder="sk-..."
             />
-            <button
-              type="button"
-              onClick={() => setShowApiKey((prev) => !prev)}
-              className="absolute right-1 top-1/2 -translate-y-1/2 rounded-md p-1.5 text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-[var(--foreground)]"
-              aria-label={
-                showApiKey ? t("Hide API key") : t("Show API key")
-              }
-              title={showApiKey ? t("Hide API key") : t("Show API key")}
-            >
-              {showApiKey ? (
-                <EyeOff className="h-4 w-4" />
-              ) : (
-                <Eye className="h-4 w-4" />
-              )}
-            </button>
+            <span className="absolute right-1 top-1/2 -translate-y-1/2">
+              <Tooltip label={showApiKey ? t("Hide API key") : t("Show API key")} side="top">
+                <button
+                  type="button"
+                  onClick={() => setShowApiKey((prev) => !prev)}
+                  className="rounded-md p-1.5 text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-[var(--foreground)]"
+                  aria-label={showApiKey ? t("Hide API key") : t("Show API key")}
+                >
+                  {showApiKey ? (
+                    <EyeOff className="h-4 w-4" />
+                  ) : (
+                    <Eye className="h-4 w-4" />
+                  )}
+                </button>
+              </Tooltip>
+            </span>
           </div>
         </div>
       )}

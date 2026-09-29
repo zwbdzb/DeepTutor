@@ -110,6 +110,87 @@ it("keeps the complete stem and choices visible while hiding answer evidence", a
   expect(screen.getByText("Fields are merged.")).toBeVisible();
 });
 
+it("shows independent provenance without inventing an original-session link", () => {
+  const entry = {
+    id: 2,
+    question: "Imported question",
+    question_type: "short",
+    options: {},
+    correct_answer: "A",
+    user_answer: "B",
+    result: "incorrect",
+    source: "import",
+    origin_type: "external_import",
+    origin_ref: "practice-import:receipt-1",
+    session_id: "",
+    session_title: "",
+    material_title: "lesson.csv",
+    categories: [],
+    created_at: 100,
+    updated_at: 100,
+  } as unknown as NotebookEntry;
+  render(
+    <ul>
+      <QuestionCard
+        entry={entry}
+        categories={[]}
+        selected={false}
+        disabled={false}
+        onToggleSelected={vi.fn()}
+        onToggleBookmark={vi.fn()}
+        onToggleResolved={vi.fn()}
+        onDelete={vi.fn()}
+        onFile={vi.fn()}
+        onUnfile={vi.fn()}
+        onCreateAndFile={vi.fn()}
+      />
+    </ul>
+  );
+
+  expect(screen.queryByRole("link", { name: "Original Session" })).not.toBeInTheDocument();
+  expect(screen.getByText("lesson.csv")).toBeVisible();
+});
+
+it("keeps legacy Partner notebook entries readable without a synthetic chat link", () => {
+  const entry = {
+    id: 3,
+    question: "A Partner question",
+    question_type: "short",
+    options: {},
+    correct_answer: "A",
+    user_answer: "B",
+    result: "incorrect",
+    source: "partner_chat",
+    origin_type: "conversation",
+    origin_ref: "partner-notebook:p1:admin",
+    session_id: "partner-notebook:p1:admin",
+    session_title: "Tutor (Partner)",
+    categories: [],
+    created_at: 100,
+    updated_at: 100,
+  } as unknown as NotebookEntry;
+  render(
+    <ul>
+      <QuestionCard
+        entry={entry}
+        categories={[]}
+        selected={false}
+        disabled={false}
+        onToggleSelected={vi.fn()}
+        onToggleBookmark={vi.fn()}
+        onToggleResolved={vi.fn()}
+        onDelete={vi.fn()}
+        onFile={vi.fn()}
+        onUnfile={vi.fn()}
+        onCreateAndFile={vi.fn()}
+      />
+    </ul>
+  );
+
+  expect(screen.queryByRole("link", { name: "Tutor (Partner)" })).not.toBeInTheDocument();
+  expect(screen.getByText("Tutor (Partner)")).toBeVisible();
+});
+
 it("switches metrics and charts without losing course scope and exposes exact daily values", async () => {
   const { rerender } = render(<PracticeInsights courseId="course-a" revision={0} />);
   await screen.findByText("Mastery Path");

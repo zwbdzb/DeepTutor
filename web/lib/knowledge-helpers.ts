@@ -103,9 +103,14 @@ export interface IndexVersion {
   legacy?: boolean;
   failure_summary?: string;
   indexing_policy?: LightRagIndexingPolicy;
+  embedding_model?: string;
+  embedding_dim?: number;
 }
 
 export interface LightRagIndexingPolicy {
+  schema_version?: number;
+  extract?: LightRagIndexingPolicy;
+  vlm?: { mode: "disabled" | "enabled"; snapshot?: LightRagIndexingPolicy };
   policy: "pending_pinned" | "pinned" | "legacy_unpinned" | string;
   selection?: {
     profile_id: string;
@@ -124,11 +129,7 @@ export interface LightRagIndexingPolicy {
 }
 
 export type LightRagVersionDisplayState =
-  | "published"
-  | "building"
-  | "failed"
-  | "legacy"
-  | "inactive";
+  "published" | "building" | "failed" | "legacy" | "inactive";
 
 export function currentLightRagBuildCandidate(
   versions: IndexVersion[],
@@ -173,18 +174,28 @@ export interface KnowledgeBase {
     embedding_selection?: { profile_id: string; model_id: string };
     embedding_status?: "ready" | "missing" | "changed" | "unconfigured" | "legacy";
     embedding_dim?: number;
+    indexed_version?: string;
     embedding_mismatch?: boolean;
+    indexed_embedding_model?: string;
+    indexed_embedding_dim?: number;
+    current_embedding_model?: string;
+    current_embedding_dim?: number;
     /** Connected-source kind (e.g. "obsidian", "subagent"); absent for ordinary indexed KBs. */
     type?: string;
     /** Absolute path of a connected Obsidian vault (when type === "obsidian"). */
     vault_path?: string;
     /** SQLite store of a connected MarginNote 4 library (when type === "marginnote4"). */
     db_path?: string;
+    /** Connected Kiwix archive; article bytes remain on the configured server. */
+    server_url?: string;
+    zim_name?: string;
+    zim_title?: string;
     /** Backend of a connected subagent (when type === "subagent"): "claude_code" | "codex" | "antigravity" | "kimi" | "opencode" | "mimo" | "hermes" | "openclaw" | "deepseek_harness" | "partner". */
     agent_kind?: string;
     /** Bound partner id when agent_kind === "partner". */
     partner_id?: string;
     indexing_policy?: LightRagIndexingPolicy;
+    indexing_model_unavailable?: boolean;
   };
   progress?: ProgressInfo;
   statistics?: {
@@ -320,10 +331,12 @@ export const isMarginNoteKb = (kb: KnowledgeBase): boolean =>
 export const KB_DETAIL_SECTIONS = [
   "files",
   "add",
+  "folders",
   "github",
   "web",
   "versions",
   "devices",
+  "kiwix",
   "settings",
 ] as const;
 
@@ -339,12 +352,21 @@ export type KbDetailSection = (typeof KB_DETAIL_SECTIONS)[number];
 export const kbDetailSections = (kb: KnowledgeBase): KbDetailSection[] =>
   isMarginNoteKb(kb)
     ? ["devices", "settings"]
-    : KB_DETAIL_SECTIONS.filter((section) => section !== "devices");
+    : kb.metadata?.type === "kiwix"
+      ? ["kiwix", "settings"]
+    : KB_DETAIL_SECTIONS.filter(
+        (section) => section !== "devices" && section !== "kiwix" && (section !== "folders" || !kb.metadata?.type),
+      );
+
+/** Local source folders belong to ordinary, DeepTutor-managed indexed KBs. */
+export const kbSupportsLinkedFolders = (kb: KnowledgeBase): boolean =>
+  !isMarginNoteKb(kb) && !kb.metadata?.type;
 
 /** The retrieval engine a KB is bound to. Connected vaults badge by source. */
 export const kbProvider = (kb: KnowledgeBase): string => {
   if (kb.metadata?.type === "obsidian") return "obsidian";
   if (isMarginNoteKb(kb)) return MARGINNOTE4_KB_TYPE;
+  if (kb.metadata?.type === "kiwix") return "kiwix";
   return (
     (kb.statistics?.rag_provider as string | undefined) ||
     (kb.metadata?.rag_provider as string | undefined) ||
@@ -354,6 +376,7 @@ export const kbProvider = (kb: KnowledgeBase): string => {
 
 /** Source-document count for a KB, or null when unknown. */
 export const kbDocCount = (kb: KnowledgeBase): number | null => {
+  if (kb.metadata?.type === "kiwix") return null;
   const raw = kb.statistics?.raw_documents;
   if (typeof raw === "number") return raw;
   const indexed = kb.metadata?.last_indexed_count;
@@ -390,6 +413,8 @@ export const resolveKnowledgeIndexFailure = (
   ]);
   const completionConfigurationCodes = new Set([
     "graphrag_model_incompatible",
+    "indexing_model_unavailable",
+    "reindex_required",
     "graphrag_provider_unsupported",
     "graphrag_model_authentication_failed",
     "graphrag_model_endpoint_failed",
@@ -423,12 +448,14 @@ export const kbRequiresLightRagRebuildBeforeAppend = (
   kb: KnowledgeBase,
 ): boolean =>
   kbProvider(kb) === "lightrag" &&
-  kb.metadata?.indexing_policy?.policy === "legacy_unpinned";
+  (kb.metadata?.indexing_policy?.policy === "legacy_unpinned" ||
+    Boolean(kb.metadata?.embedding_mismatch));
 
 export const kbIsUploadable = (kb: KnowledgeBase): boolean =>
   resolveKbStatus(kb) === "ready" &&
   !kbEmbeddingUnavailable(kb) &&
   !kbNeedsReindex(kb) &&
+  !kb.metadata?.indexing_model_unavailable &&
   !kbRequiresLightRagRebuildBeforeAppend(kb);
 
 export const kbCanUploadDocuments = (
@@ -439,6 +466,7 @@ export const kbCanUploadDocuments = (
   (resolveKbStatus(kb) === "error" &&
     !kbEmbeddingUnavailable(kb) &&
     !indexingActive &&
+    !kb.metadata?.indexing_model_unavailable &&
     !kbRequiresLightRagRebuildBeforeAppend(kb));
 
 export const kbCanReindex = (kb: KnowledgeBase): boolean => {

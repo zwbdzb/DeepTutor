@@ -45,7 +45,7 @@ import {
   InlineFileCardProvider,
   mergeGeneratedFiles,
 } from "@/components/common/InlineFileCard";
-import Tooltip from "@/components/common/Tooltip";
+import Tooltip from "@/shared/ui/Tooltip";
 import type {
   MessageAttachment,
   MessageRequestSnapshot,
@@ -65,6 +65,7 @@ import { hasVisibleMarkdownContent } from "@/lib/markdown-display";
 import type { SelectedBookReference } from "@/lib/book-references";
 import { buildVisiblePath, type SiblingInfo } from "@/lib/message-branches";
 import { turnAnchorKey } from "@/lib/chat-outline";
+import { readingPassageHref } from "@/lib/reading-citations";
 import { shouldSubmitOnEnter } from "@/lib/composer-keyboard";
 import { useImeComposing } from "@/lib/use-ime-composing";
 import type { SpaceMemoryFile } from "@/lib/space-items";
@@ -104,6 +105,7 @@ import {
 } from "@/features/chat/trace/TracePresentation";
 import { hasSettledFinalRound } from "@/features/chat/trace/selectors";
 import type { MessageTraceMetadata } from "@/features/chat/trace/memory";
+import type { OrphanedFailedTurn } from "@/lib/session-api";
 import { agentGlyph } from "@/components/agents/agent-icons";
 import { useConsultationReference } from "@/hooks/useConsultationReference";
 import { useConnectedAgentKinds } from "@/hooks/useConnectedAgentKinds";
@@ -141,6 +143,10 @@ interface ChatMessageItem {
   attachments?: MessageAttachment[];
   requestSnapshot?: MessageRequestSnapshot;
   parentMessageId?: number | null;
+  /** The server never accepted this submission (#1594) — rendered as an
+   *  unsent message, not an ordinary sent one. */
+  failedSubmission?: boolean;
+  orphanedFailedTurn?: OrphanedFailedTurn;
 }
 
 interface NotebookReferenceGroup {
@@ -1766,9 +1772,35 @@ export const UserMessage = memo(function UserMessage({
             data-turn-bubble="true"
             className="rounded-2xl bg-[var(--secondary)] px-4 py-2.5 text-[14px] leading-relaxed text-[var(--foreground)] shadow-sm"
           >
+            {snap?.readingSelection ? (
+              <ReadingPassageQuote
+                quote={snap.readingSelection.quote}
+                href={
+                  snap.readingMaterialId && snap.readingSelection.locator
+                    ? readingPassageHref(
+                        snap.readingMaterialId,
+                        snap.readingSelection.locator,
+                        snap.readingMaterialRevision,
+                      )
+                    : undefined
+                }
+              />
+            ) : null}
             <div className="whitespace-pre-wrap">{msg.content}</div>
           </div>
         )}
+        {/* Unsent marker (#1594): this text never reached the server, so the
+            bubble must not read as an ordinary sent message. The error and
+            retry live next to the composer, not on an assistant bubble. */}
+        {!editing && msg.failedSubmission ? (
+          <div
+            data-unsent="true"
+            className="flex items-center gap-1 pr-1 text-[11px] font-medium text-[var(--destructive)]"
+          >
+            <AlertCircle className="h-3.5 w-3.5" aria-hidden="true" />
+            {t("Not sent")}
+          </div>
+        ) : null}
         {!editing && refTreeItems.length > 0 && (
           <div className="pr-1">
             <ContextReferenceTree
@@ -1808,6 +1840,30 @@ export const UserMessage = memo(function UserMessage({
 
 UserMessage.displayName = "UserMessage";
 
+/**
+ * The passage a reading question was asked about, at the top of its bubble.
+ *
+ * A link, not a label: it is written in the reader's citation form, so the
+ * reader's own capture-phase handler scrolls the document back to it.
+ */
+function ReadingPassageQuote({ quote, href }: { quote: string; href?: string }) {
+  const { t } = useTranslation();
+  const className =
+    "mb-1.5 block border-l-2 border-[color-mix(in_srgb,var(--primary)_45%,transparent)] pl-2.5 text-[12.5px] leading-relaxed text-[var(--muted-foreground)]";
+  const text = <span className="line-clamp-3">{quote}</span>;
+  return href ? (
+    <a
+      href={href}
+      aria-label={`${t("Go to this passage")}: ${quote}`}
+      className={`${className} transition-colors hover:text-[var(--foreground)]`}
+    >
+      {text}
+    </a>
+  ) : (
+    <div className={className}>{text}</div>
+  );
+}
+
 export const ChatMessageList = memo(function ChatMessageList({
   messages,
   isStreaming,
@@ -1815,6 +1871,8 @@ export const ChatMessageList = memo(function ChatMessageList({
   language,
   onCopyAssistantMessage,
   onRegenerateMessage,
+  canResendLastTurn = false,
+  onResendLastTurn,
   onConfirmOutline,
   onPreviewAttachment,
   onOpenConsultation,
@@ -1836,6 +1894,10 @@ export const ChatMessageList = memo(function ChatMessageList({
   language?: string;
   onCopyAssistantMessage: CopyHandler;
   onRegenerateMessage: () => void;
+  /** True when the last turn failed (not cancelled) and streaming has
+   *  stopped. Drives the Resend affordance on the trailing assistant. */
+  canResendLastTurn?: boolean;
+  onResendLastTurn?: () => void;
   onConfirmOutline?: (
     outline: Array<{ title: string; overview: string }>,
     topic: string,
@@ -2090,6 +2152,10 @@ export const ChatMessageList = memo(function ChatMessageList({
           const sib =
             msg.id !== undefined ? siblingsByMessageId.get(msg.id) : undefined;
           const reply = messageRows[rowIndex + 1]?.msg;
+          const orphanedFailure =
+            reply?.role === "assistant" && reply.parentMessageId === msg.id
+              ? null
+              : msg.orphanedFailedTurn;
           const consultationEvents = reply?.role === "assistant"
             ? (reply.events ?? []).filter(event => event.metadata?.trace_kind === "subagent_event")
             : [];
@@ -2115,6 +2181,28 @@ export const ChatMessageList = memo(function ChatMessageList({
                   ? () => onOpenConsultation(consultationEvents)
                   : undefined}
               />
+              {orphanedFailure ? (
+                <div
+                  role="alert"
+                  data-orphaned-failed-turn={orphanedFailure.turn_id}
+                  className="mt-3 flex w-full max-w-[min(520px,90%)] items-center gap-2 rounded-xl border border-[var(--destructive)]/30 bg-[var(--destructive)]/5 px-3 py-2"
+                >
+                  <AlertCircle className="h-4 w-4 shrink-0 text-[var(--destructive)]" />
+                  <span className="min-w-0 flex-1 text-[12px] leading-[1.5] text-[var(--foreground)]">
+                    {orphanedFailure.error || t("The turn was interrupted.")}
+                  </span>
+                  {!isStreaming && rowIndex === messageRows.length - 1 &&
+                    canResendLastTurn && orphanedFailure.retryable && onResendLastTurn ? (
+                    <button
+                      type="button"
+                      onClick={onResendLastTurn}
+                      className="shrink-0 rounded-md px-2 py-1 text-[11.5px] font-medium text-[var(--destructive)] hover:bg-[var(--destructive)]/10"
+                    >
+                      {t("Retry")}
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
           );
         }
@@ -2146,6 +2234,12 @@ export const ChatMessageList = memo(function ChatMessageList({
           (!pairedUserMessage?.capability ||
             pairedUserMessage?.capability === "chat") &&
           (showActions || terminalErrorRetryable);
+        const showResend =
+          !isStreaming &&
+          isLastAssistant &&
+          canResendLastTurn &&
+          Boolean(pairedUserMessage?.requestSnapshot) &&
+          Boolean(onResendLastTurn);
         const deletableTurnUserId =
           msgDone && pairedUserMessage?.id != null && onDeleteTurn
             ? pairedUserMessage.id
@@ -2218,6 +2312,15 @@ export const ChatMessageList = memo(function ChatMessageList({
                       {t("Retry")}
                     </button>
                   ) : null}
+                  {showResend && !showRegenerate ? (
+                    <button
+                      type="button"
+                      onClick={() => onResendLastTurn?.()}
+                      className="shrink-0 rounded-md px-2 py-1 text-[11.5px] font-medium text-[var(--foreground)] hover:bg-[var(--muted)]"
+                    >
+                      {t("Resend")}
+                    </button>
+                  ) : null}
                 </div>
               );
             })()}
@@ -2245,6 +2348,13 @@ export const ChatMessageList = memo(function ChatMessageList({
                         icon={RefreshCcw}
                         label={t("Regenerate")}
                         onClick={() => onRegenerateMessage()}
+                      />
+                    )}
+                    {showResend && (
+                      <RoughActionButton
+                        icon={RefreshCcw}
+                        label={t("Resend")}
+                        onClick={() => onResendLastTurn?.()}
                       />
                     )}
                     {showDelete && (

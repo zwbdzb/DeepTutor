@@ -34,6 +34,7 @@ from .contracts import (
     CodexModel,
     CodexToken,
     decode_codex_jwt,
+    normalize_codex_reasoning_levels,
 )
 from .oauth import (
     CodexOAuthClient,
@@ -50,6 +51,14 @@ logger = logging.getLogger(__name__)
 
 MANAGED_BY = "openai_codex_oauth"
 CODEX_PROFILE_ID = "llm-profile-openai-codex-managed"
+
+# After a refresh the provider rejects, get_token stays terminal for this
+# long instead of calling the token endpoint again on every turn (#1454).
+# A revoked / de-authorized session used to surface a fresh reauth per
+# message; one acknowledged failure now fails fast with a clear error, and
+# the short window leaves room for a transient outage to clear before the
+# next attempt instead of permanently locking the credential.
+CODE_AUTH_FAILURE_COOLDOWN_S = 60
 
 
 @dataclass(frozen=True)
@@ -222,6 +231,17 @@ def _reasoning_efforts(profile: Mapping[str, Any]) -> dict[str, str]:
     return overrides
 
 
+def _managed_reasoning_levels(model: Mapping[str, Any]) -> list[str]:
+    slug = model.get("model")
+    supported = model.get("codex_supported_reasoning_levels")
+    levels = (
+        (level for level in supported if isinstance(level, str))
+        if isinstance(supported, list)
+        else ()
+    )
+    return list(normalize_codex_reasoning_levels(slug if isinstance(slug, str) else "", levels))
+
+
 def reconcile_codex_catalog_update(
     current_catalog: Mapping[str, Any],
     proposed_catalog: Mapping[str, Any],
@@ -294,9 +314,10 @@ def reconcile_codex_catalog_update(
             model["name"] = model["user_name"] = label.strip()
         model.pop("reasoning_effort", None)
         slug = model.get("model")
-        supported = model.get("codex_supported_reasoning_levels")
+        supported = _managed_reasoning_levels(model)
+        model["codex_supported_reasoning_levels"] = supported
         effort = requested.get(slug) if isinstance(slug, str) else None
-        if isinstance(supported, list) and effort in supported:
+        if effort in supported:
             model["reasoning_effort"] = effort
 
     insert_at = proposed_indexes[0] if proposed_indexes else current_indexes[0]
@@ -447,6 +468,7 @@ class CodexOAuthService:
         self._inference_lock = asyncio.Lock()
         self._active_inferences = 0
         self._logging_out = False
+        self._reauth_until: float | None = None
 
     @staticmethod
     async def _start_default_callback(expected_state: str) -> LoopbackCallback:
@@ -605,7 +627,8 @@ class CodexOAuthService:
                 ):
                     remove_codex_catalog(self._model_catalog)
             operation.operation_state = "fetching_models"
-            await self._catalog.invalidate()
+            # Catalog reads reject another account or credential generation,
+            # while retaining this account's last successful client version.
             snapshot = await self._catalog.get(committed, force=True)
             async with self._catalog_sync_lock:
                 sync_result = sync_codex_catalog(
@@ -616,6 +639,7 @@ class CodexOAuthService:
             self._last_snapshot = snapshot
             operation.activated = sync_result.activated
             operation.operation_state = "completed"
+            self._clear_reauth_required()
         except CodexAuthError as exc:
             operation.error_code = exc.code
             if exc.code == "login_cancelled":
@@ -680,7 +704,12 @@ class CodexOAuthService:
                     "Codex authentication changed before models could be refreshed.",
                     409,
                 )
-            snapshot = await self._catalog.get(credentials, force=True)
+            try:
+                snapshot = await self._catalog.get(credentials, force=True)
+            except CodexAuthError as exc:
+                if exc.code in {"catalog_unauthorized", "catalog_forbidden"}:
+                    self._last_snapshot = None
+                raise
             sync_codex_catalog(
                 self._model_catalog,
                 snapshot,
@@ -696,6 +725,16 @@ class CodexOAuthService:
                 raise CodexAuthError(
                     "authentication_required",
                     "Sign in to Codex before using this model.",
+                    401,
+                )
+            if self._reauth_required():
+                # A recent refresh was rejected — the stored session no
+                # longer refreshes (revoked, de-authorized). Fail fast with a
+                # terminal error instead of asking the token endpoint again
+                # on this turn or the next (#1454).
+                raise CodexAuthError(
+                    "authentication_required",
+                    "Codex sign-in could not be renewed. Sign in to Codex again.",
                     401,
                 )
             if credentials.expires_at - int(self._clock()) > 300:
@@ -757,7 +796,14 @@ class CodexOAuthService:
         self,
         credentials: CodexCredentials,
     ) -> CodexCredentials:
-        payload = await self._oauth.refresh(credentials.refresh_token)
+        try:
+            payload = await self._oauth.refresh(credentials.refresh_token)
+        except CodexAuthError as exc:
+            # Only a rejected refresh grant means the user must sign in again.
+            # Transport failures and provider 5xx responses are transient.
+            if exc.code == "token_refresh_rejected":
+                self._mark_reauth_required()
+            raise
         refreshed = self._credentials_from_payload(
             payload,
             expected_generation=credentials.generation,
@@ -773,7 +819,9 @@ class CodexOAuthService:
             refreshed,
             expected_generation=credentials.generation,
         )
-        await self._catalog.invalidate()
+        self._clear_reauth_required()
+        # Generation matching invalidates model data without discarding the
+        # same account's successful catalog client version.
         return committed
 
     async def recover_after_unauthorized(self, generation: int) -> None:
@@ -835,6 +883,7 @@ class CodexOAuthService:
                     pass
                 self._last_snapshot = None
                 self._operation = None
+                self._clear_reauth_required()
                 return self.public_status()
         finally:
             async with self._inference_lock:
@@ -872,15 +921,14 @@ class CodexOAuthService:
                 for model in profile.get("models", []):
                     if not isinstance(model, dict) or model.get("model") != model_slug:
                         continue
-                    supported = model.get("codex_supported_reasoning_levels")
-                    if reasoning_effort is not None and (
-                        not isinstance(supported, list) or reasoning_effort not in supported
-                    ):
+                    supported = _managed_reasoning_levels(model)
+                    if reasoning_effort is not None and reasoning_effort not in supported:
                         raise CodexAuthError(
                             "reasoning_effort_unsupported",
                             "The selected Codex model does not support that reasoning effort.",
                             422,
                         )
+                    model["codex_supported_reasoning_levels"] = supported
                     if reasoning_effort is None:
                         model.pop("reasoning_effort", None)
                     else:
@@ -894,6 +942,16 @@ class CodexOAuthService:
 
             self._model_catalog.update(mutate)
             return self.public_status()
+
+    def _mark_reauth_required(self) -> None:
+        self._reauth_until = self._clock() + CODE_AUTH_FAILURE_COOLDOWN_S
+
+    def _clear_reauth_required(self) -> None:
+        self._reauth_until = None
+
+    def _reauth_required(self) -> bool:
+        deadline = self._reauth_until
+        return deadline is not None and self._clock() < deadline
 
     def public_status(self) -> dict[str, Any]:
         operation = self._operation
@@ -959,7 +1017,7 @@ class CodexOAuthService:
             cached = CatalogSnapshot.from_dict(payload)
         except CodexAuthError:
             return None
-        if cached.generation != credentials.generation:
+        if not cached.models_valid or cached.generation != credentials.generation:
             return None
         return cached
 
@@ -1010,12 +1068,7 @@ class CodexOAuthService:
             if not isinstance(slug, str) or not slug:
                 continue
             name = model.get("name")
-            supported = model.get("codex_supported_reasoning_levels")
-            levels = (
-                [level for level in supported if isinstance(level, str)]
-                if isinstance(supported, list)
-                else []
-            )
+            levels = _managed_reasoning_levels(model)
             effort = model.get("reasoning_effort")
             result.append(
                 {

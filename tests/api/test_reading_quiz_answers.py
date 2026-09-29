@@ -136,7 +136,7 @@ def test_focus_check_entries_land_in_unified_list(
     assert by_id["q_2"]["user_answer"] == "3"
 
 
-def test_no_session_saves_in_a_reading_notebook_container(store: SQLiteSessionStore) -> None:
+def test_no_session_saves_with_document_provenance(store: SQLiteSessionStore) -> None:
     asyncio.run(store.put_reading_quiz_pending(MATERIAL_ID, LOCATOR, _quiz_questions()))
     with TestClient(_build_app(store)) as client:
         resp = client.post(
@@ -147,7 +147,10 @@ def test_no_session_saves_in_a_reading_notebook_container(store: SQLiteSessionSt
     assert resp.json()["answers"][0]["is_correct"] is True
     listing = asyncio.run(store.list_notebook_entries())
     assert listing["total"] == 2
-    assert {item["session_id"] for item in listing["items"]} == {f"reading-notebook:{MATERIAL_ID}"}
+    assert {item["session_id"] for item in listing["items"]} == {""}
+    assert {item["origin_type"] for item in listing["items"]} == {"document_analysis"}
+    assert {item["origin_ref"] for item in listing["items"]} == {f"reading:{MATERIAL_ID}"}
+    assert asyncio.run(store.list_sessions()) == []
 
 
 def test_missing_answer_key_is_409(store: SQLiteSessionStore) -> None:
@@ -190,6 +193,56 @@ def test_repeat_submission_is_idempotent(store: SQLiteSessionStore) -> None:
     assert first.status_code == second.status_code == 200
     listing = asyncio.run(store.list_notebook_entries(session_id="reading-session"))
     assert listing["total"] == 2
+
+
+def test_reading_submission_id_distinguishes_retry_from_new_attempt(
+    store: SQLiteSessionStore,
+) -> None:
+    asyncio.run(store.create_session(title="Reading", session_id="reading-session"))
+    asyncio.run(store.put_reading_quiz_pending(MATERIAL_ID, LOCATOR, _quiz_questions()))
+    payload = _payload(answers=_answers(("q_1", 1)), submission_id="click-1")
+    with TestClient(_build_app(store)) as client:
+        assert (
+            client.post(
+                f"/api/reading/materials/{MATERIAL_ID}/extensions/quiz/answers", json=payload
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                f"/api/reading/materials/{MATERIAL_ID}/extensions/quiz/answers", json=payload
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                f"/api/reading/materials/{MATERIAL_ID}/extensions/quiz/answers",
+                json={**payload, "submission_id": "click-2"},
+            ).status_code
+            == 200
+        )
+    attempts = asyncio.run(store.list_assessment_attempts("reading-session", question_id="q_1"))
+    assert len(attempts) == 2
+    assert [item["attempt_count"] for item in attempts] == [1, 2]
+
+
+def test_reading_submission_id_is_scoped_to_session(store: SQLiteSessionStore) -> None:
+    for session_id in ("reader-a", "reader-b"):
+        asyncio.run(store.create_session(title=session_id, session_id=session_id))
+    asyncio.run(store.put_reading_quiz_pending(MATERIAL_ID, LOCATOR, _quiz_questions()))
+    with TestClient(_build_app(store)) as client:
+        for session_id in ("reader-a", "reader-b"):
+            response = client.post(
+                f"/api/reading/materials/{MATERIAL_ID}/extensions/quiz/answers",
+                json=_payload(
+                    session_id=session_id,
+                    answers=_answers(("q_1", 1)),
+                    submission_id="same-browser-id",
+                ),
+            )
+            assert response.status_code == 200
+    assert len(asyncio.run(store.list_assessment_attempts("reader-a"))) == 1
+    assert len(asyncio.run(store.list_assessment_attempts("reader-b"))) == 1
 
 
 @pytest.mark.parametrize("selected_index", [-1, 2])
@@ -245,7 +298,7 @@ def test_regenerated_quiz_rejects_the_previous_cards(store):
     assert response.status_code == 409
 
 
-def test_standalone_submission_retry_keeps_one_container_and_one_record(store):
+def test_standalone_submission_retry_keeps_one_origin_and_one_record(store):
     asyncio.run(store.put_reading_quiz_pending(MATERIAL_ID, LOCATOR, _quiz_questions()))
     with TestClient(_build_app(store)) as client:
         for _ in range(2):

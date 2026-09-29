@@ -150,6 +150,7 @@ class NextStep:
     * ``answer_pending`` — a posed question awaits the learner's answer.
     * ``review`` — a spaced-repetition item is due.
     * ``probe`` — an untouched objective; test out before teaching.
+    * ``teach`` — teach an untouched objective before assessing it, by request.
     * ``practice`` — a quantitative objective below its gate.
     * ``assess`` — a qualitative objective awaiting a Feynman-style check.
     * ``complete`` — every objective mastered, nothing due.
@@ -249,7 +250,12 @@ def next_objective(
             session_id=str(pending_session_id or ""),
         )
 
-    due = due_reviews(progress, now=now)
+    deferred_ids = set(progress.deferred_objectives)
+    due = [
+        task
+        for task in due_reviews(progress, now=now)
+        if task.knowledge_point_id not in deferred_ids
+    ]
     if due:
         kp, module_id, module_name = find_knowledge_point(progress, due[0].knowledge_point_id)
         if kp is not None:
@@ -269,6 +275,7 @@ def next_objective(
                 forgetting_risk=task.forgetting_risk,
             )
 
+    deferred_fallback: NextStep | None = None
     for module in sorted(progress.modules, key=lambda m: m.order):
         for kp in module.knowledge_points:
             if is_mastered(progress, kp):
@@ -276,12 +283,17 @@ def next_objective(
             status = objective_status(progress, kp)
             gate = gate_kind(kp)
             if status == "new":
-                action = "probe"
+                action = (
+                    "teach"
+                    if progress.learner_profile is not None
+                    and progress.learner_profile.teaching_strategy == "teach_first"
+                    else "probe"
+                )
             elif gate == "qualitative":
                 action = "assess"
             else:
                 action = "practice"
-            return NextStep(
+            step = NextStep(
                 action=action,
                 module_id=module.id,
                 module_name=module.name,
@@ -293,11 +305,23 @@ def next_objective(
                 mastery=display_mastery(progress, kp),
                 threshold=gate_threshold(kp.type),
                 reason=(
-                    "Untouched objective — probe first to let the learner test out."
+                    (
+                        "Untouched objective — teach before assessing, as the learner requested."
+                        if action == "teach"
+                        else "Untouched objective — probe first to let the learner test out."
+                    )
                     if status == "new"
                     else "Objective is below its mastery gate; keep working it until it clears."
                 ),
             )
+            if kp.id in deferred_ids:
+                if deferred_fallback is None:
+                    deferred_fallback = step
+                continue
+            return step
+
+    if deferred_fallback is not None:
+        return deferred_fallback
 
     return NextStep(action="complete", reason="All objectives are mastered and no reviews are due.")
 
@@ -321,6 +345,8 @@ def map_summary(progress: LearningProgress, *, now: float | None = None) -> dict
                     "id": kp.id,
                     "name": kp.name,
                     "type": kp.type.value,
+                    "prerequisite_ids": list(kp.prerequisite_ids),
+                    "topic_source_ids": list(kp.topic_source_ids),
                     "status": status,
                     "mastery": round(display_mastery(progress, kp), 3),
                     "mastery_source": mastery_source(progress, kp),
@@ -329,6 +355,7 @@ def map_summary(progress: LearningProgress, *, now: float | None = None) -> dict
                         if kp.id in progress.learner_mastery_overrides
                         else ""
                     ),
+                    "deferred": kp.id in progress.deferred_objectives,
                 }
             )
         modules_out.append(

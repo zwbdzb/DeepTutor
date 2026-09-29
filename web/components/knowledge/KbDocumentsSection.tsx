@@ -89,11 +89,16 @@ export default function KbDocumentsSection({
   const publishedLightRagVersion =
     provider === "lightrag"
       ? kb.statistics?.index_versions?.find(
-          (version) => version.provider === "lightrag" && version.ready,
+          (version) =>
+            version.provider === "lightrag" &&
+            version.ready &&
+            (!kb.metadata?.embedding_selection ||
+              version.version === kb.metadata.indexed_version),
         )
       : undefined;
 
-  const isUploadingHere = task?.kind === "upload" && task.executing;
+  const isUploadingHere =
+    (task?.kind === "upload" || task?.kind === "sync") && task.executing;
   const isIndexingHere =
     (task?.kind === "reindex" || task?.kind === "retry") && task.executing;
   const isRetryingHere = task?.kind === "retry" && task.executing;
@@ -106,22 +111,30 @@ export default function KbDocumentsSection({
 
   const blockedReason = canUpload
     ? null
-    : requiresLightRagRebuild
+    : kb.metadata?.indexing_model_unavailable
       ? t(
-          "This legacy LightRAG index remains queryable, but it must be fully rebuilt before incremental uploads.",
+          "Restore access to the pinned indexing models in Settings before adding documents.",
         )
-      : needsReindex
-        ? t(
-            "This knowledge base is in legacy index format and needs reindex before upload.",
-          )
-        : status !== "ready"
+      : requiresLightRagRebuild
+        ? kb.metadata?.embedding_mismatch
           ? t(
-              "This knowledge base is currently {{status}} and cannot accept uploads yet.",
-              {
-                status: status.replaceAll("_", " "),
-              },
+              "The current embedding configuration does not match this index. Restore the original configuration or rebuild with the current embedding before querying or adding documents.",
             )
-          : null;
+          : t(
+              "This legacy LightRAG index remains queryable, but it must be fully rebuilt before incremental uploads.",
+            )
+        : needsReindex
+          ? t(
+              "This knowledge base is in legacy index format and needs reindex before upload.",
+            )
+          : status !== "ready"
+            ? t(
+                "This knowledge base is currently {{status}} and cannot accept uploads yet.",
+                {
+                  status: status.replaceAll("_", " "),
+                },
+              )
+            : null;
 
   const selection = validateFiles(files, policyForProvider, t);
   const canRetry = Boolean(onRetry) && isError && !isIndexingHere;
@@ -167,9 +180,14 @@ export default function KbDocumentsSection({
               : "Drop files here",
           )}
         </p>
+        <p className="mt-1 text-[11px] leading-relaxed text-[var(--muted-foreground)]">
+          {t(
+            "Choosing a folder here is a one-time import. For a folder that stays in sync, use Linked folders.",
+          )}
+        </p>
       </div>
 
-      {provider === "lightrag" && (
+      {provider === "lightrag" && publishedLightRagVersion && (
         <LightRagIndexingProvenance
           policy={kb.metadata?.indexing_policy}
           version={publishedLightRagVersion}
@@ -201,7 +219,11 @@ export default function KbDocumentsSection({
                 )}
                 {retrySubmitting || isRetryingHere
                   ? t("Retrying…")
-                  : t("Retry indexing")}
+                  : t(
+                      provider === "lightrag"
+                        ? "Review rebuild"
+                        : "Retry indexing",
+                    )}
               </button>
             ) : undefined
           }

@@ -15,6 +15,27 @@ from deeptutor.services.workspace.models import WorkspaceError
 from tests.services.workspace.test_data_scope import account as account
 
 
+def test_task_board_export_and_migration_preserve_archived_cards(account):
+    from deeptutor.services.task_board import CreateCard, UpdateCard, get_task_board_store
+    from deeptutor.services.workspace.data_migration import export_path
+
+    target = account.create_workspace("Destination")["workspace_id"]
+    with workspace_context():
+        store = get_task_board_store()
+        card = store.create(CreateCard(title="Review examples")).cards[0]
+        expected = store.update(card.id, UpdateCard(status="done", archived=True))
+    feature = next(row for row in discover()["features"] if row["feature"] == "task-board")
+    assert not feature["error"]
+    exported = export_data("", ["task-board"])
+    with zipfile.ZipFile(export_path(exported["id"])) as archive:
+        assert any(name.endswith("cards.sqlite") for name in archive.namelist())
+    assert migrate_data("", target, ["task-board"])["status"] == "completed"
+    with workspace_context(target):
+        assert get_task_board_store().read() == expected
+    with workspace_context():
+        assert get_task_board_store().read().cards == []
+
+
 @pytest.mark.asyncio
 async def test_migration_keeps_messages_branches_questions_and_source_backup(account):
     target = account.create_workspace("Destination")["workspace_id"]
@@ -24,6 +45,20 @@ async def test_migration_keeps_messages_branches_questions_and_source_backup(acc
         user_id = await store.add_message(session["id"], "user", "question")
         reply_id = await store.add_message(
             session["id"], "assistant", "answer", parent_message_id=user_id
+        )
+        await store.upsert_notebook_entries(
+            session["id"],
+            [{"question_id": "question-one", "question": "Keep this question"}],
+        )
+        notebook_id = (await store.find_notebook_entry(session["id"], "question-one"))["id"]
+        await store.append_assessment_attempt(
+            session["id"],
+            notebook_id,
+            {
+                "attempt_id": "attempt-one",
+                "question_id": "question-one",
+                "result": "correct",
+            },
         )
         paths = get_path_service()
         book = paths.get_book_dir() / "book_one"
@@ -52,9 +87,17 @@ async def test_migration_keeps_messages_branches_questions_and_source_backup(acc
         messages = await migrated.get_messages(session["id"])
         assert [row["id"] for row in messages] == [user_id, reply_id]
         assert messages[1]["parent_message_id"] == user_id
+        questions = await migrated.list_notebook_entries(session_id=session["id"])
+        assert questions["items"][0]["question"] == "Keep this question"
+        attempts = await migrated.list_assessment_attempts(
+            session["id"], question_id="question-one"
+        )
+        assert attempts[0]["attempt_id"] == "attempt-one"
         assert (get_path_service().get_book_dir() / "book_one" / "inputs.json").exists()
     with workspace_context():
         assert await store.get_session(session["id"]) is None
+        assert not (await store.list_notebook_entries(session_id=session["id"]))["items"]
+        assert not await store.list_assessment_attempts(session["id"], question_id="question-one")
         assert not book.exists()
 
 
