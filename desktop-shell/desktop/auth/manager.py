@@ -110,6 +110,31 @@ class AuthManager:
             self._store.save(payload)
             return next_access
 
+    def refresh_account_balance(self) -> dict[str, Any]:
+        """Refresh the displayed Tokengine balance after a completed grant."""
+        access = self.points_access_token()
+        if not access:
+            return {"ok": False, "error": "not_logged_in"}
+        if not self._client.userinfo_url:
+            return {"ok": False, "error": "userinfo_unavailable"}
+        try:
+            fresh = self._client.userinfo(access)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("签到后刷新余额失败：%s", exc)
+            return {"ok": False, "error": "userinfo_failed"}
+        if fresh.get("balance") is None:
+            return {"ok": False, "error": "balance_missing"}
+
+        with self._lock:
+            payload = self._store.load() or {}
+            if str(payload.get("access_token") or "") != access:
+                return {"ok": False, "error": "account_changed"}
+            account = dict(payload.get("account") or {})
+            account["balance"] = fresh["balance"]
+            payload["account"] = account
+            self._store.save(payload)
+        return {"ok": True, "balance": fresh["balance"]}
+
     def status(self) -> dict[str, Any]:
         payload = self._store.load()
         account = dict(payload.get("account") or {})

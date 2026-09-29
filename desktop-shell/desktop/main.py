@@ -31,14 +31,19 @@ from collections import deque
 
 from desktop import APP_NAME, __version__, clipboard, dialogs, native_menu_backend
 from desktop.auth import AuthManager
-from desktop.inject import ToastInjector
+from desktop.inject import TOAST_ENSURE_JS, ToastInjector
 from desktop.menubar import build_native_menu
 from desktop.native_menu_backend import (
     configure_account_chip,
     install_windows_shell_menu,
     set_account_chip_hidden,
 )
-from desktop.process import DeepTutorProcess, DEFAULT_FRONTEND_PORT
+from desktop.points import PointsApiError, checkin as request_points_checkin
+from desktop.process import (
+    DeepTutorProcess,
+    DEFAULT_BACKEND_PORT,
+    DEFAULT_FRONTEND_PORT,
+)
 import desktop.runtime as rt
 from desktop.splash import splash_html
 from desktop.titlebar_account import AccountStatusSync
@@ -99,11 +104,16 @@ def _single_instance() -> bool:
 class Api:
     """Methods callable from the splash/gate page via `pywebview.api.*`."""
 
-    def __init__(self, frontend_url: str, auth: AuthManager, debug: bool = False) -> None:
+    def __init__(self, frontend_url: str, auth: AuthManager, debug: bool = False,
+                 backend_url: str | None = None) -> None:
         self._url = frontend_url
+        self._backend_url = (
+            backend_url or f"http://127.0.0.1:{DEFAULT_BACKEND_PORT}"
+        ).rstrip("/")
         self._auth = auth
         self._debug = debug
         self._lock = threading.Lock()
+        self._checkin_lock = threading.Lock()
         self._phase = "boot"
         self._text = "正在初始化…"
         self._detail = ""
@@ -170,6 +180,62 @@ class Api:
         """重拉中继 /v1/models → 重写 model_catalog → 回写账号信息。"""
         return self._auth.refresh_models()
 
+    def checkin_points(self) -> dict:
+        """通过本地 DeepTutor 代理触发签到和 Tokengine quota 发放流程。"""
+        if not self._checkin_lock.acquire(blocking=False):
+            return {"ok": False, "error": "in_progress", "message": "签到处理中，请稍候"}
+        try:
+            token = self._auth.points_access_token()
+            if not token:
+                return {
+                    "ok": False,
+                    "error": "not_logged_in",
+                    "message": "登录状态已失效，请切换账号后重试",
+                }
+            try:
+                payload = request_points_checkin(self._backend_url, token)
+            except PointsApiError as exc:
+                log.warning("points check-in failed: status=%s error=%s",
+                            exc.status_code, exc)
+                detail = str(exc)
+                if exc.status_code == 401:
+                    message = "登录状态已失效，请切换账号后重试"
+                elif exc.status_code == 409 or detail == "checkin_disabled":
+                    message = "签到功能暂未开放"
+                elif exc.status_code == 0:
+                    message = "本地积分服务连接失败，请稍后重试"
+                else:
+                    message = "积分服务暂不可用，请稍后重试"
+                return {
+                    "ok": False,
+                    "error": "checkin_failed",
+                    "message": message,
+                    "status_code": exc.status_code,
+                }
+
+            reward = payload.get("reward")
+            reward = reward if isinstance(reward, dict) else {}
+            try:
+                points = int(reward.get("points_awarded") or 0)
+            except (TypeError, ValueError):
+                points = 0
+            grant_status = str(reward.get("grant_status") or "")
+            if grant_status == "succeeded":
+                balance_result = self._auth.refresh_account_balance()
+                if not balance_result.get("ok"):
+                    log.warning(
+                        "check-in succeeded but balance refresh failed: %s",
+                        balance_result.get("error") or "unknown",
+                    )
+            return {
+                "ok": True,
+                "already_checked_in": bool(payload.get("already_checked_in")),
+                "points_awarded": points,
+                "grant_status": grant_status,
+            }
+        finally:
+            self._checkin_lock.release()
+
     def copy_relay(self) -> dict:
         """复制 API 中继地址到剪贴板（刻意不复制业务 token，避免泄露）。"""
         st = self._auth.status()
@@ -193,6 +259,7 @@ class Api:
         js = "window.__edubuddyToast(%s)" % json.dumps(str(msg), ensure_ascii=False)
         for w in webview_windows:
             try:
+                w.evaluate_js(TOAST_ENSURE_JS)
                 w.evaluate_js(js)
                 return
             except Exception:  # noqa: BLE001  窗口还没就绪 / 已关闭
@@ -252,6 +319,23 @@ def _chip_actions(api: Api) -> dict:
         else:
             api.toast(res.get("message") or res.get("error") or "刷新失败")
 
+    def checkin() -> None:
+        api.toast("正在签到...")
+        res = api.checkin_points()
+        if not res.get("ok"):
+            api.toast(res.get("message") or "签到失败，请稍后重试")
+            return
+        if res.get("already_checked_in"):
+            api.toast("今日已签到，本次未重复增加积分")
+            return
+        points = int(res.get("points_awarded") or 0)
+        suffix = {
+            "succeeded": "，额度已到账",
+            "pending": "，额度发放中",
+            "failed": "，但额度发放失败，请稍后重试",
+        }.get(str(res.get("grant_status") or ""), "")
+        api.toast(f"签到成功，获得 {points} 积分{suffix}")
+
     def logout() -> None:
         # MB_OKCANCEL | MB_ICONWARNING；IDOK == 1
         if dialogs.message_box("退出登录", "确定要退出当前账号吗？", 0x31) != 1:
@@ -279,6 +363,7 @@ def _chip_actions(api: Api) -> dict:
         "login": api.login,
         "switch": api.login,
         "platform": api.open_platform,
+        "checkin": checkin,
         "refresh": refresh,
         "copy": api.copy_relay,
         "logout": logout,

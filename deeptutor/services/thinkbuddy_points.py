@@ -1,4 +1,4 @@
-"""Client for the standalone EduBuddy points service."""
+"""Client for the standalone ThinkBuddy points service."""
 
 from __future__ import annotations
 
@@ -14,17 +14,17 @@ class PointsServiceError(Exception):
         self.status_code = status_code
 
 
-class EduBuddyPointsClient:
+class ThinkBuddyPointsClient:
     def __init__(
         self,
         base_url: str | None = None,
         timeout: float = 8.0,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
-        configured_url = base_url or os.environ.get("EDUBUDDY_POINTS_SERVICE_URL")
+        configured_url = base_url or os.environ.get("THINKBUDDY_POINTS_SERVICE_URL")
         self.base_url = (
             configured_url
-            or os.environ.get("EDUTUTOR_POINTS_SERVICE_URL", "http://127.0.0.1:8080")
+            or os.environ.get("EDUTUTOR_POINTS_SERVICE_URL", "http://127.0.0.1:8000")
         ).rstrip("/")
         self.timeout = timeout
         self.transport = transport
@@ -58,26 +58,40 @@ class EduBuddyPointsClient:
         except httpx.HTTPError as exc:
             raise PointsServiceError(502, "Points service is unavailable") from exc
 
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
+
         if response.status_code in {401, 403}:
             raise PointsServiceError(401, "Tokengine login has expired")
         if response.status_code >= 500:
             raise PointsServiceError(502, "Points service request failed")
         if not response.is_success:
-            raise PointsServiceError(502, "Points service rejected the request")
-        try:
-            payload = response.json()
-        except ValueError as exc:
-            raise PointsServiceError(502, "Points service returned invalid data") from exc
+            detail = ""
+            if isinstance(payload, dict):
+                detail = str(
+                    payload.get("detail")
+                    or payload.get("error")
+                    or payload.get("message")
+                    or ""
+                ).strip()
+            if response.status_code != 409 or path != "/api/v1/checkin":
+                raise PointsServiceError(502, "Points service rejected the request")
+            raise PointsServiceError(
+                response.status_code,
+                detail or "Points service rejected the request",
+            )
         if not isinstance(payload, dict):
             raise PointsServiceError(502, "Points service returned invalid data")
         return payload
 
 
-_client: EduBuddyPointsClient | None = None
+_client: ThinkBuddyPointsClient | None = None
 
 
-def get_points_client() -> EduBuddyPointsClient:
+def get_points_client() -> ThinkBuddyPointsClient:
     global _client
     if _client is None:
-        _client = EduBuddyPointsClient()
+        _client = ThinkBuddyPointsClient()
     return _client

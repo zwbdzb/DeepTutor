@@ -27,7 +27,9 @@ import threading
 log = logging.getLogger("dt.titlebar")
 
 # 菜单动作名（与 main.py 的分发表对齐，便于一眼核对）
-MENU_ACTIONS = ("switch", "platform", "refresh", "copy", "logout", "about")
+MENU_ACTIONS = (
+    "switch", "platform", "checkin", "refresh", "copy", "logout", "about",
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -135,6 +137,7 @@ def account_menu_model(status: dict) -> dict:
                 {"action": "refresh", "label": "刷新可用模型"},
                 {"type": "sep"},
                 {"action": "platform", "label": "打开 Tokengine 平台"},
+                {"action": "checkin", "label": "签到加积分"},
                 {"action": "switch", "label": "切换账号"},
                 {"type": "sep"},
                 {"action": "logout", "label": "退出登录", "danger": True},
@@ -181,7 +184,7 @@ def chip_model(st: dict) -> dict:
 
     ``menu`` 为 None 时点击账号区 = 直接发起登录；否则点击弹下拉菜单。
     分支与 :func:`chip_label` 一一对应：
-      已登录      → 菜单（刷新/平台/切换/退出/关于）
+      已登录      → 菜单（刷新/平台/签到/切换/退出/关于）
       已配置令牌  → 无菜单，点击直发登录（与旧按钮行为一致）
       登录进行中  → 菜单（重新发起登录/平台/关于）
       未登录      → 无菜单，点击直发登录
