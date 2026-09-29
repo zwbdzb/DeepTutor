@@ -27,7 +27,7 @@ import threading
 log = logging.getLogger("dt.titlebar")
 
 # 菜单动作名（与 main.py 的分发表对齐，便于一眼核对）
-MENU_ACTIONS = ("switch", "platform", "refresh", "copy", "logout", "about")
+MENU_ACTIONS = ("invite", "switch", "platform", "refresh", "copy", "logout", "about")
 
 
 # --------------------------------------------------------------------------- #
@@ -132,6 +132,7 @@ def account_menu_model(status: dict) -> dict:
             "header": {"title": _display_name(acct),
                        "sub": sub},
             "items": [
+                {"action": "invite", "label": "邀请好友得积分"},
                 {"action": "refresh", "label": "刷新可用模型"},
                 {"type": "sep"},
                 {"action": "platform", "label": "打开 Tokengine 平台"},
