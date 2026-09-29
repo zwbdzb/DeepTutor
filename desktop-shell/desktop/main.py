@@ -49,6 +49,9 @@ log = logging.getLogger("dt.main")
 # Set DEEPTUTOR_DESKTOP_DEBUG=1 to render it again for development.
 DEBUG = os.environ.get("DEEPTUTOR_DESKTOP_DEBUG", "") == "1"
 
+# 邀请活动页（走系统浏览器打开）
+INVITE_URL = "https://thinkbuddy.hanyoai.com/"
+
 # --------------------------------------------------------------------------- #
 # logging -------------------------------------------------------------------- #
 LOG_DIR = rt.ROOT / "logs"
@@ -239,6 +242,10 @@ def _chip_actions(api: Api) -> dict:
         系统 MessageBox（确定/取消）二次确认；
       * 「刷新可用模型」成功后照旧刷新页面，让应用重新读取模型目录。
     """
+    def invite() -> None:
+        webbrowser.open(INVITE_URL)
+        api.toast("已在浏览器打开邀请页")
+
     def refresh() -> None:
         res = api.refresh_models()
         if res.get("ok"):
@@ -274,6 +281,7 @@ def _chip_actions(api: Api) -> dict:
         "login": api.login,
         "switch": api.login,
         "platform": api.open_platform,
+        "invite": invite,
         "refresh": refresh,
         "copy": api.copy_relay,
         "logout": logout,
