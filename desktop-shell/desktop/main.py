@@ -49,8 +49,8 @@ log = logging.getLogger("dt.main")
 # Set DEEPTUTOR_DESKTOP_DEBUG=1 to render it again for development.
 DEBUG = os.environ.get("DEEPTUTOR_DESKTOP_DEBUG", "") == "1"
 
-# 邀请活动页（由thinkbuddy-web托管，走系统浏览器打开）
-INVITE_URL = "http://10.8.65.200:8000/invite/"
+# 邀请活动页（走系统浏览器打开）
+INVITE_URL = "https://thinkbuddy.hanyoai.com/"
 
 # --------------------------------------------------------------------------- #
 # logging -------------------------------------------------------------------- #
