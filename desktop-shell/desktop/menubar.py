@@ -1,4 +1,4 @@
-"""EduBuddy Desktop — 原生菜单栏（参考 WorkBuddy：关于 / 编辑 / 窗口 / 帮助）。
+"""ThinkBuddy Desktop — 原生菜单栏（参考 WorkBuddy：关于 / 编辑 / 窗口 / 帮助）。
 
 走 pywebview 的 ``Menu`` / ``MenuAction`` / ``MenuSeparator`` 通道：传给
 ``webview.start(menu=...)`` 后由 winforms 后端渲染成原生 ``MenuStrip``
@@ -21,14 +21,13 @@ import webview
 from webview.menu import Menu, MenuAction, MenuSeparator
 
 from desktop import APP_NAME, __version__
+from desktop.runtime import ROOT
 
 log = logging.getLogger("dt.menubar")
 
 # 检查更新基线：进程首次运行时记下 exe 的修改时间，之后据此判断是否被更新覆盖。
-_BASELINE_FILE = os.path.join(
-    os.environ.get("LOCALAPPDATA", os.path.expanduser("~")),
-    "EduBuddy", "update_baseline.txt",
-)
+# 跟随 ROOT（%LOCALAPPDATA%\ThinkBuddy），品牌迁移时随目录整体搬迁。
+_BASELINE_FILE = str(ROOT / "update_baseline.txt")
 
 
 def _main_window():
@@ -61,7 +60,7 @@ def _menu_about(api) -> None:
         info = api.about()
         lines = [
             f"{info['app']}  v{info['app_version']}",
-            f"EduBuddy 引擎：v{info['deeptutor_version']}",
+            f"ThinkBuddy 引擎：v{info['deeptutor_version']}",
         ]
         if info.get("relay"):
             lines.append(f"中继：{info['relay']}")
@@ -100,7 +99,7 @@ def _check_updates(api) -> None:
             mtime = os.path.getmtime(exe)
             baseline = _load_baseline()
             if baseline and mtime > baseline + 60:  # 允许 1 分钟误差
-                _toast("发现新版本已就绪，重启 EduBuddy 后生效。")
+                _toast("发现新版本已就绪，重启 ThinkBuddy 后生效。")
                 return
             if not baseline:
                 _save_baseline(mtime)

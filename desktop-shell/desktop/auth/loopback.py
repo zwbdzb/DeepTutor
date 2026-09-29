@@ -56,14 +56,14 @@ def _detail_hint(raw: str) -> str:
 def _page(body: str, bg: str, fg: str, accent: str) -> str:
     return (
         "<!doctype html><html lang='zh-CN'><meta charset='utf-8'>"
-        "<title>EduBuddy 登录</title>"
+        "<title>ThinkBuddy 登录</title>"
         f"<body style='font-family:Segoe UI,Microsoft YaHei,sans-serif;"
         f"background:{bg};color:{fg};display:flex;align-items:center;"
         "justify-content:center;min-height:100vh;margin:0;padding:24px;"
         "box-sizing:border-box'>"
         f"<div style='text-align:center;max-width:560px'>{body}"
         f"<p style='color:{accent};font-size:13px;margin-top:18px'>"
-        "此页面可安全关闭，登录结果已回传到 EduBuddy</p></div>"
+        "此页面可安全关闭，登录结果已回传到 ThinkBuddy</p></div>"
         "</body></html>"
     )
 
@@ -71,7 +71,7 @@ def _page(body: str, bg: str, fg: str, accent: str) -> str:
 def _success_html() -> str:
     return _page(
         "<div style='font-size:22px;font-weight:600'>登录成功</div>"
-        "<p style='color:#9fc4ab;margin-top:8px'>请返回 EduBuddy 继续使用</p>",
+        "<p style='color:#9fc4ab;margin-top:8px'>请返回 ThinkBuddy 继续使用</p>",
         bg="#071b12", fg="#eef5ef", accent="#6f8f7d",
     )
 

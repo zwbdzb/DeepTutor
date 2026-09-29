@@ -1,0 +1,24 @@
+<svg viewBox="0 0 680 380" width="100%" xmlns="http://www.w3.org/2000/svg" role="img">
+  <title>阿哈 Logo 方案二：开聊</title>
+  <desc>聊着聊着突然亮了：蓝色对话气泡徽章 + 白色气泡点 + 闪电芯片 + 右上橙色星光</desc>
+  <defs>
+    <linearGradient id="blueG2" gradientUnits="userSpaceOnUse" x1="228" y1="62" x2="444" y2="278">
+      <stop offset="0" stop-color="#1E72C4"/><stop offset="1" stop-color="#0A3D7E"/>
+    </linearGradient>
+    <linearGradient id="sunG2" x1="0" y1="0" x2="0.5" y2="1">
+      <stop offset="0" stop-color="#FFD23F"/><stop offset="0.55" stop-color="#FF8A3D"/><stop offset="1" stop-color="#EF4123"/>
+    </linearGradient>
+  </defs>
+  <rect width="680" height="380" fill="#F7F9FC"/>
+  <circle cx="336" cy="170" r="108" fill="url(#blueG2)"/>
+  <path d="M266 244 L232 294 L302 264 Z" fill="url(#blueG2)"/>
+  <rect x="258" y="104" width="92" height="58" rx="29" fill="#FFFFFF"/>
+  <circle cx="288" cy="133" r="8" fill="#1E72C4"/>
+  <circle cx="320" cy="133" r="8" fill="#1E72C4"/>
+  <rect x="306" y="170" width="88" height="88" rx="26" fill="#FFFFFF"/>
+  <path d="M334 190 L334 218 L348 218 L341 238 L366 210 L352 210 Z" fill="url(#sunG2)"/>
+  <path d="M462 50 C 464 66 476 78 492 80 C 476 82 464 94 462 110 C 460 94 448 82 432 80 C 448 78 460 66 462 50 Z" fill="url(#sunG2)"/>
+  <path d="M512 31 C 513 39 519 45 527 46 C 519 47 513 53 512 61 C 511 53 505 47 497 46 C 505 45 511 39 512 31 Z" fill="#FF8A3D"/>
+  <text x="340" y="322" text-anchor="middle" font-family="'PingFang SC','Microsoft YaHei',sans-serif" font-size="50" font-weight="700" fill="#0B3D7E">阿哈</text>
+  <text x="340" y="352" text-anchor="middle" font-family="'PingFang SC','Microsoft YaHei',sans-serif" font-size="19" font-weight="500" letter-spacing="4" fill="#6B7A8D">AHABUDDY</text>
+</svg>

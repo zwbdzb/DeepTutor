@@ -1,0 +1,39 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="ThinkBuddy desktop agent icon">
+  <title>ThinkBuddy — 桌面智能体图标（主版 · 圆角方）</title>
+  <defs>
+    <!-- 徽章底：绿色轻快渐变（汉扬蓝徽章的绿色转译） -->
+    <linearGradient id="tb-bg" x1="128" y1="96" x2="896" y2="928" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7CF0B4"/>
+      <stop offset="0.55" stop-color="#2FD08F"/>
+      <stop offset="1" stop-color="#0FAE7B"/>
+    </linearGradient>
+    <!-- 能量弧：右下角弧线（汉扬橙弧的青柠转译） -->
+    <linearGradient id="tb-arc" x1="960" y1="960" x2="580" y2="580" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#D9F99D"/>
+      <stop offset="1" stop-color="#34D399"/>
+    </linearGradient>
+    <!-- 闪电：气泡内负空间位（汉扬白色闪电的位置反转，绿色嵌白气泡） -->
+    <linearGradient id="tb-bolt" x1="512" y1="320" x2="512" y2="600" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#10B981"/>
+      <stop offset="1" stop-color="#049668"/>
+    </linearGradient>
+    <clipPath id="tb-clip"><rect x="64" y="64" width="896" height="896" rx="224"/></clipPath>
+  </defs>
+
+  <!-- 徽章容器 -->
+  <rect x="64" y="64" width="896" height="896" rx="224" fill="url(#tb-bg)"/>
+
+  <!-- 右下能量弧（贴徽章轮廓裁切：圆帽与边缘齐平，汉扬能量弧基因） -->
+  <path d="M 580 960 A 380 380 0 0 1 960 580" stroke="url(#tb-arc)" stroke-width="40" stroke-linecap="round" clip-path="url(#tb-clip)"/>
+
+  <!-- Buddy：对话气泡（白色负空间图形） -->
+  <rect x="262" y="246" width="500" height="420" rx="140" fill="#FFFFFF"/>
+  <path d="M 396 650 L 356 752 Q 350 766 364 760 L 498 668 Z" fill="#FFFFFF"/>
+
+  <!-- Think：气泡内闪电（绿色嵌白，汉扬闪电基因） -->
+  <path d="M 532 320 L 432 490 L 504 490 L 462 600 L 592 440 L 514 440 L 567 320 Z" fill="url(#tb-bolt)"/>
+
+  <!-- 轻快点缀：右上双星芒（呼应汉扬右上星光位） -->
+  <path d="M 796 150 Q 806 186 842 196 Q 806 206 796 242 Q 786 206 750 196 Q 786 186 796 150 Z" fill="#FFFFFF" opacity="0.95"/>
+  <path d="M 872 258 Q 879 282 903 289 Q 879 296 872 320 Q 865 296 841 289 Q 865 282 872 258 Z" fill="#FFFFFF" opacity="0.7"/>
+</svg>

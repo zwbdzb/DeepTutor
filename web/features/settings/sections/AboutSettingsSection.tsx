@@ -213,6 +213,9 @@ export default function AboutSettingsPage() {
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            {/* 二开隐藏（2026-09-28）："发布说明"外链直接暴露上游项目地址（status.release.url），
+                "立即检查"依赖上游 release 源。二开产品不得向前端用户暴露原始项目入口。
+                恢复官方版本时取消下面整段注释即可。
             {status?.release?.url && (
               <a
                 href={status.release.url}
@@ -237,6 +240,7 @@ export default function AboutSettingsPage() {
                 {t("Check now")}
               </Button>
             )}
+            */}
             {canUpdate && (
               <Button
                 type="button"

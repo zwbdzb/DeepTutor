@@ -2,7 +2,7 @@
 
 The slim offline runtime (see tools/build_runtime.py PRUNE_GLOBS) omits the
 heavy RAG / document-parse wheels (llama_index, faiss-cpu, pymupdf, ...) to
-keep EduBuddySetup.exe small. Those wheels are lazy-imported at runtime, so
+keep ThinkBuddySetup.exe small. Those wheels are lazy-imported at runtime, so
 startup and chat never touch them &mdash; but the first time a user opens the
 knowledge-base or uploads a document, they must be present.
 

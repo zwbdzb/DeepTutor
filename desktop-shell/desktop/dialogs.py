@@ -1,6 +1,6 @@
 """原生 Windows 文本框（纯 ctypes，PyInstaller 安全）。
 
-右键菜单「关于 EduBuddy」用原生 MessageBox，避免依赖页面 DOM 拉一个
+右键菜单「关于 ThinkBuddy」用原生 MessageBox，避免依赖页面 DOM 拉一个
 需要 re-render 的弹层。图标常量沿用 Win32 定义：
   MB_ICONINFORMATION = 0x40      MB_OK = 0x0
   MB_ICONWARNING     = 0x30      MB_OKCANCEL = 0x1

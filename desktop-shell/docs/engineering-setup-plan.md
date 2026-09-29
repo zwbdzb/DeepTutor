@@ -75,7 +75,9 @@ D:\studio\DeepTutor\
 ## 3. 右键菜单设计（登录后的用户）
 
 > 状态：**v1 已实现**（2026-09-15）。生效范围定案见 `docs/adr/ADR-002-login-context-menu.md`；
-> 菜单样式/文案在 `desktop/inject.py::_menu_model`，动作接线在 `desktop/main.py::bootstrap`。
+> 菜单样式/文案在 `desktop/titlebar_account.py`（`account_menu_model`），动作接线在
+> `desktop/main.py::_chip_actions`。（ADR-004 起账号入口迁至原生标题栏，本节
+> 描述的页面注入通道已退役，仅作历史记录。）
 
 ### 3.1 技术方案（复用已验证的注入机制）
 

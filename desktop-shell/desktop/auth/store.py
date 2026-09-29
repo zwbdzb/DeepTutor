@@ -1,7 +1,7 @@
 """令牌安全落盘。
 
 - 业务令牌（sk-Tok...）与 refresh_token 用 Windows DPAPI（CryptProtectData）
-  加密后写入 %LOCALAPPDATA%\\EduBuddy\\auth.json —— 仅当前 Windows 用户可解密。
+  加密后写入 %LOCALAPPDATA%\\ThinkBuddy\\auth.json —— 仅当前 Windows 用户可解密。
 - 机器指纹 machine_id 单独一个文件，用于平台侧设备绑定。
 - 全程不透出明文到日志；加密失败时给出一条可见的降级告警（仅提示，不打值）。
 """

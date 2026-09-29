@@ -19,7 +19,7 @@ from .catalog import (
     has_configured_token,
     remove_tokengine_catalog,
 )
-from .client import OAuthClient, OAuthError
+from .client import OAuthClient, OAuthError, fetch_relay_models
 from .loopback import ERROR_HINTS, LoopbackServer
 from .store import TokenStore
 
@@ -134,34 +134,16 @@ class AuthManager:
             "in_progress": self._done.is_set() is False and self._pending_url is not None,
         }
 
-    def _derive(self, account: dict[str, Any]) -> tuple[list[str], dict[str, int], str, str, str]:
-        """从一份 account（可能刚拉的 userinfo）推导可用信息。
+    def _derive(self, account: dict[str, Any]) -> tuple[str, str, str]:
+        """从一份 account（可能刚拉的 userinfo）推导账号与中继信息。
 
         与登录落库的推导逻辑共用，供 refresh_models 复用（不重复实现）。
-        返回 ``(models, model_types, phone, relay_base, relay_source)``。
+        返回 ``(phone, relay_base, relay_source)``。
 
-        严格按现行契约解析，不做旧平台形态兼容：
-          * ``models`` = ``[{"model_name": ..., "model_type": 1}, ...]``；
-          * ``model_type`` 枚举：1=文生文 2=文生图 3=文生视频 4=重排序
-            5=向量；0/缺失=未标注（catalog 侧回退名称启发式）；
-          * userinfo 未下发 ``models`` 字段时才用本地 DEFAULT_MODELS 兜底；
-            下发了空数组即视为「平台明确无授权模型」。
+        2026-09-24 起，模型名单不再从 userinfo 推导（也没有 DEFAULT_MODELS
+        本地兜底）：唯一来源是中继 ``/v1/models``，由调用方经
+        :func:`client.fetch_relay_models` 直接拉取。
         """
-        raw_models = account.get(cfg.USERINFO_MODELS_FIELD)
-        models: list[str] = []
-        model_types: dict[str, int] = {}
-        for item in raw_models if isinstance(raw_models, list) else []:
-            if not isinstance(item, dict):
-                continue
-            name = str(item.get("model_name") or "").strip()
-            if not name:
-                continue
-            models.append(name)
-            mt = item.get("model_type")
-            if isinstance(mt, (int, float)):
-                model_types[name] = int(mt)
-        if raw_models is None:
-            models = list(cfg.DEFAULT_MODELS)
         phone = str(account.get(cfg.USERINFO_PHONE_FIELD) or "") or ""
         relay_base, relay_source = cfg.resolve_relay(
             api_base=self._api_base,
@@ -169,7 +151,7 @@ class AuthManager:
             fallback=self._fallback_relay,
             local_override=self._local_relay_override,
         )
-        return models, model_types, phone, relay_base, relay_source
+        return phone, relay_base, relay_source
 
     def _refresh_access_token(self, payload: dict[str, Any]) -> bool:
         """Rotate the OAuth session token when the stored access token expired.
@@ -276,10 +258,17 @@ class AuthManager:
             account = dict(payload.get("account") or {})
             account.update({k: v for k, v in fresh.items()
                             if v not in (None, "")})
-            models, model_types, phone, relay_base, relay_source = self._derive(account)
+            phone, relay_base, relay_source = self._derive(account)
 
-            # 同登录：models（userinfo 授权名单）按平台 model_type 分流
-            # （缺类型时 catalog 侧回退名称启发式）
+            # 模型名单：唯一来源 = 中继 /v1/models（每项自带 model_type），
+            # 无 userinfo 兜底。刷新的目的就是重算名单——拉取失败直接
+            # 报错返回、不写盘，避免把 catalog 里现存的模型清空。
+            try:
+                models, model_types = fetch_relay_models(relay_base, token)
+            except OAuthError as exc:
+                log.warning("刷新模型失败（名单保持不变）：%s", exc)
+                return {"ok": False, "error": "fetch_failed",
+                        "message": f"模型列表拉取失败：{exc}"}
             try:
                 path = ensure_tokengine_catalog(
                     home=self._home, api_key=token,
@@ -429,7 +418,7 @@ class AuthManager:
             })
             return
 
-        # 可选：带 access_token 拉一次 userinfo，拿余额/模型列表/AI token
+        # 可选：带 access_token 拉一次 userinfo，拿余额/AI token（业务令牌）
         account: dict[str, Any] = {}
         access_token = str(tokens.get("access_token") or "")
         if access_token and self._client.userinfo_url:
@@ -440,7 +429,7 @@ class AuthManager:
             except Exception as exc:  # noqa: BLE001
                 log.warning("userinfo 失败（不影响登录）：%s", exc)
         elif not access_token:
-            log.warning("平台未返回 access_token，跳过 userinfo（模型将走本地回退）")
+            log.warning("平台未返回 access_token，跳过 userinfo（将拿不到 ai_token）")
 
         # 业务令牌（AI token，调中继的 sk-... 凭据）：按契约由 userinfo
         # 的 ai_token 字段下发；/oauth/token 只返回标准凭证字段。
@@ -453,11 +442,23 @@ class AuthManager:
             })
             return
 
-        # 模型 / 手机号 / 中继域名：复用 refresh_models 同款推导。
+        # 手机号 / 中继域名：复用 refresh_models 同款推导。
         # 中继域名只来自内置默认 + endpoints.json/env 显式覆盖 + userinfo
         # 下发（resolve_relay），不读取平台 /api/status 的宣告域名。
-        models, model_types, phone, relay_base, relay_source = self._derive(account)
+        phone, relay_base, relay_source = self._derive(account)
         log.info("中继域名解析：%s（来源 %s）", relay_base, relay_source)
+
+        # 模型名单：唯一来源 = 中继 /v1/models（每项自带 model_type），
+        # 无 userinfo 兜底。拉取失败不阻断登录（令牌已到手）：models=None
+        # 时 ensure 只写令牌/域名，不碰现存模型列表。
+        models: Optional[list[str]] = None
+        model_types: Optional[dict[str, int]] = None
+        fetch_warning = ""
+        try:
+            models, model_types = fetch_relay_models(relay_base, token)
+        except OAuthError as exc:
+            log.warning("登录后 /v1/models 拉取失败，模型列表保持现状：%s", exc)
+            fetch_warning = "模型列表拉取失败，可稍后用「刷新可用模型」重试"
 
         payload = {
             "token": token,
@@ -467,8 +468,8 @@ class AuthManager:
             "account": {
                 "phone": phone,
                 "balance": account.get("balance"),
-                "models": models,
-                "model_types": model_types,
+                "models": models or [],
+                "model_types": model_types or {},
                 "raw": {k: v for k, v in account.items()
                         if k not in (cfg.USERINFO_MODELS_FIELD,
                                      cfg.USERINFO_PHONE_FIELD)},
@@ -479,10 +480,10 @@ class AuthManager:
         self._store.save(payload)
 
         # 落地到 DeepTutor：写业务令牌 + 中继域名 + 模型列表。
-        # models 就是 userinfo 返回的授权名单（不请求 /v1/models——那是
-        # 网关全量列表），catalog 按平台下发的 model_type 权威分流：
-        # 对话模型进 llm/task、向量模型进 embedding、图像/视频各归其位、
-        # 重排序丢弃；缺类型的模型回退名称启发式。
+        # models 来自中继 /v1/models（网关当前暴露的全量名单，每项自带
+        # model_type），catalog 按 model_type 权威分流：对话模型进
+        # llm/task、向量模型进 embedding、图像/视频各归其位、重排序丢弃；
+        # 缺类型的模型回退名称启发式。models=None（拉取失败）时不碰列表。
         try:
             ensure_tokengine_catalog(
                 home=self._home, api_key=token, base_url=relay_base,
@@ -491,7 +492,7 @@ class AuthManager:
         except Exception as exc:  # noqa: BLE001
             log.exception("write model_catalog failed")
             self._finalize({
-                "ok": True, "token": token, "models": models, "phone": phone,
+                "ok": True, "token": token, "models": models or [], "phone": phone,
                 "relay_base": relay_base, "message": "令牌已获取",
                 "warning": f"令牌已获取，但写入 DeepTutor 配置失败：{exc}",
             })
@@ -499,10 +500,13 @@ class AuthManager:
 
         log.info("login completed for %s with %d model(s) @ %s",
                  phone or "?", len(models) if models else 0, relay_base)
-        self._finalize({
-            "ok": True, "token": token, "models": models,
+        result = {
+            "ok": True, "token": token, "models": models or [],
             "phone": phone, "relay_base": relay_base, "account": self.account(),
-        })
+        }
+        if fetch_warning:
+            result["warning"] = fetch_warning
+        self._finalize(result)
 
     def wait_done(self, timeout: float) -> dict[str, Any]:
         """门控等待登录完成；超时返回当前未完成状态。

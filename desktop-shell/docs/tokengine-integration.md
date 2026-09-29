@@ -5,7 +5,7 @@
 ## 1. 一句话
 
 桌面客户端是**登录门控**的：启动后先拉起本地服务（期间显示品牌启动页），服务就绪后
-检查登录态——**未登录则整页停在「EduBuddy，我帮你」登录页**（WorkBuddy 同款：居中
+检查登录态——**未登录则整页停在「懂了的那一下，很爽。」登录页**（WorkBuddy 同款：居中
 吉祥物 + 黑色登录按钮）；点「登录」用系统浏览器打开平台授权页，完成手机号/账密登录
 并点「确认授权」后，平台回调到本机回环服务；客户端换取令牌，并把**域名、业务令牌、
 可用模型**三样东西按 `model_type` 分流写进 DeepTutor 配置，随后自动进入应用——用户
@@ -38,15 +38,16 @@
   ├── 解析域名 + 写 model_catalog + DPAPI 落盘                                          │
   └── 会话主循环放行 → load_url 进入应用（页面载入可用模型）                              │
 
-应用内退出登录（左下角账号菜单）
+应用内退出登录（标题栏账号菜单，ADR-004）
   └── 吊销令牌 + 摘除 catalog → load_html 重载登录门控页 → 功能不可用，直到下次登录
 ```
 
-**按钮与 Python 之间怎么通信**：`desktop/inject.py` 用 `evaluate_js` 轮询一个隐藏 input
-（当事件槽）来收点击，而不是依赖 pywebview 的 `js_api` 桥在 `load_url()` 到外站页面后
-仍被注入——后者跨版本不稳。`evaluate_js` 是 pywebview 最底层能力，已验证可用。
-按钮每 2s 自愈一次（SPA 路由切换会重建 DOM），文案随登录态变化：
-`登录` → `等待浏览器…` → `已登录 8899`。
+**账号入口怎么通信**：标题栏账号区是窗口 chrome（`desktop/native_menu_backend.py`
+的 `AccountChip` 自绘 + 原生 ContextMenuStrip），点击直接回调 Python（经
+`desktop/main.py::_chip_actions` 分发），不依赖 `js_api` 桥、也不向页面注入任何
+控件；登录态由 `desktop/titlebar_account.py` 的同步线程轮询推送，账号区随登录态
+变化：`登录` → `等待浏览器…` → `用户名`。历史方案（页面悬浮按钮 + evaluate_js
+轮询隐藏 input 事件槽）已随 ADR-004 退役。
 
 ## 3. 登录拉到了什么，写到了哪里
 
@@ -54,7 +55,7 @@
 | --- | --- | --- | --- |
 | **域名**（中继 base_url） | 按下面 §3.1 的优先级链解析 | `model_catalog.json` 的 `connections[tokengine].base_url` 与活动 profile 的 `base_url` | 回退到本地配置（`endpoints.json` / 环境变量 / 内置默认） |
 | **业务令牌** | `/oauth/token` 响应的 `token` 字段（`sk-Tok...`） | 同上两处的 `api_key`；同时 DPAPI 加密存入 `auth.json` | 视为登录失败并提示 |
-| **可用模型** | `userinfo` 的 `models` 字段 | 活动 profile 的 `models`（首模型设为活动） | 回退到 `TOKENGINE_DEFAULT_MODELS` |
+| **可用模型** | 中继 `GET /v1/models`（每项自带 `model_type`，2026-09-24 起为唯一来源） | 活动 profile 的 `models`（首模型设为活动）并按 `model_type` 分流各服务 | 登录不阻断：模型列表保持现状；刷新报错返回、不写盘 |
 
 DeepTutor 1.6.9 的设置页可能先生成一个只带 `provider_ref.connection_id` 的
 OpenAI 连接 profile。桌面登录刷新会同时识别顶层的 `connection_id` 和 1.6.9
@@ -132,7 +133,6 @@ OpenAI 连接 profile。桌面登录刷新会同时识别顶层的 `connection_i
 | `TOKENGINE_CALLBACK_PORT` | `0`（随机） | 回环端口；设固定值便于比对平台日志 |
 | `TOKENGINE_LOGIN_TIMEOUT` | `900` | 单次登录等待上限（秒） |
 | `TOKENGINE_USERINFO_RELAY_FIELDS` | 见 §3 | 中继域名候选字段 |
-| `TOKENGINE_DEFAULT_MODELS` | `deepseek-ai/DeepSeek-V4-Flash-0731` | 模型列表兜底 |
 | `DEEPTUTOR_DESKTOP_SKIP_LOGIN` | — | 设为 `1` 跳过登录门控（离线/开发用） |
 
 ## 5. 文件位置
@@ -201,15 +201,16 @@ SKIP_AUTO_MIGRATE=false
 便携 zip 默认不制作，需要时加 `-MakePortable`。
 
 ```powershell
-# 复用已有 runtime staging（快）
-powershell -ExecutionPolicy Bypass -File build\build.ps1 -SkipRuntime
+# 一条命令：runtime 段自带增量（staging 与源码一致时只跑门禁，十几秒），
+# 版本门禁不可跳过（ADR-005）。机制详解见 docs/packaging-guide.md。
+powershell -ExecutionPolicy Bypass -File build\build.ps1
 
 # 产物
 dist\EduBuddyDesktop.exe     # 原生壳（依赖已装的 runtime 或系统 PATH）
 dist\EduBuddySetup.exe       # 点击即装安装器（内置运行时）
 
 # 需要便携包时（+约 8 分钟）
-powershell -ExecutionPolicy Bypass -File build\build.ps1 -SkipRuntime -MakePortable
+powershell -ExecutionPolicy Bypass -File build\build.ps1 -MakePortable
 ```
 
 > ⚠️ **别把这两步放进智能体 Bash 沙箱**：`make_portable.py` / ISCC 在沙箱里会被限流到

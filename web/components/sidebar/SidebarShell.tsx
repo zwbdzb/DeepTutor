@@ -188,6 +188,7 @@ export function SidebarShell({
         <div className="relative mb-2 flex h-9 w-9 items-center justify-center">
           <Link
             href="/"
+            prefetch={false}
             aria-label="EduBuddy"
             className="flex items-center justify-center transition-opacity duration-150 group-hover/sb:opacity-0"
           >
@@ -196,6 +197,7 @@ export function SidebarShell({
               alt="EduBuddy"
               width={22}
               height={22}
+              unoptimized
               className="h-[22px] w-[22px] rounded-md"
             />
           </Link>
@@ -226,6 +228,7 @@ export function SidebarShell({
               <Link
                 key={item.href}
                 href={item.href}
+                prefetch={false}
                 title={t(item.label) as string}
                 className={`relative flex h-9 w-9 items-center justify-center rounded-xl transition-all duration-150 ${
                   active
@@ -252,12 +255,13 @@ export function SidebarShell({
     >
       {/* Header: logo + collapse toggle */}
       <div className="flex h-[52px] shrink-0 items-center justify-between px-4">
-        <Link href="/" className="group flex items-center gap-1.5">
+        <Link href="/" prefetch={false} className="group flex items-center gap-1.5">
           <Image
             src="/logo.png"
             alt="EduBuddy"
             width={22}
             height={22}
+            unoptimized
             className="h-[22px] w-[22px] transition-transform duration-200 group-hover:scale-105"
           />
           <span
@@ -362,6 +366,7 @@ export function SidebarShell({
               <Link
                 key={item.href}
                 href={item.href}
+                prefetch={false}
                 onClick={closeDrawerOnNav}
                 className={`flex min-h-8 min-w-0 flex-1 items-center gap-2 rounded-md px-2.5 py-1.5 text-[13px] transition-colors ${
                   active

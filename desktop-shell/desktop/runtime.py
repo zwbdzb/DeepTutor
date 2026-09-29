@@ -1,7 +1,7 @@
 """Runtime resolution & provisioning.
 
-EduBuddy Desktop decouples the shell from whatever is installed system-wide.
-The managed runtime lives under %LOCALAPPDATA%\\EduBuddy\\runtime:
+ThinkBuddy Desktop decouples the shell from whatever is installed system-wide.
+The managed runtime lives under %LOCALAPPDATA%\\ThinkBuddy\\runtime:
 
     runtime/
       venv/   # python venv with `deeptutor` pip-installed (managed, v1)
@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -26,12 +27,41 @@ log = logging.getLogger("dt.runtime")
 
 # -- paths ------------------------------------------------------------------ #
 LOCALAPPDATA = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
+
+
+def _migrate_legacy_dir(legacy: Path, target: Path) -> Path:
+    """品牌迁移（EduBuddy -> ThinkBuddy）：旧目录一次性改名到新目录。
+
+    - 旧目录不存在 / 新目录已存在 → 直接用新目录（新装或已迁移过）。
+    - rename 失败（被占用/权限）→ 沿用旧目录，行为与旧版一致，绝不丢数据。
+    - 同盘 rename 是元数据操作，瞬时完成；auth.json / runtime 缓存 /
+      工作区学习数据随目录整体迁移，登录态与数据无缝延续。
+    """
+    if not legacy.exists() or target.exists():
+        return target
+    try:
+        legacy.rename(target)
+        log.info("migrated legacy dir %s -> %s", legacy, target)
+        return target
+    except OSError:
+        log.warning("cannot migrate %s (locked?) — keeping legacy path", legacy)
+        return legacy
+
+
 # Overridable for tests / portable (USB) installs.
-ROOT = Path(os.environ.get("DEEPTUTOR_DESKTOP_ROOT") or (LOCALAPPDATA / "EduBuddy"))
+_env_root = os.environ.get("DEEPTUTOR_DESKTOP_ROOT")
+ROOT = (
+    Path(_env_root) if _env_root
+    else _migrate_legacy_dir(LOCALAPPDATA / "EduBuddy", LOCALAPPDATA / "ThinkBuddy")
+)
 RUNTIME = ROOT / "runtime"
 MANAGED_VENV = RUNTIME / "venv"
 NODE_RUNTIME = RUNTIME / "node"
-WORKSPACE_HOME = Path(os.environ.get("DEEPTUTOR_DESKTOP_HOME") or (Path.home() / "EduBuddy"))
+_env_home = os.environ.get("DEEPTUTOR_DESKTOP_HOME")
+WORKSPACE_HOME = (
+    Path(_env_home) if _env_home
+    else _migrate_legacy_dir(Path.home() / "EduBuddy", Path.home() / "ThinkBuddy")
+)
 
 # Where the PyInstaller bundle keeps an embedded runtime.zip (onefile build)
 # or extracted tree (onedir build). sys._MEIPASS works for both.
@@ -51,12 +81,87 @@ def _runtime_zip_candidates() -> list[Path]:
 
 
 def _runtime_tree_candidates() -> list[Path]:
-    """Where a pre-extracted runtime/ tree may already live."""
+    """Where a pre-extracted runtime/ tree may already live.
+
+    顺序铁律：**随本 exe 分发的运行时优先于本机托管缓存**。安装器把与 exe
+    同一次构建产出的 runtime/ 树放在 exe 旁；%LOCALAPPDATA% 下的托管缓存是
+    runtime.zip 自解压的历史产物，版本可能停留在任意旧版——曾发生旧缓存
+    （1.6.9）排在候选首位、遮蔽新装运行时（1.6.10），导致升级后界面仍显示
+    旧版本号。因此缓存只配当兜底。
+    """
     return [
-        RUNTIME,                   # extracted into LOCALAPPDATA
-        EXE_DIR / "runtime",
-        APP_DIR / "runtime",
+        EXE_DIR / "runtime",       # 安装器/便携布局：exe 旁自带
+        APP_DIR / "runtime",       # PyInstaller 解包目录
+        RUNTIME,                   # %LOCALAPPDATA% 托管缓存（自解压产物），兜底
     ]
+
+
+def _version_key(version: str | None) -> tuple[int, ...]:
+    """把 '1.6.10' 之类的版本串转成可比较元组；解析失败视为最低。"""
+    parts = re.findall(r"\d+", version or "")
+    return tuple(int(p) for p in parts[:4]) if parts else (0,)
+
+
+def _runtime_deeptutor_version(base: Path) -> tuple[int, ...] | None:
+    """读取运行时树内嵌 python 的 deeptutor 版本（只读 dist-info，不执行代码）。
+
+    返回 None 表示该树没有可读的 deeptutor 安装信息。
+    """
+    site = base / "python" / "Lib" / "site-packages"
+    versions: list[str] = []
+    try:
+        for dist in sorted(site.glob("deeptutor-*.dist-info")):
+            meta = dist / "METADATA"
+            if not meta.exists():
+                continue
+            for line in meta.read_text(encoding="utf-8", errors="replace").splitlines():
+                if line.startswith("Version:"):
+                    value = line.split(":", 1)[1].strip()
+                    if value:
+                        versions.append(value)
+                    break
+    except OSError:
+        return None
+    if not versions:
+        return None
+    return max(_version_key(v) for v in versions)
+
+
+def select_runtime_base() -> Path | None:
+    """在候选运行时树里选出实际要用的那一棵。
+
+    规则（第一性：exe 自带的运行时与 exe 是同一次构建产物，天然自洽；
+    托管缓存只是缓存，只有在版本**严格更新**时才值得用）：
+
+      1. 按候选顺序扫描（exe 旁 > 解包目录 > 托管缓存）；
+      2. 候选版本严格高于当前最优者才替换（可读版本 > 不可读）；
+      3. 全都没有内嵌 python 时返回 None（调用方走 PATH 兜底）。
+    """
+    existing = [
+        cand for cand in _runtime_tree_candidates()
+        if (cand / "python" / "python.exe").exists()
+    ]
+    if not existing:
+        return None
+    best = existing[0]
+    best_key = _runtime_deeptutor_version(best)
+    for cand in existing[1:]:
+        key = _runtime_deeptutor_version(cand)
+        if key is not None and (best_key is None or key > best_key):
+            log.info(
+                "runtime candidate %s (deeptutor %s) beats %s (%s)",
+                cand, ".".join(map(str, key)) if key else "?",
+                best, ".".join(map(str, best_key)) if best_key else "?",
+            )
+            best, best_key = cand, key
+    if len(existing) > 1:
+        log.info(
+            "selected runtime base: %s (deeptutor %s); candidates seen: %s",
+            best,
+            ".".join(map(str, best_key)) if best_key else "unknown",
+            [(str(c), ".".join(map(str, _runtime_deeptutor_version(c) or ()))) for c in existing],
+        )
+    return best
 
 
 def app_dir() -> Path:
@@ -65,12 +170,15 @@ def app_dir() -> Path:
 
 # -- node ------------------------------------------------------------------- #
 def resolve_node_dir() -> Path | None:
-    """Return a directory containing node.exe, or None if unavailable."""
+    """Return a directory containing node.exe, or None if unavailable.
+
+    与运行时树同一优先级：exe 旁自带的 node 优先于托管缓存。
+    """
     candidates: list[Path] = []
-    if NODE_RUNTIME.joinpath("node.exe").exists():
-        candidates.append(NODE_RUNTIME)
     if EXE_DIR.joinpath("runtime", "node", "node.exe").exists():
         candidates.append(EXE_DIR / "runtime" / "node")
+    if NODE_RUNTIME.joinpath("node.exe").exists():
+        candidates.append(NODE_RUNTIME)
     if APP_DIR.joinpath("node", "node.exe").exists():
         candidates.append(APP_DIR / "node")
     for cand in candidates:
@@ -119,19 +227,23 @@ def resolve_deeptutor() -> Path | None:
 # Invocation that works against the relocatable embedded runtime:
 #   runtime/python/python.exe  run_deeptutor.py  start ...
 def resolve_deeptutor_cmd() -> list[str] | None:
-    """Return the full argv prefix used to launch deeptutor, or None."""
-    # pre-extracted embeddable runtime: managed, exe-adjacent, or bundled
-    for base in (RUNTIME, EXE_DIR / "runtime", APP_DIR / "runtime"):
+    """Return the full argv prefix used to launch deeptutor, or None.
+
+    运行时树由 select_runtime_base() 统一裁决（exe 旁自带优先，版本严格
+    更新的托管缓存才可越位），保证「跑起来的版本」和「关于页显示的版本」
+    永远读同一棵树。
+    """
+    base = select_runtime_base()
+    if base is not None:
         embed_py = base / "python" / "python.exe"
-        if embed_py.exists():
-            runner = base / "python" / "run_deeptutor.py"
-            log.info("using embedded runtime python: %s", embed_py)
-            if runner.exists():
-                # -u：stdout 指向日志文件时 Python 按块缓冲，"前端 已就绪" 等
-                # 就绪信号会被滞留在缓冲区里，壳的 wait_ready 只能白等超时。
-                return [str(embed_py), "-u", str(runner)]
-            return [str(embed_py), "-u", "-c",
-                    "from deeptutor_cli.main import main; raise SystemExit(main())"]
+        log.info("using embedded runtime python: %s", embed_py)
+        runner = base / "python" / "run_deeptutor.py"
+        if runner.exists():
+            # -u：stdout 指向日志文件时 Python 按块缓冲，"前端 已就绪" 等
+            # 就绪信号会被滞留在缓冲区里，壳的 wait_ready 只能白等超时。
+            return [str(embed_py), "-u", str(runner)]
+        return [str(embed_py), "-u", "-c",
+                "from deeptutor_cli.main import main; raise SystemExit(main())"]
     exe = resolve_deeptutor()
     return [str(exe)] if exe else None
 
@@ -139,30 +251,39 @@ def resolve_deeptutor_cmd() -> list[str] | None:
 def resolve_deeptutor_version() -> str | None:
     """Best-effort 读取运行时里 deeptutor 的版本号（不 import，读 dist-info METADATA）。
 
-    供「关于 EduBuddy」等信息展示用。打包版运行时在
+    供「关于 ThinkBuddy」等信息展示用。**与 resolve_deeptutor_cmd 同源**：
+    先经 select_runtime_base() 选中实际运行的那棵树，再读它的 dist-info——
+    否则可能出现「跑的是 A 树、显示的是 B 树版本」的错位。打包版运行时在
     ``<runtime>/python/Lib/site-packages/deeptutor-<ver>.dist-info/METADATA``；
     开发态兜底尝试 import（读 deeptutor.__version__ 子模块）。
     """
-    for base in (RUNTIME, EXE_DIR / "runtime", APP_DIR / "runtime"):
-        site = base / "python" / "Lib" / "site-packages"
-        try:
-            if site.exists():
-                for dist in sorted(site.glob("deeptutor-*.dist-info")):
-                    meta = dist / "METADATA"
-                    if not meta.exists():
-                        continue
-                    for line in meta.read_text(encoding="utf-8", errors="replace").splitlines():
-                        if line.startswith("Version:"):
-                            version = line.split(":", 1)[1].strip()
-                            if version:
-                                return version
-        except OSError:
-            continue
+    base = select_runtime_base()
+    if base is not None:
+        version = _read_distinfo_version(base / "python" / "Lib" / "site-packages")
+        if version:
+            return version
     try:  # 开发态：壳脚本可能跑在已装 deeptutor 的 Python 里
         from deeptutor import __version__ as _sub  # noqa
         return str(getattr(_sub, "__version__", "") or "").strip() or None
     except Exception:  # noqa: BLE001
         return None
+
+
+def _read_distinfo_version(site: Path) -> str | None:
+    """从 site-packages 的 deeptutor-*.dist-info/METADATA 里读版本号。"""
+    try:
+        for dist in sorted(site.glob("deeptutor-*.dist-info")):
+            meta = dist / "METADATA"
+            if not meta.exists():
+                continue
+            for line in meta.read_text(encoding="utf-8", errors="replace").splitlines():
+                if line.startswith("Version:"):
+                    version = line.split(":", 1)[1].strip()
+                    if version:
+                        return version
+    except OSError:
+        return None
+    return None
 
 
 # -- provisioning ------------------------------------------------------------ #
@@ -198,7 +319,7 @@ def extract_bundled_runtime() -> bool:
             else:
                 log.info("provisioning managed runtime from %s", src.name)
 
-            # RUNTIME is the shell-owned cache under EduBuddy; the user's
+            # RUNTIME is the shell-owned cache under ThinkBuddy; the user's
             # learning workspace is WORKSPACE_HOME and is never touched here.
             if RUNTIME.exists():
                 shutil.rmtree(RUNTIME)

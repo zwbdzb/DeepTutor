@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ThinkBuddy 图标预览 — 桌面智能体 · 绿色轻快</title>
+<style>
+  :root{
+    --bg-top:#7CF0B4; --bg-mid:#2FD08F; --bg-bot:#0FAE7B;
+    --arc-a:#D9F99D; --arc-b:#34D399; --bolt:#10B981; --bolt-deep:#049668;
+    --ink:#0F2E22; --ink-soft:#41604F; --line:#DDE7E0; --chip-bg:#F4F8F5;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;color:var(--ink);background:#FAFCFB;padding:40px 32px 64px}
+  .wrap{max-width:1080px;margin:0 auto}
+  header h1{font-size:26px;letter-spacing:.5px}
+  header p{color:var(--ink-soft);margin-top:8px;font-size:14px;line-height:1.7}
+  .tag{display:inline-block;font-size:12px;padding:3px 10px;border-radius:99px;background:#E4F8EE;color:#0E9F6E;margin-right:6px;margin-top:10px}
+  h2{font-size:16px;margin:44px 0 16px;padding-left:10px;border-left:4px solid var(--bg-mid)}
+  .grid{display:flex;gap:28px;flex-wrap:wrap;align-items:flex-start}
+
+  /* hero */
+  .hero{display:flex;gap:32px;background:linear-gradient(135deg,#F2F7F4,#E9F4EE);border:1px solid var(--line);border-radius:20px;padding:32px;align-items:center}
+  .hero figure{text-align:center}
+  .hero figcaption{font-size:12px;color:var(--ink-soft);margin-top:10px}
+  .hero img,.hero svg.hero-svg{width:200px;height:200px;border-radius:44px;box-shadow:0 12px 30px rgba(15,174,123,.28)}
+  .hero svg.hero-svg{border-radius:50%;box-shadow:0 12px 30px rgba(15,174,123,.28)}
+
+  /* size ladder */
+  .ladder{display:flex;align-items:flex-end;gap:26px;background:#fff;border:1px solid var(--line);border-radius:16px;padding:26px 30px 20px;flex-wrap:wrap}
+  .ladder figure{text-align:center}
+  .ladder img{display:block;margin:0 auto;image-rendering:-webkit-optimize-contrast}
+  .ladder figcaption{font-size:11px;color:var(--ink-soft);margin-top:8px}
+
+  /* dark / taskbar */
+  .dark-card{background:#1E2228;border-radius:16px;padding:26px 30px;color:#DDE3E0}
+  .taskbar{display:flex;align-items:center;gap:18px;background:#2B3038;border-radius:12px;padding:12px 20px;margin-top:14px}
+  .taskbar .sep{width:1px;height:34px;background:#4A515B}
+  .desktop-row{display:flex;gap:34px;margin-top:16px}
+  .desktop-row .icon-label{font-size:11px;color:#C6CDD3;text-align:center;margin-top:6px;max-width:72px}
+
+  /* palette */
+  .palette{display:flex;gap:14px;flex-wrap:wrap}
+  .chip{width:118px;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:#fff}
+  .chip .sw{height:56px}
+  .chip .meta{padding:8px 10px;font-size:11px;line-height:1.5}
+  .chip .meta b{display:block;font-size:11px;font-weight:600}
+  .chip .meta span{color:var(--ink-soft);font-family:Consolas,monospace}
+
+  /* dna table */
+  table{width:100%;border-collapse:collapse;background:#fff;border:1px solid var(--line);border-radius:12px;overflow:hidden;font-size:13px}
+  th,td{padding:10px 14px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;line-height:1.6}
+  th{background:#F0F7F2;font-weight:600;font-size:12px;color:var(--ink-soft)}
+  tr:last-child td{border-bottom:none}
+  .note{margin-top:36px;font-size:12px;color:var(--ink-soft);background:#FFF9E8;border:1px solid #F2E3B3;border-radius:12px;padding:14px 18px;line-height:1.8}
+  .note b{color:#8A6A12}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>ThinkBuddy · 桌面智能体图标</h1>
+    <p>绿色轻快 · 承接汉扬 Logo 五大基因（圆形徽章 / 双色渐变 / 白色负空间 / 闪电 / 右下能量弧）</p>
+    <span class="tag">主版 · 圆角方</span><span class="tag">圆徽版 · 托盘/头像</span><span class="tag">多规格 ICO 256/64/48/32/16</span>
+  </header>
+
+  <h2>主视觉</h2>
+  <div class="hero">
+    <figure>
+      <img src="thinkbuddy-icon.png" alt="ThinkBuddy 主版图标">
+      <figcaption>主版 · 桌面 / 安装器</figcaption>
+    </figure>
+    <figure>
+      <svg class="hero-svg" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="ThinkBuddy 圆徽版">
+        <defs>
+          <linearGradient id="p-bg" x1="128" y1="96" x2="896" y2="928" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#7CF0B4"/><stop offset="0.55" stop-color="#2FD08F"/><stop offset="1" stop-color="#0FAE7B"/>
+          </linearGradient>
+          <linearGradient id="p-arc" x1="960" y1="960" x2="580" y2="580" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#D9F99D"/><stop offset="1" stop-color="#34D399"/>
+          </linearGradient>
+          <linearGradient id="p-bolt" x1="512" y1="320" x2="512" y2="600" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#10B981"/><stop offset="1" stop-color="#049668"/>
+          </linearGradient>
+          <clipPath id="p-clip"><circle cx="512" cy="512" r="448"/></clipPath>
+        </defs>
+        <circle cx="512" cy="512" r="448" fill="url(#p-bg)"/>
+        <path d="M 580 960 A 380 380 0 0 1 960 580" stroke="url(#p-arc)" stroke-width="40" stroke-linecap="round" clip-path="url(#p-clip)"/>
+        <rect x="262" y="246" width="500" height="420" rx="140" fill="#FFFFFF"/>
+        <path d="M 396 650 L 356 752 Q 350 766 364 760 L 498 668 Z" fill="#FFFFFF"/>
+        <path d="M 532 320 L 432 490 L 504 490 L 462 600 L 592 440 L 514 440 L 567 320 Z" fill="url(#p-bolt)"/>
+        <path d="M 796 150 Q 806 186 842 196 Q 806 206 796 242 Q 786 206 750 196 Q 786 186 796 150 Z" fill="#FFFFFF" opacity="0.95"/>
+        <path d="M 872 258 Q 879 282 903 289 Q 879 296 872 320 Q 865 296 841 289 Q 865 282 872 258 Z" fill="#FFFFFF" opacity="0.7"/>
+      </svg>
+      <figcaption>圆徽版 · 托盘 / 头像</figcaption>
+    </figure>
+  </div>
+
+  <h2>多尺寸阶梯（自 ICO 实际栅格）</h2>
+  <div class="ladder">
+    <figure><img src="thinkbuddy-icon.png" width="128" height="128"><figcaption>128</figcaption></figure>
+    <figure><img src="thinkbuddy-icon.png" width="64" height="64"><figcaption>64</figcaption></figure>
+    <figure><img src="thinkbuddy-icon.png" width="48" height="48"><figcaption>48</figcaption></figure>
+    <figure><img src="thinkbuddy-icon.png" width="32" height="32"><figcaption>32</figcaption></figure>
+    <figure><img src="thinkbuddy-icon.png" width="16" height="16"><figcaption>16</figcaption></figure>
+    <figure><img src="thinkbuddy-icon-circle.png" width="128" height="128" style="border-radius:50%"><figcaption>圆 128</figcaption></figure>
+    <figure><img src="thinkbuddy-icon-circle.png" width="32" height="32" style="border-radius:50%"><figcaption>圆 32</figcaption></figure>
+  </div>
+
+  <h2>深色环境 · 任务栏 / 桌面模拟</h2>
+  <div class="dark-card">
+    <div class="taskbar">
+      <img src="thinkbuddy-icon.png" width="32" height="32" alt="任务栏 32px">
+      <img src="thinkbuddy-icon.png" width="24" height="24" alt="任务栏 24px">
+      <img src="thinkbuddy-icon-circle.png" width="32" height="32" style="border-radius:50%" alt="托盘 32px">
+      <div class="sep"></div>
+      <span style="font-size:12px;color:#9AA5AE">ThinkBuddy — 你的 AI 私教</span>
+    </div>
+    <div class="desktop-row">
+      <div><img src="thinkbuddy-icon.png" width="64" height="64" alt="桌面 64px"><div class="icon-label">ThinkBuddy</div></div>
+      <div><img src="thinkbuddy-icon.png" width="48" height="48" alt="桌面 48px"><div class="icon-label">ThinkBuddy</div></div>
+      <div><img src="thinkbuddy-icon-circle.png" width="64" height="64" style="border-radius:50%" alt="圆徽 64px"><div class="icon-label">ThinkBuddy</div></div>
+    </div>
+  </div>
+
+  <h2>调色板</h2>
+  <div class="palette">
+    <div class="chip"><div class="sw" style="background:#7CF0B4"></div><div class="meta"><b>底·上</b><span>#7CF0B4</span></div></div>
+    <div class="chip"><div class="sw" style="background:#2FD08F"></div><div class="meta"><b>底·中</b><span>#2FD08F</span></div></div>
+    <div class="chip"><div class="sw" style="background:#0FAE7B"></div><div class="meta"><b>底·下</b><span>#0FAE7B</span></div></div>
+    <div class="chip"><div class="sw" style="background:#D9F99D"></div><div class="meta"><b>弧·青柠</b><span>#D9F99D</span></div></div>
+    <div class="chip"><div class="sw" style="background:#34D399"></div><div class="meta"><b>弧·翡翠</b><span>#34D399</span></div></div>
+    <div class="chip"><div class="sw" style="background:linear-gradient(#10B981,#049668)"></div><div class="meta"><b>闪电</b><span>#10B981→#049668</span></div></div>
+    <div class="chip"><div class="sw" style="background:#fff;border-bottom:1px solid var(--line)"></div><div class="meta"><b>负空间白</b><span>#FFFFFF</span></div></div>
+  </div>
+
+  <h2>汉扬基因 → ThinkBuddy 转译</h2>
+  <table>
+    <tr><th style="width:30%">汉扬 Logo 基因</th><th>ThinkBuddy 转译</th></tr>
+    <tr><td>圆形徽章容器</td><td>圆角方主版 + 圆徽版双形态，徽章感保留</td></tr>
+    <tr><td>蓝→橙双色渐变</td><td>薄荷→翡翠绿渐变（#7CF0B4→#0FAE7B），青柠→翡翠能量弧</td></tr>
+    <tr><td>白色负空间图形</td><td>白色对话气泡 = Buddy（陪伴），图形逻辑同源</td></tr>
+    <tr><td>闪电</td><td>气泡内绿色闪电 = Think（灵光一闪），原版"蓝底白电"反转为"白底绿电"</td></tr>
+    <tr><td>右下能量弧</td><td>青柠→翡翠渐变弧，贴徽章边缘生长、端点齐平</td></tr>
+  </table>
+
+  <div class="note">
+    <b>⚠️ 商标提示：</b>检索发现海外已有同名产品 Thinkbuddy（多模型 AI 桌面工作台，macOS/Windows，2026-08 仍活跃）与 Think Buddy, LLC（iOS 陪伴应用，thinkwithbuddy.com）。定名已采纳，但建议尽快做第 9/41/42 类商标近似检索与法律核验，再对外投放。
+  </div>
+</div>
+</body>
+</html>

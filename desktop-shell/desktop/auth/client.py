@@ -174,3 +174,84 @@ class OAuthClient:
     # -- 用户信息 -------------------------------------------------------- #
     def userinfo(self, access_token: str) -> dict[str, Any]:
         return _get_json(self.userinfo_url, access_token)
+
+
+def fetch_relay_models(
+    relay_base: str, token: str, timeout: float = 10.0
+) -> tuple[list[str], dict[str, int]]:
+    """GET ``{relay_base}/models``——模型名单的**权威**来源。
+
+    2026-09-24 起替代「userinfo.models 授权名单」成为唯一名单来源：
+    中继（网关）的 /v1/models 每一项自带 ``model_type``
+    （1=文生文 2=文生图 3=文生视频 4=重排序 5=向量），与平台模型管理
+    后台的类型下拉一致，登录/刷新据此分流入库。
+
+    返回 ``(names, model_types)``：与 ``ensure_tokengine_catalog`` 的
+    ``(models, model_types)`` 入参同构，登录/刷新直接透传分流入库。
+
+    任何失败（网络 / 非 200 / 空列表 / 结构异常）都抛
+    :class:`OAuthError`。失败语义由调用方定：登录不阻断（模型列表保持
+    现状），刷新报错返回且不写盘——这里不静默吞错，避免"名单悄悄变少"
+    这类静默失效。
+    """
+    url = (relay_base or "").strip().rstrip("/") + "/models"
+    if not (relay_base or "").strip():
+        raise OAuthError("中继地址为空，无法拉取模型列表")
+    request = urllib.request.Request(
+        url, headers={"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as resp:
+            text = resp.read().decode("utf-8")
+            payload = json.loads(text) if text else {}
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            detail = exc.read().decode("utf-8", "replace")
+        except Exception:  # noqa: BLE001
+            pass
+        raise OAuthError(
+            f"模型列表拉取失败（HTTP {exc.code}）：{detail[:200]}", exc.code
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise OAuthError(f"模型列表网络错误：{exc.reason}") from exc
+    except OSError as exc:  # 读超时/连接重置等不经 URLError 包装的套接字错误
+        raise OAuthError(f"模型列表网络错误：{exc}") from exc
+    except (ValueError, TypeError) as exc:
+        raise OAuthError(f"模型列表响应不是合法 JSON：{exc}") from exc
+
+    # OpenAI 兼容：{"object":"list","data":[{id,...},...]}；宽容兼容裸数组
+    # 与 {"models":[...]} 两种变体。
+    items = payload if isinstance(payload, list) else None
+    if isinstance(payload, dict):
+        candidate = payload.get("data", payload.get("models"))
+        items = candidate if isinstance(candidate, list) else None
+    if items is None:
+        raise OAuthError("模型列表响应结构异常（缺少 data 数组）")
+
+    names: list[str] = []
+    types: dict[str, int] = {}
+    for item in items:
+        if isinstance(item, str):
+            name = item.strip()
+            model_type: Any = None
+        elif isinstance(item, dict):
+            name = str(
+                item.get("id") or item.get("model") or item.get("model_name") or ""
+            ).strip()
+            model_type = item.get("model_type")
+        else:
+            continue
+        if not name:
+            continue
+        if name not in types:
+            names.append(name)
+        if isinstance(model_type, (int, float)) and not isinstance(model_type, bool):
+            types[name] = int(model_type)
+
+    if not names:
+        # 空名单视为异常：登录会保持模型列表现状、刷新直接报错不写盘，
+        # 绝不让一次网关抖动把 catalog 里的模型清空（ensure 侧空 llm
+        # 名单会清活动模型）。
+        raise OAuthError("模型列表为空")
+    return names, types

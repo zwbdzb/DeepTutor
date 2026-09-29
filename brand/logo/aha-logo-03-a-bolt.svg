@@ -1,0 +1,20 @@
+<svg viewBox="0 0 680 380" width="100%" xmlns="http://www.w3.org/2000/svg" role="img">
+  <title>阿哈 Logo 方案三：A 字闪电</title>
+  <desc>阿哈的 A 里藏着闪电：蓝色圆徽 + 白色圆角字母 A + 橙色闪电横穿 A 档 + 右下橙色能量弧</desc>
+  <defs>
+    <linearGradient id="blueG3" gradientUnits="userSpaceOnUse" x1="216" y1="36" x2="436" y2="256">
+      <stop offset="0" stop-color="#1E72C4"/><stop offset="1" stop-color="#0A3D7E"/>
+    </linearGradient>
+    <linearGradient id="sunG3" x1="0" y1="0" x2="0.5" y2="1">
+      <stop offset="0" stop-color="#FFD23F"/><stop offset="0.55" stop-color="#FF8A3D"/><stop offset="1" stop-color="#EF4123"/>
+    </linearGradient>
+  </defs>
+  <rect width="680" height="380" fill="#F7F9FC"/>
+  <circle cx="340" cy="160" r="110" fill="url(#sunG3)"/>
+  <circle cx="326" cy="146" r="110" fill="url(#blueG3)"/>
+  <path d="M326 64 L403 206 L249 206 Z" fill="#FFFFFF" stroke="#FFFFFF" stroke-width="18" stroke-linejoin="round"/>
+  <path d="M326 123 L368 191 L284 191 Z" fill="url(#blueG3)" stroke="url(#blueG3)" stroke-width="10" stroke-linejoin="round"/>
+  <path d="M298 161 L330 148 L322 158 L354 145 L346 156 L314 169 Z" fill="url(#sunG3)"/>
+  <text x="340" y="322" text-anchor="middle" font-family="'PingFang SC','Microsoft YaHei',sans-serif" font-size="50" font-weight="700" fill="#0B3D7E">阿哈</text>
+  <text x="340" y="352" text-anchor="middle" font-family="'PingFang SC','Microsoft YaHei',sans-serif" font-size="19" font-weight="500" letter-spacing="4" fill="#6B7A8D">AHABUDDY</text>
+</svg>

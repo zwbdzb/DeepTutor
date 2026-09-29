@@ -7,7 +7,7 @@ Produces  dist/runtime.zip  containing two relocatable components:
                 # installed flat into Lib/site-packages (cp312 wheels)
       node/     # portable Node.js 22 LTS (node.exe + npm)
 
-The shell extracts this zip into %LOCALAPPDATA%\\EduBuddy\\runtime on
+The shell extracts this zip into %LOCALAPPDATA%\\ThinkBuddy\\runtime on
 first launch, then runs deeptutor via:
     python/python.exe -c "from deeptutor_cli.main import main; ..."
 
@@ -44,6 +44,12 @@ CACHE = STAGE / "cache"
 STAGING_PY = STAGE / "staging" / "python"
 STAGING_NODE = STAGE / "staging" / "node"
 DIST = ROOT / "dist"
+
+# pip 源（2026-09-24）：国内直连 pypi.org 极不稳定——实测本机 12s 无响应，
+# pip 侧表现为 SSL: UNEXPECTED_EOF_WHILE_READING（重试 5 次全灭，连 PyYAML
+# 都拉不到，构建必死）。默认走清华镜像；用户 shell 里显式设置了 PIP_INDEX_URL
+# （或代理）时以用户为准（见 install_deeptutor 的 setdefault）。
+DEFAULT_PIP_INDEX_URL = "https://pypi.tuna.tsinghua.edu.cn/simple"
 
 
 def _read_source_version(source_root: Path) -> str:
@@ -156,10 +162,18 @@ def install_deeptutor(target: Path, source_root: Path) -> None:
     dest = target / "Lib" / "site-packages"
     dest.mkdir(parents=True, exist_ok=True)
     log(f"pip installing deeptutor from LOCAL SOURCE {source_root} ...")
+    env = dict(os.environ)
+    # setdefault：用户已设置镜像/代理时尊重用户，没有才落默认国内镜像。
+    # build isolation（"Installing build dependencies" 阶段）继承本环境，
+    # 所以一个 env 同时覆盖依赖解析与构建隔离两层。
+    env.setdefault("PIP_INDEX_URL", DEFAULT_PIP_INDEX_URL)
+    env.setdefault("PIP_DISABLE_PIP_VERSION_CHECK", "1")
+    env.setdefault("PIP_DEFAULT_TIMEOUT", "60")
+    log(f"pip index: {env['PIP_INDEX_URL']}")
     res = subprocess.run(
         [str(BUILD_PY), "-m", "pip", "install", "--upgrade", "--no-compile",
          "--target", str(dest), str(source_root)],
-        capture_output=True, text=True,
+        capture_output=True, text=True, env=env,
     )
     if res.returncode != 0:
         log(res.stdout[-3000:])
@@ -332,8 +346,21 @@ def build(make_zip: bool = False, source_root: Path | None = None,
                         "deeptutor_cli-*.dist-info", "deeptutor_web",
                         "deeptutor_web-*.dist-info"):
                 for entry in sp.glob(pat):
-                    shutil.rmtree(entry, ignore_errors=True) if entry.is_dir() \
-                        else entry.unlink(missing_ok=True)
+                    # 清理失败必须响：ignore_errors 曾在文件被占用（应用未关/
+                    # 杀毒扫描）时静默残留旧文件，产出「1.6.10 版本 + 1.6.9
+                    # 前端 chunk」的混合运行时且能通过版本门禁（门禁只查
+                    # deeptutor.__version__）。宁可构建失败，不可静默混合。
+                    try:
+                        if entry.is_dir():
+                            shutil.rmtree(entry)
+                        else:
+                            entry.unlink()
+                    except OSError as exc:
+                        raise SystemExit(
+                            f"cannot clean stale {entry.name}: {exc}\n"
+                            f"likely held by a running ThinkBuddy/deeptutor "
+                            f"process or antivirus — close the app and retry."
+                        ) from exc
             install_deeptutor(STAGING_PY, source_root)
     else:
         install_deeptutor(STAGING_PY, source_root)
