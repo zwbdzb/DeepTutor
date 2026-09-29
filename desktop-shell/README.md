@@ -23,7 +23,8 @@
 登录门控页「登录」按钮（未登录启动时整页显示；登录后也可从**标题栏右上角账号区**发起）
    → 系统浏览器打开 <平台>/oauth/authorize（PKCE S256 + 本机回环回调 127.0.0.1:<随机端口>）
    → 手机号/账密登录 →「确认授权」→ 平台 302 回本机回环带 code
-   → 客户端换取业务令牌，按 model_type 分流写入 ~/ThinkBuddy/data/user/settings/model_catalog.json
+   → 客户端换取 OAuth 凭证，再从 userinfo 取得业务令牌，按 model_type 分流写入
+     ~/ThinkBuddy/data/user/settings/model_catalog.json
      （对话→llm/task、向量→embedding、图像/视频各归其位），随后自动进入应用
 ```
 
@@ -31,7 +32,11 @@
   应用；应用内退出登录（标题栏账号菜单）吊销令牌、摘除模型配置并回到登录页。
   离线/开发旁路：环境变量 `DEEPTUTOR_DESKTOP_SKIP_LOGIN=1`。
 - 标题栏右上角账号区文案随登录态变化：`登录` → `等待浏览器…` → 用户名（点击弹原生账号菜单）。
-  不再往页面注入任何悬浮控件（ADR-004）。
+  登录后的菜单提供“签到加积分”，不再往页面注入任何悬浮控件（ADR-004）。
+- **签到直连 thinkbuddy-website**：客户端从 OAuth `userinfo` 的 `sub` 读取稳定用户 ID，
+  直接 `POST /api/v1/checkin`，请求体只包含 `provider_user_id`。签到暂不鉴权，因此不会
+  向 thinkbuddy-website 发送 OAuth `access_token`、手机号、积分或 quota，也不经过
+  DeepTutor 本地后端代理；额度由 thinkbuddy-website 后台异步发放。
 - **域名**三层解析，内置默认（生产
   `tokengine.hanyoai.com`）→ `endpoints.json` / 环境变量显式覆盖（联调指向，
   回环地址按本地派生 `/v1`）→ userinfo 下发的中继地址。行为完全可预测。
@@ -39,6 +44,9 @@
   DPAPI 加密落盘，**绝不进入对话请求**。
 - 联调期指向本地平台：把 `api_base` 写进 `%LOCALAPPDATA%\ThinkBuddy\endpoints.json`，
   或设 `TOKENGINE_API_BASE=http://127.0.0.1:3000`。**装好的包无需重新打包即可改指向。**
+- thinkbuddy-website 默认地址为 `http://127.0.0.1:8000`。可在同一个
+  `endpoints.json` 中设置 `"thinkbuddy_website_url"`，或用环境变量
+  `THINKBUDDY_WEBSITE_URL` 覆盖。
 - 登录按钮默认就绪，无需额外开关；界面调试可用 `DEEPTUTOR_DESKTOP_DEBUG=1` 打开登录页的技术面板。
 
 ## 三种运行形态
