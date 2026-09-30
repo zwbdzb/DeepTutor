@@ -128,7 +128,7 @@ Content-Type: application/json
 
 端点解析优先级：**环境变量 > `<ROOT>/endpoints.json` > 内置默认**
 （Tokengine 内置默认是 `https://tokengine.hanyoai.com`；thinkbuddy-website 内置
-开发默认是 `http://127.0.0.1:8000`）。
+默认是 `https://thinkbuddy.hanyoai.com`）。
 
 `<ROOT>` = `%LOCALAPPDATA%\ThinkBuddy`（可用 `DEEPTUTOR_DESKTOP_ROOT` 改）。
 
@@ -157,7 +157,7 @@ Tokengine 环境变量使用 `TOKENGINE_` 前缀；thinkbuddy-website 使用独�
 | `TOKENGINE_CALLBACK_PORT` | `0`（随机） | 回环端口；设固定值便于比对平台日志 |
 | `TOKENGINE_LOGIN_TIMEOUT` | `900` | 单次登录等待上限（秒） |
 | `TOKENGINE_USERINFO_RELAY_FIELDS` | 见 §3 | 中继域名候选字段 |
-| `THINKBUDDY_WEBSITE_URL` | `http://127.0.0.1:8000` | thinkbuddy-website 根地址；优先于 `endpoints.json` |
+| `THINKBUDDY_WEBSITE_URL` | `https://thinkbuddy.hanyoai.com` | thinkbuddy-website 根地址；优先于 `endpoints.json` |
 | `DEEPTUTOR_DESKTOP_SKIP_LOGIN` | — | 设为 `1` 跳过登录门控（离线/开发用） |
 
 ## 5. 文件位置

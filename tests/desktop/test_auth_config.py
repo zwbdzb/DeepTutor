@@ -17,13 +17,13 @@ def write_endpoints(root: Path, **values: str) -> None:
     (root / "endpoints.json").write_text(json.dumps(values), encoding="utf-8")
 
 
-def test_thinkbuddy_website_url_uses_local_default(
+def test_thinkbuddy_website_url_uses_production_default(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("THINKBUDDY_WEBSITE_URL", raising=False)
 
-    assert config.thinkbuddy_website_url(tmp_path) == "http://127.0.0.1:8000"
+    assert config.thinkbuddy_website_url(tmp_path) == "https://thinkbuddy.hanyoai.com"
 
 
 def test_thinkbuddy_website_url_reads_endpoints_file(

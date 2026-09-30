@@ -45,7 +45,7 @@ DEV_API_BASE = "http://127.0.0.1:3000"
 PROD_API_BASE = "https://tokengine.hanyoai.com"
 
 DEFAULT_API_BASE = os.environ.get("TOKENGINE_DEFAULT_API_BASE", PROD_API_BASE)
-DEFAULT_THINKBUDDY_WEBSITE_URL = "http://127.0.0.1:8000"
+DEFAULT_THINKBUDDY_WEBSITE_URL = "https://thinkbuddy.hanyoai.com"
 
 # --------------------------------------------------------------------------- #
 # 端点解析
