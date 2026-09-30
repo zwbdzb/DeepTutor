@@ -1,14 +1,14 @@
-# EduBuddy Desktop 打包流水线
+# ThinkBuddy Desktop 打包流水线
 #
 # 与本地 desktop-shell\build\build.ps1 完全等价的三步：
 #   1. 前端 standalone 构建 + prepare_web_package.py -> deeptutor_web/
 #   2. build_runtime.py -> runtime-build/staging (embeddable Python + deeptutor 源码 + Node 22)
-#   3. PyInstaller -> dist\EduBuddyDesktop.exe；Inno Setup -> dist\EduBuddySetup.exe
+#   3. PyInstaller -> dist\ThinkBuddyDesktop.exe；Inno Setup -> dist\ThinkBuddySetup.exe
 #
 # 触发：
 #   - push 到 main/dev 且改动涉及 desktop-shell/**、web/**、deeptutor/** 等打包输入
 #   - 手动 workflow_dispatch（可勾选 release 额外发布 GitHub Release）
-name: EduBuddy Desktop Build
+name: ThinkBuddy Desktop Build
 
 on:
   workflow_dispatch:
@@ -18,7 +18,7 @@ on:
         type: boolean
         default: false
   push:
-    branches: [main, dev]
+    branches: [main, develop]
     paths:
       - "desktop-shell/**"
       - "web/**"
@@ -107,18 +107,18 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: EduBuddyDesktop-windows
+          name: ThinkBuddyDesktop-windows
           path: |
-            desktop-shell/dist/EduBuddyDesktop.exe
-            desktop-shell/dist/EduBuddySetup.exe
+            desktop-shell/dist/ThinkBuddyDesktop.exe
+            desktop-shell/dist/ThinkBuddySetup.exe
           if-no-files-found: error
 
       - name: Publish GitHub Release
-        if: github.event_name == 'workflow_dispatch' && inputs.release == true
+        if: github.event_name == "workflow_dispatch" && inputs.release == true
         uses: softprops/action-gh-release@v2
         with:
           tag_name: desktop-${{ github.run_number }}
-          name: EduBuddy Desktop build ${{ github.run_number }}
+          name: ThinkBuddy Desktop build ${{ github.run_number }}
           files: |
-            desktop-shell/dist/EduBuddyDesktop.exe
-            desktop-shell/dist/EduBuddySetup.exe
+            desktop-shell/dist/ThinkBuddyDesktop.exe
+            desktop-shell/dist/ThinkBuddySetup.exe
