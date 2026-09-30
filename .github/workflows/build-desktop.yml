@@ -94,6 +94,13 @@ jobs:
       - name: Install Inno Setup
         run: choco install innosetup -y --no-progress
 
+      # choco 静默安装不含各语种 .isl（交互式安装时才勾选语言组件），
+      # installer.ss 需要 ChineseSimplified.isl，从官方 issrc 仓库补到 Languages 目录。
+      - name: Add Chinese (Simplified) language file
+        run: |
+          $islDir = "C:\Program Files (x86)\Inno Setup 6\Languages"
+          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/jrsoftware/issrc/main/Files/Languages/ChineseSimplified.isl" -OutFile "$islDir\ChineseSimplified.isl"
+
       - name: Build runtime + exe + installer
         working-directory: desktop-shell
         env:
