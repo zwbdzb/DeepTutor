@@ -44,7 +44,7 @@
   DPAPI 加密落盘，**绝不进入对话请求**。
 - 联调期指向本地平台：把 `api_base` 写进 `%LOCALAPPDATA%\ThinkBuddy\endpoints.json`，
   或设 `TOKENGINE_API_BASE=http://127.0.0.1:3000`。**装好的包无需重新打包即可改指向。**
-- thinkbuddy-website 默认地址为 `http://127.0.0.1:8000`。可在同一个
+- thinkbuddy-website 默认地址为 `https://thinkbuddy.hanyoai.com`。可在同一个
   `endpoints.json` 中设置 `"thinkbuddy_website_url"`，或用环境变量
   `THINKBUDDY_WEBSITE_URL` 覆盖。
 - 登录按钮默认就绪，无需额外开关；界面调试可用 `DEEPTUTOR_DESKTOP_DEBUG=1` 打开登录页的技术面板。
