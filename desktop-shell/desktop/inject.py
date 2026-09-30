@@ -28,16 +28,28 @@ TOAST_ID = "edubuddy-toast"
 TOAST_ENSURE_JS = """
 (function () {
   if (!document.body) { return 'no-body'; }
-  if (document.getElementById('%(id)s')) { return 'exists'; }
-  var t = document.createElement('div');
-  t.id = '%(id)s';
-  t.style.cssText = 'position:fixed;left:50%%;bottom:36px;transform:translateX(-50%%);' +
-    'z-index:2147483002;background:rgba(17,17,17,.88);color:#fff;' +
-    'font:12px/1.5 "Segoe UI","Microsoft YaHei",system-ui,sans-serif;' +
-    'padding:8px 16px;border-radius:16px;display:none;max-width:70%%;text-align:center;' +
-    'box-shadow:0 4px 16px rgba(0,0,0,.20)';
-  document.body.appendChild(t);
-  return 'created';
+  var t = document.getElementById('%(id)s');
+  var result = 'exists';
+  if (!t) {
+    t = document.createElement('div');
+    t.id = '%(id)s';
+    t.style.cssText = 'position:fixed;left:50%%;bottom:36px;transform:translateX(-50%%);' +
+      'z-index:2147483002;background:rgba(17,17,17,.88);color:#fff;' +
+      'font:12px/1.5 "Segoe UI","Microsoft YaHei",system-ui,sans-serif;' +
+      'padding:8px 16px;border-radius:16px;display:none;max-width:70%%;text-align:center;' +
+      'box-shadow:0 4px 16px rgba(0,0,0,.20)';
+    document.body.appendChild(t);
+    result = 'created';
+  }
+  window.__edubuddyToast = function (message) {
+    if (t.__hideTimer) { clearTimeout(t.__hideTimer); }
+    t.textContent = String(message || '');
+    t.style.display = 'block';
+    t.__hideTimer = setTimeout(function () {
+      t.style.display = 'none';
+    }, 2600);
+  };
+  return result;
 })();
 """ % {"id": TOAST_ID}
 

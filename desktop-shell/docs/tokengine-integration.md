@@ -54,8 +54,9 @@
 | 拉取项 | 来源 | 落点 | 失败时 |
 | --- | --- | --- | --- |
 | **域名**（中继 base_url） | 按下面 §3.1 的优先级链解析 | `model_catalog.json` 的 `connections[tokengine].base_url` 与活动 profile 的 `base_url` | 回退到本地配置（`endpoints.json` / 环境变量 / 内置默认） |
-| **业务令牌** | `/oauth/token` 响应的 `token` 字段（`sk-Tok...`） | 同上两处的 `api_key`；同时 DPAPI 加密存入 `auth.json` | 视为登录失败并提示 |
+| **业务令牌** | `/oauth/userinfo` 响应的 `ai_token` 字段（`sk-...`） | 同上两处的 `api_key`；同时 DPAPI 加密存入 `auth.json` | 视为登录失败并提示 |
 | **可用模型** | 中继 `GET /v1/models`（每项自带 `model_type`，2026-09-24 起为唯一来源） | 活动 profile 的 `models`（首模型设为活动）并按 `model_type` 分流各服务 | 登录不阻断：模型列表保持现状；刷新报错返回、不写盘 |
+| **稳定用户 ID** | `/oauth/userinfo` 的 `sub`（例如 `u_314`） | `auth.json` 的 `account.raw.sub` | 无法发起签到，提示重新登录 |
 
 DeepTutor 1.6.9 的设置页可能先生成一个只带 `provider_ref.connection_id` 的
 OpenAI 连接 profile。桌面登录刷新会同时识别顶层的 `connection_id` 和 1.6.9
@@ -86,8 +87,8 @@ OpenAI 连接 profile。桌面登录刷新会同时识别顶层的 `connection_i
 
 | 端点 | 响应 |
 | --- | --- |
-| `POST /oauth/token` | **扁平**：`access_token` / `refresh_token` / `token` / `token_type` / `expires_in` / `user{id,phone,username,balance,models[]}` |
-| `GET /oauth/userinfo` | **扁平**：`sub` / `phone` / `username` / `balance` / `models[]` |
+| `POST /oauth/token` | **扁平**：`access_token` / `refresh_token` / `token_type` / `expires_in` |
+| `GET /oauth/userinfo` | **扁平**：`sub` / `phone` / `username` / `balance` / `ai_token` / `models[]` |
 | `GET /api/status` | `{success, data{server_address, system_name, ...}}`（公开，无需鉴权） |
 
 - `client_id` 必须是平台侧已注册的（DB 配置项 `OAuthClients`，默认空 → 未注册会被拒）；
@@ -100,50 +101,74 @@ OpenAI 连接 profile。桌面登录刷新会同时识别顶层的 `connection_i
 - 业务令牌按 `user_id + machine_id + client_id` **幂等**签发（`oauth-<client>-<machine>`），
   重新登录会复用同一条；吊销后重新登录会重新启用。
 
-> **注意**：只有「业务令牌」（`token`）会被写进 DeepTutor。`access_token` / `refresh_token`
-> 是 OAuth 会话凭证，仅用于换/吊销，**绝不进入任何对话请求**。
+> **注意**：只有 userinfo 下发的「业务令牌」（`ai_token`）会被写进 DeepTutor 模型配置。
+> `access_token` / `refresh_token` 是 OAuth 会话凭证，仅用于查询 userinfo、刷新或吊销，
+> **绝不进入任何对话请求**。
+
+### 3.3 签到链路
+
+登录后，标题栏账号菜单提供“签到加积分”。桌面壳从本地 `account.raw.sub` 读取稳定用户
+ID，直接调用 thinkbuddy-website，不经过 DeepTutor 的 `:8001` 后端：
+
+```http
+POST <thinkbuddy_website_url>/api/v1/checkin
+Content-Type: application/json
+
+{"provider_user_id":"u_314"}
+```
+
+当前签到入口暂不鉴权，桌面端不发送 `Authorization`、OAuth `access_token`、手机号、
+积分、日期或 quota。thinkbuddy-website 写入签到奖励后，由自己的 worker 使用管理员系统
+访问令牌调用 Tokengine 现有的 `POST /api/user/manage` 管理接口，以 `add_quota` 模式增加
+额度；换算规则为 `1 point = 1000 quota`。单次发放失败会将奖励标记为 `failed`，不会自动
+重试。桌面提示会区分 `pending/processing`、`succeeded` 和 `failed`。重复点击由桌面端
+并发锁拦截，同一天重复请求也由服务端返回原签到记录，不会重复记积分。
 
 ## 4. 配置与覆盖（联调期指向本地平台）
 
 端点解析优先级：**环境变量 > `<ROOT>/endpoints.json` > 内置默认**
-（内置默认为 `config.DEV_API_BASE`，即本联调构建的 `http://127.0.0.1:3000`）。
+（Tokengine 内置默认是 `https://tokengine.hanyoai.com`；thinkbuddy-website 内置
+开发默认是 `http://127.0.0.1:8000`）。
 
-`<ROOT>` = `%LOCALAPPDATA%\EduBuddy`（可用 `DEEPTUTOR_DESKTOP_ROOT` 改）。
+`<ROOT>` = `%LOCALAPPDATA%\ThinkBuddy`（可用 `DEEPTUTOR_DESKTOP_ROOT` 改）。
 
-`%LOCALAPPDATA%\EduBuddy\endpoints.json`：
+`%LOCALAPPDATA%\ThinkBuddy\endpoints.json`：
 
 ```json
 {
-  "api_base": "http://127.0.0.1:3000"
+  "api_base": "http://127.0.0.1:3000",
+  "thinkbuddy_website_url": "http://127.0.0.1:8000"
 }
 ```
 
 可覆写的键：`api_base`、`authorize_url`、`token_url`、`userinfo_url`、`revoke_url`、
-`relay_base`、`status_url`。其余端点由 `api_base` 派生。**这是给打包版准备的**——
+`relay_base`、`thinkbuddy_website_url`。其余 Tokengine 端点由 `api_base` 派生。
+**这是给打包版准备的**——
 装好的客户端无需重新打包即可改指向（联调/私有化部署都用它）。
 
-环境变量（同名大写，前缀 `TOKENGINE_`）：
+Tokengine 环境变量使用 `TOKENGINE_` 前缀；thinkbuddy-website 使用独立变量：
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
 | `TOKENGINE_API_BASE` | 联调构建 `http://127.0.0.1:3000`；发布为 `https://tokengine.hanyoai.com` | 平台根地址 |
-| `TOKENGINE_DEFAULT_API_BASE` | 同上 | 覆盖**编译进包**的默认值（构建时指定） |
+| `TOKENGINE_DEFAULT_API_BASE` | `https://tokengine.hanyoai.com` | 运行时覆盖 Tokengine 内置兜底地址 |
 | `TOKENGINE_CLIENT_ID` | `edubuddy-desktop` | 平台侧注册的客户端标识 |
 | `TOKENGINE_SCOPE` | `openid relay` | 授权范围 |
 | `TOKENGINE_CALLBACK_PORT` | `0`（随机） | 回环端口；设固定值便于比对平台日志 |
 | `TOKENGINE_LOGIN_TIMEOUT` | `900` | 单次登录等待上限（秒） |
 | `TOKENGINE_USERINFO_RELAY_FIELDS` | 见 §3 | 中继域名候选字段 |
+| `THINKBUDDY_WEBSITE_URL` | `http://127.0.0.1:8000` | thinkbuddy-website 根地址；优先于 `endpoints.json` |
 | `DEEPTUTOR_DESKTOP_SKIP_LOGIN` | — | 设为 `1` 跳过登录门控（离线/开发用） |
 
 ## 5. 文件位置
 
 | 内容 | 路径 |
 | --- | --- |
-| 应用日志 | `%LOCALAPPDATA%\EduBuddy\logs\app.log` |
-| 令牌（DPAPI 加密） | `%LOCALAPPDATA%\EduBuddy\auth.json` |
-| 机器指纹 | `%LOCALAPPDATA%\EduBuddy\machine_id` |
-| 端点覆盖 | `%LOCALAPPDATA%\EduBuddy\endpoints.json` |
-| DeepTutor 工作区（学习数据） | `%USERPROFILE%\EduBuddy`（`DEEPTUTOR_DESKTOP_HOME` 可改） |
+| 应用日志 | `%LOCALAPPDATA%\ThinkBuddy\logs\app.log` |
+| 令牌（DPAPI 加密） | `%LOCALAPPDATA%\ThinkBuddy\auth.json` |
+| 机器指纹 | `%LOCALAPPDATA%\ThinkBuddy\machine_id` |
+| 端点覆盖 | `%LOCALAPPDATA%\ThinkBuddy\endpoints.json` |
+| DeepTutor 工作区（学习数据） | `%USERPROFILE%\ThinkBuddy`（`DEEPTUTOR_DESKTOP_HOME` 可改） |
 | 写入的模型配置 | `<工作区>\data\user\settings\model_catalog.json` |
 
 ## 6. 排查清单
@@ -197,7 +222,7 @@ SKIP_AUTO_MIGRATE=false
 
 ## 7. 重新打包
 
-**默认只出两个包**（`EduBuddyDesktop.exe` + `EduBuddySetup.exe`）；
+**默认只出两个包**（`ThinkBuddyDesktop.exe` + `ThinkBuddySetup.exe`）；
 便携 zip 默认不制作，需要时加 `-MakePortable`。
 
 ```powershell
@@ -206,8 +231,8 @@ SKIP_AUTO_MIGRATE=false
 powershell -ExecutionPolicy Bypass -File build\build.ps1
 
 # 产物
-dist\EduBuddyDesktop.exe     # 原生壳（依赖已装的 runtime 或系统 PATH）
-dist\EduBuddySetup.exe       # 点击即装安装器（内置运行时）
+dist\ThinkBuddyDesktop.exe     # 原生壳（依赖已装的 runtime 或系统 PATH）
+dist\ThinkBuddySetup.exe       # 点击即装安装器（内置运行时）
 
 # 需要便携包时（+约 8 分钟）
 powershell -ExecutionPolicy Bypass -File build\build.ps1 -MakePortable
@@ -229,15 +254,15 @@ powershell -ExecutionPolicy Bypass -File build\build.ps1 -MakePortable
 
 ## 8. 构建产物
 
-三个产物的关系：`installer.iss` 打包 `..\dist\EduBuddyDesktop.exe`；便携包把**同一个 exe**
+三个产物的关系：`installer.iss` 打包 `..\dist\ThinkBuddyDesktop.exe`；便携包把**同一个 exe**
 与 `runtime/` 一起压进 zip。因此校验「顶层 exe 的 sha256 == zip 内嵌 exe 的 sha256」即可
 确认三者一致。
 
 | 产物 | 大小 | 说明 |
 | --- | --- | --- |
-| `dist\EduBuddyDesktop.exe` | 13,957,256 B | 原生壳（PyInstaller onefile），依赖旁边的 `runtime/` |
-| `dist\EduBuddyPortable.zip` | 268,639,393 B（21,764 条目） | 解压即用，含内置 Python/Node |
-| `dist\EduBuddySetup.exe` | 178,943,259 B | 点击即装安装器（Inno Setup 7） |
+| `dist\ThinkBuddyDesktop.exe` | 13,957,256 B | 原生壳（PyInstaller onefile），依赖旁边的 `runtime/` |
+| `dist\ThinkBuddyPortable.zip` | 268,639,393 B（21,764 条目） | 解压即用，含内置 Python/Node |
+| `dist\ThinkBuddySetup.exe` | 178,943,259 B | 点击即装安装器（Inno Setup 7） |
 
 exe 的 sha256 前缀：`79bbc5ea1986edc0…`（顶层与便携包内嵌一致）。
 

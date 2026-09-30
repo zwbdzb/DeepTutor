@@ -1,4 +1,4 @@
-"""Tokengine 接入配置。
+"""Tokengine 与 thinkbuddy-website 接入配置。
 
 端点解析优先级（高 → 低）：
 
@@ -10,13 +10,15 @@
 
     {
       "api_base": "http://127.0.0.1:3000",
-      "relay_base": "http://127.0.0.1:3000/v1"
+      "relay_base": "http://127.0.0.1:3000/v1",
+      "thinkbuddy_website_url": "http://127.0.0.1:8000"
     }
 
 可覆写的键：``api_base`` / ``authorize_url`` / ``token_url`` / ``userinfo_url`` /
-``revoke_url`` / ``relay_base``。
+``revoke_url`` / ``relay_base`` / ``thinkbuddy_website_url``。
 
-环境变量名：``TOKENGINE_`` + 上述键的大写形式。
+Tokengine 环境变量名为 ``TOKENGINE_`` + 对应键的大写形式；网站服务地址使用
+``THINKBUDDY_WEBSITE_URL``。
 """
 from __future__ import annotations
 
@@ -43,11 +45,12 @@ DEV_API_BASE = "http://127.0.0.1:3000"
 PROD_API_BASE = "https://tokengine.hanyoai.com"
 
 DEFAULT_API_BASE = os.environ.get("TOKENGINE_DEFAULT_API_BASE", PROD_API_BASE)
+DEFAULT_THINKBUDDY_WEBSITE_URL = "http://127.0.0.1:8000"
 
 # --------------------------------------------------------------------------- #
 # 端点解析
 # --------------------------------------------------------------------------- #
-_ENDPOINT_KEYS = (
+_TOKENGINE_ENDPOINT_KEYS = (
     "api_base",
     "authorize_url",
     "token_url",
@@ -55,6 +58,7 @@ _ENDPOINT_KEYS = (
     "revoke_url",
     "relay_base",
 )
+_CONFIG_KEYS = (*_TOKENGINE_ENDPOINT_KEYS, "thinkbuddy_website_url")
 
 
 def _read_endpoints_file(root: Optional[Path]) -> dict[str, str]:
@@ -72,7 +76,7 @@ def _read_endpoints_file(root: Optional[Path]) -> dict[str, str]:
     if not isinstance(data, dict):
         return {}
     out: dict[str, str] = {}
-    for key in _ENDPOINT_KEYS:
+    for key in _CONFIG_KEYS:
         value = data.get(key)
         if isinstance(value, str) and value.strip():
             out[key] = value.strip()
@@ -104,6 +108,20 @@ def endpoints(root: Optional[Path] = None) -> dict[str, str]:
     return resolved
 
 
+def thinkbuddy_website_url(root: Optional[Path] = None) -> str:
+    """Resolve the thinkbuddy-website base URL for desktop requests."""
+    file_over = _read_endpoints_file(root)
+    candidates = (
+        os.environ.get("THINKBUDDY_WEBSITE_URL"),
+        file_over.get("thinkbuddy_website_url"),
+        DEFAULT_THINKBUDDY_WEBSITE_URL,
+    )
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip().rstrip("/")
+    return ""
+
+
 def explicit_overrides(root: Optional[Path] = None) -> dict[str, str]:
     """收集**显式**配置的端点键值（环境变量 > endpoints.json）。
 
@@ -113,7 +131,7 @@ def explicit_overrides(root: Optional[Path] = None) -> dict[str, str]:
     """
     file_over = _read_endpoints_file(root)
     out: dict[str, str] = {}
-    for key in _ENDPOINT_KEYS:
+    for key in _TOKENGINE_ENDPOINT_KEYS:
         env_value = os.environ.get(f"TOKENGINE_{key.upper()}")
         value = env_value or file_over.get(key)
         if isinstance(value, str) and value.strip():

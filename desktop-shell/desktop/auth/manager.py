@@ -84,6 +84,13 @@ class AuthManager:
         payload = self._store.load()
         return dict(payload.get("account") or {})
 
+    def provider_user_id(self) -> str:
+        """Return the stable Tokengine subject saved from OAuth userinfo."""
+        raw = self.account().get("raw")
+        if not isinstance(raw, dict):
+            return ""
+        return str(raw.get("sub") or "").strip()
+
     def status(self) -> dict[str, Any]:
         payload = self._store.load()
         account = dict(payload.get("account") or {})

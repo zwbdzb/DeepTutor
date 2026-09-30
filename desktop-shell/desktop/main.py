@@ -31,6 +31,8 @@ from collections import deque
 
 from desktop import APP_NAME, __version__, clipboard, dialogs, native_menu_backend
 from desktop.auth import AuthManager
+from desktop.auth import config as auth_config
+from desktop.checkin import CheckinCoordinator, checkin_message
 from desktop.inject import ToastInjector
 from desktop.menubar import build_native_menu
 from desktop.native_menu_backend import (
@@ -102,9 +104,22 @@ def _single_instance() -> bool:
 class Api:
     """Methods callable from the splash/gate page via `pywebview.api.*`."""
 
-    def __init__(self, frontend_url: str, auth: AuthManager, debug: bool = False) -> None:
+    def __init__(
+        self,
+        frontend_url: str,
+        auth: AuthManager,
+        debug: bool = False,
+        website_url: str | None = None,
+    ) -> None:
         self._url = frontend_url
         self._auth = auth
+        configured_website_url = (
+            website_url
+            if website_url is not None
+            else auth_config.thinkbuddy_website_url(rt.ROOT)
+        )
+        self._website_url = configured_website_url.strip().rstrip("/")
+        self._checkin = CheckinCoordinator(auth, self._website_url)
         self._debug = debug
         self._lock = threading.Lock()
         self._phase = "boot"
@@ -167,6 +182,10 @@ class Api:
     def refresh_models(self) -> dict:
         """重拉中继 /v1/models → 重写 model_catalog → 回写账号信息。"""
         return self._auth.refresh_models()
+
+    def checkin_points(self) -> dict:
+        """Use the OAuth subject to check in directly with thinkbuddy-website."""
+        return self._checkin.checkin()
 
     def copy_relay(self) -> dict:
         """复制 API 中继地址到剪贴板（刻意不复制业务 token，避免泄露）。"""
@@ -254,6 +273,11 @@ def _chip_actions(api: Api) -> dict:
         else:
             api.toast(res.get("message") or res.get("error") or "刷新失败")
 
+    def checkin() -> None:
+        api.toast("正在签到...")
+        result = api.checkin_points()
+        api.toast(checkin_message(result))
+
     def logout() -> None:
         # MB_OKCANCEL | MB_ICONWARNING；IDOK == 1
         if dialogs.message_box("退出登录", "确定要退出当前账号吗？", 0x31) != 1:
@@ -282,6 +306,7 @@ def _chip_actions(api: Api) -> dict:
         "switch": api.login,
         "platform": api.open_platform,
         "invite": invite,
+        "checkin": checkin,
         "refresh": refresh,
         "copy": api.copy_relay,
         "logout": logout,
@@ -522,7 +547,12 @@ def main() -> int:
 
     frontend_url = f"http://127.0.0.1:{DEFAULT_FRONTEND_PORT}"
     auth = AuthManager()
-    api = Api(frontend_url, auth, debug=DEBUG)
+    api = Api(
+        frontend_url,
+        auth,
+        debug=DEBUG,
+        website_url=auth_config.thinkbuddy_website_url(rt.ROOT),
+    )
 
     # 端点对齐要赶在 DeepTutor 后端起来之前做：catalog 改写完成后，
     # 后端首次读取拿到的就是 endpoints.json 指向的地址。
