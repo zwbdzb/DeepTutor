@@ -1,14 +1,14 @@
-# EduBuddy Desktop 打包流水线
+# ThinkBuddy Desktop 打包流水线
 #
 # 与本地 desktop-shell\build\build.ps1 完全等价的三步：
 #   1. 前端 standalone 构建 + prepare_web_package.py -> deeptutor_web/
 #   2. build_runtime.py -> runtime-build/staging (embeddable Python + deeptutor 源码 + Node 22)
-#   3. PyInstaller -> dist\EduBuddyDesktop.exe；Inno Setup -> dist\EduBuddySetup.exe
+#   3. PyInstaller -> dist\ThinkBuddyDesktop.exe；Inno Setup -> dist\ThinkBuddySetup.exe
 #
 # 触发：
 #   - push 到 main/dev 且改动涉及 desktop-shell/**、web/**、deeptutor/** 等打包输入
 #   - 手动 workflow_dispatch（可勾选 release 额外发布 GitHub Release）
-name: EduBuddy Desktop Build
+name: ThinkBuddy Desktop Build
 
 on:
   workflow_dispatch:
@@ -18,7 +18,7 @@ on:
         type: boolean
         default: false
   push:
-    branches: [main, dev]
+    branches: [main, develop]
     paths:
       - "desktop-shell/**"
       - "web/**"
@@ -94,6 +94,13 @@ jobs:
       - name: Install Inno Setup
         run: choco install innosetup -y --no-progress
 
+      # choco 静默安装不含各语种 .isl（交互式安装时才勾选语言组件），
+      # installer.ss 需要 ChineseSimplified.isl，从官方 issrc 仓库补到 Languages 目录。
+      - name: Add Chinese (Simplified) language file
+        run: |
+          $islDir = "C:\Program Files (x86)\Inno Setup 6\Languages"
+          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/jrsoftware/issrc/main/Files/Languages/ChineseSimplified.isl" -OutFile "$islDir\ChineseSimplified.isl"
+
       - name: Build runtime + exe + installer
         working-directory: desktop-shell
         env:
@@ -104,21 +111,26 @@ jobs:
         working-directory: desktop-shell
         run: Get-ChildItem dist -Filter *.exe | Select-Object Name, @{n='MB';e={[math]::Round($_.Length/1MB,1)}} | Format-Table -AutoSize
 
-      - name: Upload artifacts
+      - name: Upload desktop exe
         uses: actions/upload-artifact@v4
         with:
-          name: EduBuddyDesktop-windows
-          path: |
-            desktop-shell/dist/EduBuddyDesktop.exe
-            desktop-shell/dist/EduBuddySetup.exe
+          name: ThinkBuddyDesktop-windows
+          path: desktop-shell/dist/ThinkBuddyDesktop.exe
+          if-no-files-found: error
+
+      - name: Upload setup exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: ThinkBuddySetup-windows
+          path: desktop-shell/dist/ThinkBuddySetup.exe
           if-no-files-found: error
 
       - name: Publish GitHub Release
-        if: github.event_name == 'workflow_dispatch' && inputs.release == true
+        if: inputs.release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: desktop-${{ github.run_number }}
-          name: EduBuddy Desktop build ${{ github.run_number }}
+          name: ThinkBuddy Desktop build ${{ github.run_number }}
           files: |
-            desktop-shell/dist/EduBuddyDesktop.exe
-            desktop-shell/dist/EduBuddySetup.exe
+            desktop-shell/dist/ThinkBuddyDesktop.exe
+            desktop-shell/dist/ThinkBuddySetup.exe
