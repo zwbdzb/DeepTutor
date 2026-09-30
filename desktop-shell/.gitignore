@@ -1,4 +1,4 @@
-# EduBuddy desktop-shell 嵌套忽略规则
+# ThinkBuddy desktop-shell 嵌套忽略规则
 # 放在 desktop-shell/ 下而不是仓库根 .gitignore —— 纯新增文件，
 # 合并上游时永不冲突（工程纪律：不碰上游文件）。
 
@@ -11,10 +11,10 @@ __pycache__/
 dist/
 runtime-build/
 # 根 .gitignore 的全局 build/ 会把本目录的打包脚本（build.ps1 /
-# EduBuddyDesktop.spec / installer.iss）一并屏蔽 —— CI 检出后拿不到它们。
+# ThinkBuddyDesktop.spec / installer.iss）一并屏蔽 —— CI 检出后拿不到它们。
 # 这里显式重新纳入目录本身；下一行的 PyInstaller 工作目录仍保持忽略。
 !build/
-build/EduBuddyDesktop/
+build/ThinkBuddyDesktop/
 build/build_last.log
 
 # 运行期数据
