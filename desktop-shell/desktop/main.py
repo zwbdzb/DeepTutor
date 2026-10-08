@@ -52,7 +52,7 @@ log = logging.getLogger("dt.main")
 DEBUG = os.environ.get("DEEPTUTOR_DESKTOP_DEBUG", "") == "1"
 
 # 邀请活动页（走系统浏览器打开）
-INVITE_URL = "https://thinkbuddy.hanyoai.com/"
+INVITE_URL = "https://thinkbuddy.hanyoai.com/invite?utm_source=agent"
 
 # --------------------------------------------------------------------------- #
 # logging -------------------------------------------------------------------- #
