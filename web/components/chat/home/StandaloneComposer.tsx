@@ -1024,6 +1024,7 @@ function StandaloneComposerImpl({
       />
       <QuestionBankPicker
         open={showQuestionBankPicker}
+        initialSelected={selectedQuestionEntries}
         onClose={() => {
           setShowQuestionBankPicker(false);
           setSpaceMenuOpen(true);

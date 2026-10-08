@@ -730,7 +730,14 @@ async def fetch_model_entries(
     api_format: str = "auto",
 ) -> list[dict[str, Any]]:
     """List models with type metadata (``model_type`` when the provider sends it)."""
-    if canonical_provider_name(binding) == "codebuddy":
+    canonical_binding = canonical_provider_name(binding)
+    if canonical_binding == "github_copilot":
+        from deeptutor.services.github_copilot_auth import list_github_copilot_models
+
+        names = await list_github_copilot_models()
+        return [{"id": name, "name": name} for name in names]
+
+    if canonical_binding == "codebuddy":
         from .provider_core.codebuddy_models import fetch_codebuddy_models
 
         names = await fetch_codebuddy_models(api_key)
