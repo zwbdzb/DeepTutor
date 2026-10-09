@@ -46,11 +46,16 @@ import argparse
 import ast
 import io
 import re
+import sys
 import tokenize
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_SITE_PACKAGES = ROOT / "runtime-build" / "staging" / "python" / "Lib" / "site-packages"
+_PY_VER = "3.12"
+if sys.platform == "darwin":
+    DEFAULT_SITE_PACKAGES = ROOT / "runtime-build" / "staging" / "python" / "lib" / f"python{_PY_VER}" / "site-packages"
+else:
+    DEFAULT_SITE_PACKAGES = ROOT / "runtime-build" / "staging" / "python" / "Lib" / "site-packages"
 
 # 只处理本项目的三个发行包；其余第三方包一律不扫
 TARGET_PACKAGES = ("deeptutor", "deeptutor_cli", "deeptutor_web")
