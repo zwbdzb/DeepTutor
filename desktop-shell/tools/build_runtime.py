@@ -64,14 +64,29 @@ def _read_source_version(source_root: Path) -> str:
         raise SystemExit(f"cannot parse __version__ from {vf}")
     return m.group(1)
 
-# Relocatable Windows components (edit to bump versions)
+# Relocatable runtime components (edit to bump versions).
+# Windows 用 python.org embeddable + node win-x64 zip；
+# macOS 用 python-build-standalone（indygreg）+ node darwin-arm64 tarball——
+# python.org 没有 mac 等价 embeddable 发行版，python-build-standalone 是
+# PyInstaller/Relink 生态公认的可重定位 mac Python 来源。
+IS_MAC = sys.platform == "darwin"
 PY_VER = "3.12.7"
-PY_URL = f"https://www.python.org/ftp/python/{PY_VER}/python-{PY_VER}-embed-amd64.zip"
-PY_ZIP = CACHE / f"python-{PY_VER}-embed-amd64.zip"
-
 NODE_VER = "v22.22.2"
-NODE_URL = f"https://nodejs.org/dist/{NODE_VER}/node-{NODE_VER}-win-x64.zip"
-NODE_ZIP = CACHE / f"node-{NODE_VER}-win-x64.zip"
+if IS_MAC:
+    # install_only flavor 只含运行时（无 doc/test），体积小、解包即可用。
+    # 解包后布局：python/bin/python3、python/lib/python3.12/...，展平到
+    # staging/python/ 即与 Windows embeddable 同 schema（runtime/python/...）。
+    _PY_TAG = f"cpython-{PY_VER}+20241016-aarch64-apple-darwin-install_only"
+    PY_URL = (f"https://github.com/indygreg/python-build-standalone/"
+              f"releases/download/20241016/{_PY_TAG}.tar.gz")
+    PY_ZIP = CACHE / f"{_PY_TAG}.tar.gz"
+    NODE_URL = f"https://nodejs.org/dist/{NODE_VER}/node-{NODE_VER}-darwin-arm64.tar.gz"
+    NODE_ZIP = CACHE / f"node-{NODE_VER}-darwin-arm64.tar.gz"
+else:
+    PY_URL = f"https://www.python.org/ftp/python/{PY_VER}/python-{PY_VER}-embed-amd64.zip"
+    PY_ZIP = CACHE / f"python-{PY_VER}-embed-amd64.zip"
+    NODE_URL = f"https://nodejs.org/dist/{NODE_VER}/node-{NODE_VER}-win-x64.zip"
+    NODE_ZIP = CACHE / f"node-{NODE_VER}-win-x64.zip"
 
 # A system cp312 interpreter used only to resolve cp312 wheels into the
 # embeddable distribution during the *build* (not needed at run time).
@@ -108,9 +123,15 @@ def download(url: str, dest: Path) -> None:
 
 def extract(zip_path: Path, target: Path) -> None:
     target.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(zip_path) as zf:
-        zf.extractall(target)
-    # strip a possible single wrapper dir (node zip has one)
+    if zip_path.name.endswith(".tar.gz"):
+        # macOS：python-build-standalone 与 node darwin 都是 tar.gz
+        import tarfile
+        with tarfile.open(zip_path, "r:gz") as tf:
+            tf.extractall(target)
+    else:
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extractall(target)
+    # strip a possible single wrapper dir (node zip/tarball has one)
     subs = [p for p in target.iterdir() if p.is_dir()]
     if len(subs) == 1 and not list(target.glob("*.exe")) and not list(target.glob("python*.dll")):
         inner = subs[0]
@@ -121,7 +142,14 @@ def extract(zip_path: Path, target: Path) -> None:
 
 
 def enable_site(path: Path) -> None:
-    """Uncomment `import site` and ensure Lib\\site-packages is on sys.path."""
+    """Uncomment `import site` and ensure Lib\\site-packages is on sys.path.
+
+    Windows embeddable 用 ``python*._pth`` 控制 sys.path，默认注释掉
+    ``import site``，这里取消注释并追加 ``Lib\\site-packages``。
+    macOS 的 python-build-standalone 已启用 site 模块、无 _pth 文件，直接 return。
+    """
+    if IS_MAC:
+        return
     pth = next(path.glob("python*._pth"))
     lines = [l.rstrip() for l in pth.read_text(encoding="utf-8").splitlines()]
     out: list[str] = []
@@ -142,6 +170,24 @@ def enable_site(path: Path) -> None:
     log(f"enabled site-packages in {pth.name}")
 
 
+def _py_site_packages(target: Path) -> Path:
+    """staging python 树内 site-packages 路径。
+
+    Windows embeddable 是 ``Lib/site-packages``；python-build-standalone 是
+    ``lib/python{ver}/site-packages``（与 CPython 标准布局一致）。
+    """
+    if IS_MAC:
+        return target / "lib" / f"python{PY_VER.rsplit('.', 1)[0]}" / "site-packages"
+    return target / "Lib" / "site-packages"
+
+
+def _staging_py_exe(target: Path) -> Path:
+    """staging python 树内解释器路径（用于版本门禁/冒烟测试）。"""
+    if IS_MAC:
+        return target / "bin" / "python3"
+    return target / "python.exe"
+
+
 def install_deeptutor(target: Path, source_root: Path) -> None:
     """pip install --target 把【本地源】的 deeptutor 装进 embeddable 的 site-packages。
 
@@ -159,7 +205,7 @@ def install_deeptutor(target: Path, source_root: Path) -> None:
             f"run:  cd web && npm ci && npm run build && "
             f"python scripts/prepare_web_package.py"
         )
-    dest = target / "Lib" / "site-packages"
+    dest = _py_site_packages(target)
     dest.mkdir(parents=True, exist_ok=True)
     log(f"pip installing deeptutor from LOCAL SOURCE {source_root} ...")
     env = dict(os.environ)
@@ -187,7 +233,7 @@ def version_gate(target: Path, expected: str) -> str:
 
     防止「以为打了新版、其实静默回退到旧版」的事故再次发生。
     """
-    py_exe = target / "python.exe"
+    py_exe = _staging_py_exe(target)
     # 注意：deeptutor/__init__.py 不 re-export __version__，必须经子模块取
     code = "from deeptutor.__version__ import __version__; print(__version__)"
     res = subprocess.run([str(py_exe), "-c", code], capture_output=True, text=True, timeout=120)
@@ -220,15 +266,20 @@ def smoke_test(py_exe) -> None:
 #  - boto3/botocore/...: AWS; only llama_index.core.utilities.aws_utils (lazy) uses it
 #  - hf_xet            : optional huggingface_hub download accelerator
 #  - bin/              : pip console-script launchers (app runs via run_deeptutor.py)
-#  - PyWin32.chm       : pywin32 help file
+#  - PyWin32.chm       : pywin32 help file（Windows only）
 def PRUNE_GLOBS() -> list[str]:
-    return [
+    globs = [
         "litellm", "litellm-*.dist-info",
         "boto3", "boto3-*.dist-info", "botocore", "botocore-*.dist-info",
         "s3transfer", "s3transfer-*.dist-info",
         "hf_xet", "hf_xet-*.dist-info",
-        "bin", "PyWin32.chm",
     ]
+    if IS_MAC:
+        # mac 上 bin/ 是 python-build-standalone 的可执行入口（python3），
+        # prune 掉会导致运行时找不到解释器；PyWin32.chm 在 mac 不存在。
+        return globs
+    globs.extend(["bin", "PyWin32.chm"])
+    return globs
 
 
 def prune_runtime(site_packages: Path) -> None:
@@ -249,6 +300,9 @@ def prune_runtime(site_packages: Path) -> None:
 
 def _prepared(py: Path, node: Path) -> bool:
     """True if staging already holds an extractable python + node."""
+    if IS_MAC:
+        # python-build-standalone：bin/python3；node darwin tarball：bin/node
+        return (py / "bin" / "python3").exists() and (node / "bin" / "node").exists()
 
     def check(root: Path, marker: str) -> bool:
         if not (root / marker).exists():
@@ -323,13 +377,13 @@ def build(make_zip: bool = False, source_root: Path | None = None,
 
     # pip install：本地源不存在、版本不一致、或 --force-deeptutor 时重装。
     # pip --target 不会卸旧版本（会叠加 dist-info），所以先清掉旧的 deeptutor*。
-    sp = STAGING_PY / "Lib" / "site-packages"
+    sp = _py_site_packages(STAGING_PY)
     state_changed = source_state_changed(source_root)
     if state_changed:
         log("source package fingerprint changed; reinstalling deeptutor")
     installed_ok = False
     if (sp / "deeptutor").exists():
-        py_exe = STAGING_PY / "python.exe"
+        py_exe = _staging_py_exe(STAGING_PY)
         res = subprocess.run([str(py_exe), "-c",
                               "from deeptutor.__version__ import __version__; print(__version__)"],
                              capture_output=True, text=True, timeout=120)
@@ -365,16 +419,16 @@ def build(make_zip: bool = False, source_root: Path | None = None,
     else:
         install_deeptutor(STAGING_PY, source_root)
 
-    smoke_test(STAGING_PY / "python.exe")
+    smoke_test(_staging_py_exe(STAGING_PY))
     version_gate(STAGING_PY, expected)   # 版本门禁：不过这里直接构建失败
     save_source_state(source_root)
 
-    sp = STAGING_PY / "Lib" / "site-packages"
+    sp = _py_site_packages(STAGING_PY)
     if (sp / "litellm").exists() or (sp / "boto3").exists():
         prune_runtime(sp)
     else:
         log("runtime already pruned; skipping")
-    smoke_test(STAGING_PY / "python.exe")  # re-verify after pruning
+    smoke_test(_staging_py_exe(STAGING_PY))  # re-verify after pruning
 
     # The portable flow (make_portable.py) packs `runtime-build/staging` as-is,
     # so the zip below is OPT-IN. Deflating thousands of tiny files is slow, so

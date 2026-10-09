@@ -25,8 +25,40 @@ from pathlib import Path
 
 log = logging.getLogger("dt.runtime")
 
+# -- platform helpers -------------------------------------------------------- #
+# 集中处理跨平台差异，避免在路径查找里散落 ``os.name == "nt"`` / 硬编码 .exe。
+# 变量名 LOCALAPPDATA 保留（即使 mac 上语义不同），以最小化下游代码改动。
+
+
+def _is_mac() -> bool:
+    return sys.platform == "darwin"
+
+
+def _py_bin_rel() -> tuple[str, ...]:
+    """运行时树内 python 解释器相对于 ``<base>/python/`` 的路径片段。"""
+    return ("bin", "python3") if _is_mac() else ("python.exe",)
+
+
+def _py_bin_name() -> str:
+    return "python3" if _is_mac() else "python.exe"
+
+
+def _node_bin_name() -> str:
+    return "node" if _is_mac() else "node.exe"
+
+
+def _venv_scripts() -> str:
+    """venv 内可执行目录名：mac/linux 是 ``bin``，Windows 是 ``Scripts``。"""
+    return "bin" if _is_mac() else "Scripts"
+
+
 # -- paths ------------------------------------------------------------------ #
-LOCALAPPDATA = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
+# macOS 上等价于 ~/Library/Application Support/ThinkBuddy（Apple 数据目录约定）；
+# Windows 上沿用 %LOCALAPPDATA%\ThinkBuddy。
+if _is_mac():
+    LOCALAPPDATA = Path.home() / "Library" / "Application Support"
+else:
+    LOCALAPPDATA = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
 
 
 def _migrate_legacy_dir(legacy: Path, target: Path) -> Path:
@@ -139,7 +171,7 @@ def select_runtime_base() -> Path | None:
     """
     existing = [
         cand for cand in _runtime_tree_candidates()
-        if (cand / "python" / "python.exe").exists()
+        if cand.joinpath("python", *_py_bin_rel()).exists()
     ]
     if not existing:
         return None
@@ -175,11 +207,11 @@ def resolve_node_dir() -> Path | None:
     与运行时树同一优先级：exe 旁自带的 node 优先于托管缓存。
     """
     candidates: list[Path] = []
-    if EXE_DIR.joinpath("runtime", "node", "node.exe").exists():
+    if EXE_DIR.joinpath("runtime", "node", _node_bin_name()).exists():
         candidates.append(EXE_DIR / "runtime" / "node")
-    if NODE_RUNTIME.joinpath("node.exe").exists():
+    if NODE_RUNTIME.joinpath(_node_bin_name()).exists():
         candidates.append(NODE_RUNTIME)
-    if APP_DIR.joinpath("node", "node.exe").exists():
+    if APP_DIR.joinpath("node", _node_bin_name()).exists():
         candidates.append(APP_DIR / "node")
     for cand in candidates:
         log.info("using managed node at %s", cand)
@@ -204,7 +236,7 @@ def _path_or_none(p: Path) -> Path | None:
 def resolve_deeptutor() -> Path | None:
     """Return the path to the deeptutor executable, or None."""
     name = deeptutor_binary_name()
-    for cand in (MANAGED_VENV / "Scripts" / name, APP_DIR / name):
+    for cand in (MANAGED_VENV / _venv_scripts() / name, APP_DIR / name):
         found = _path_or_none(cand)
         if found:
             log.info("using managed deeptutor at %s", found)
@@ -228,7 +260,7 @@ def resolve_deeptutor_cmd() -> list[str] | None:
     """
     base = select_runtime_base()
     if base is not None:
-        embed_py = base / "python" / "python.exe"
+        embed_py = base.joinpath("python", *_py_bin_rel())
         log.info("using embedded runtime python: %s", embed_py)
         runner = base / "python" / "run_deeptutor.py"
         if runner.exists():
@@ -305,7 +337,7 @@ def extract_bundled_runtime() -> bool:
     try:
         with zipfile.ZipFile(src) as zf:
             incoming = _read_zip_runtime_manifest(zf)
-            if RUNTIME.joinpath("python", "python.exe").exists():
+            if RUNTIME.joinpath("python", *_py_bin_rel()).exists():
                 if _read_managed_runtime_manifest() == incoming:
                     return True
                 log.info("managed runtime differs from bundled runtime; refreshing")
@@ -345,7 +377,7 @@ def provision_with_system_python(on_line=None) -> bool:
     if deeptutor_binary_name() == "deeptutor.exe":
         exe = MANAGED_VENV / "Scripts" / deeptutor_binary_name()
     else:
-        exe = MANAGED_VENV / "bin" / deeptutor_binary_name()
+        exe = MANAGED_VENV / _venv_scripts() / deeptutor_binary_name()
     if exe.exists():
         return True
     py = _find_system_python()
@@ -370,8 +402,7 @@ def provision_with_system_python(on_line=None) -> bool:
                 creationflags=0x08000000 if os.name == "nt" else 0,
             )
         say("正在安装 deeptutor（首次需要联网，请稍候）…")
-        pyv = MANAGED_VENV / "Scripts" / "python.exe" if os.name == "nt" \
-            else MANAGED_VENV / "bin" / "python"
+        pyv = MANAGED_VENV / _venv_scripts() / _py_bin_name()
         subprocess.run(
             [str(pyv), "-m", "pip", "install", "--upgrade", "pip"],
             check=True, capture_output=True, timeout=300,

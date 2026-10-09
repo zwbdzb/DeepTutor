@@ -93,19 +93,33 @@ _WNDPROC = ctypes.WINFUNCTYPE(
     ctypes.c_size_t, ctypes.c_ssize_t,
 )
 
-_user32 = ctypes.windll.user32
-_user32.CallWindowProcW.restype = ctypes.c_ssize_t
-_user32.CallWindowProcW.argtypes = [
-    ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint,
-    ctypes.c_size_t, ctypes.c_ssize_t,
-]
-_user32.GetWindowLongPtrW.restype = ctypes.c_ssize_t
-_user32.GetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int]
-_user32.SetWindowLongPtrW.restype = ctypes.c_ssize_t
-_user32.SetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
-if not hasattr(_user32, "SetWindowLongPtrW"):  # 32 位 Python 兜底
-    _user32.SetWindowLongPtrW = _user32.SetWindowLongW
-    _user32.GetWindowLongPtrW = _user32.GetWindowLongW
+_user32 = None  # 延迟绑定；mac 上 import 阶段不触发 ctypes.windll 访问
+
+
+def _bind_user32() -> None:
+    """在 install_windows_shell_menu() 首次调用时绑定 Win32 user32 原型。
+
+    放在模块顶层会因 ``ctypes.windll`` 在非 Windows 平台抛 AttributeError 而
+    炸掉整个模块 import（main.py 顶层 ``from desktop.native_menu_backend
+    import install_windows_shell_menu`` 即失败）；延迟到 Windows-only 路径才
+    绑定，mac 上安全，Windows 行为零变化。
+    """
+    global _user32
+    if _user32 is not None or os.name != "nt":
+        return
+    _user32 = ctypes.windll.user32
+    _user32.CallWindowProcW.restype = ctypes.c_ssize_t
+    _user32.CallWindowProcW.argtypes = [
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint,
+        ctypes.c_size_t, ctypes.c_ssize_t,
+    ]
+    _user32.GetWindowLongPtrW.restype = ctypes.c_ssize_t
+    _user32.GetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    _user32.SetWindowLongPtrW.restype = ctypes.c_ssize_t
+    _user32.SetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
+    if not hasattr(_user32, "SetWindowLongPtrW"):  # 32 位 Python 兜底
+        _user32.SetWindowLongPtrW = _user32.SetWindowLongW
+        _user32.GetWindowLongPtrW = _user32.GetWindowLongW
 
 # hwnd → (原窗口过程, 回调引用)；全局持有，防止 ctypes 回调被 GC
 _HOOKS: dict[int, tuple] = {}
@@ -1300,6 +1314,8 @@ def install_windows_shell_menu() -> bool:
     global _Point, _Action, _GraphicsPath, _LinearGradientBrush, _Region
     if os.name != "nt":
         return False
+
+    _bind_user32()  # 延迟绑定 Win32 user32 原型（mac 上不会走到这里）
 
     try:
         import webview.platforms.winforms as winforms
