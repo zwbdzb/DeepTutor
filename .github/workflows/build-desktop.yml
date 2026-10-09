@@ -1,20 +1,28 @@
-# ThinkBuddy Desktop 打包流水线
+# ThinkBuddy Desktop 打包流水线（Windows + macOS）
 #
-# 与本地 desktop-shell\build\build.ps1 完全等价的三步：
+# Windows 与本地 desktop-shell\build\build.ps1 完全等价的三步：
 #   1. 前端 standalone 构建 + prepare_web_package.py -> deeptutor_web/
 #   2. build_runtime.py -> runtime-build/staging (embeddable Python + deeptutor 源码 + Node 22)
 #   3. PyInstaller -> dist\ThinkBuddyDesktop.exe；Inno Setup -> dist\ThinkBuddySetup.exe
 #
+# macOS（arm64）平行流程，同样是三步：
+#   1. 前端 standalone 构建 + prepare_web_package.py -> deeptutor_web/
+#   2. build_runtime.py -> runtime-build/staging (python-build-standalone + deeptutor 源码 + Node 22)
+#   3. PyInstaller -> dist/ThinkBuddyDesktop.app；ditto -> dist/ThinkBuddyDesktop-mac-arm64.zip
+#
 # 触发：
 #   - push 到 main/dev 且改动涉及 desktop-shell/**、web/**、deeptutor/** 等打包输入
 #   - 手动 workflow_dispatch（可勾选 release 额外发布 GitHub Release）
+#
+# macOS MVP 阶段不做 codesigning：用户首次打开需右键 → 打开 → 仍要打开 绕过 Gatekeeper。
+# 后续接 APPLE_DEVELOPER_ID secrets + codesign --deep + notarytool。
 name: ThinkBuddy Desktop Build
 
 on:
   workflow_dispatch:
     inputs:
       release:
-        description: "构建成功后发布 GitHub Release（desktop-N tag，附两个 exe）"
+        description: "构建成功后发布 GitHub Release（desktop-N tag 附两个 exe，desktop-mac-N tag 附 mac zip）"
         type: boolean
         default: false
   push:
@@ -134,3 +142,129 @@ jobs:
           files: |
             desktop-shell/dist/ThinkBuddyDesktop.exe
             desktop-shell/dist/ThinkBuddySetup.exe
+
+  mac:
+    name: macOS arm64 · runtime + app + zip
+    runs-on: macos-14
+    env:
+      PYTHONIOENCODING: utf-8
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # cp312 解释器：build_runtime.py 通过 BUILD_PY 找到它，把依赖 wheel
+      # 安装进 staging 的 python-build-standalone 运行时（构建期用，不随包分发）。
+      - name: Set up Python 3.12 (BUILD_PY)
+        id: py312
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node.js 22 (frontend build)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # 缓存 build_runtime.py 下载的 python-build-standalone tarball + node darwin tarball（约 80MB）。
+      # build_runtime.py 里的 PY_VER / NODE_VER 变了记得同步 bump 这个 key。
+      - name: Cache runtime downloads
+        uses: actions/cache@v4
+        with:
+          path: desktop-shell/runtime-build/cache
+          key: thinkbuddy-runtime-mac-py3127-node2222
+
+      # 从 icon.png 生成 .icns（macOS 自带 sips + iconutil，无需额外依赖）。
+      # spec 引用 assets/icon.icns；本地开发可手动跑同样命令生成后签入。
+      - name: Generate .icns from icon.png
+        run: |
+          set -e
+          ICONSET=/tmp/icon.iconset
+          SRC=desktop-shell/assets/icon.png
+          mkdir -p "$ICONSET"
+          sips -z 16 16     "$SRC" --out "$ICONSET/icon_16x16.png"        > /dev/null
+          sips -z 32 32     "$SRC" --out "$ICONSET/icon_16x16@2x.png"    > /dev/null
+          sips -z 32 32     "$SRC" --out "$ICONSET/icon_32x32.png"        > /dev/null
+          sips -z 64 64     "$SRC" --out "$ICONSET/icon_32x32@2x.png"    > /dev/null
+          sips -z 128 128   "$SRC" --out "$ICONSET/icon_128x128.png"      > /dev/null
+          sips -z 256 256   "$SRC" --out "$ICONSET/icon_128x128@2x.png"  > /dev/null
+          sips -z 256 256   "$SRC" --out "$ICONSET/icon_256x256.png"      > /dev/null
+          sips -z 512 512   "$SRC" --out "$ICONSET/icon_256x256@2x.png"  > /dev/null
+          sips -z 512 512   "$SRC" --out "$ICONSET/icon_512x512.png"      > /dev/null
+          sips -z 1024 1024 "$SRC" --out "$ICONSET/icon_512x512@2x.png"  > /dev/null
+          iconutil -c icns "$ICONSET" -o desktop-shell/assets/icon.icns
+
+      - name: Install frontend dependencies
+        working-directory: web
+        run: npm ci --legacy-peer-deps
+
+      # macOS 上 subprocess 能直接解析 npm，所以构建 + 拷贝可走一条命令；
+      # prepare_web_package.py --skip-build 让脚本只做拷贝（校验 web/.next/standalone/server.js）。
+      - name: Build frontend (Next.js standalone)
+        working-directory: web
+        run: npm run build
+
+      - name: Refresh deeptutor_web package
+        run: python scripts/prepare_web_package.py --skip-build
+
+      # build_runtime.py 的硬性要求：desktop-shell/.venv 存在（pywebview/pillow/pyinstaller）。
+      - name: Create shell venv
+        working-directory: desktop-shell
+        run: |
+          python3 -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/pip install pywebview pillow pyinstaller
+
+      # build_runtime.py：mac 上用 python-build-standalone + node darwin-arm64 tarball。
+      # **不带** --no-zip：mac 没有安装器（无 Inno），runtime.zip 必须内嵌进 .app，
+      # shell 首启自解压到 ~/Library/Application Support/ThinkBuddy/runtime/。
+      - name: Build runtime + zip
+        working-directory: desktop-shell
+        env:
+          BUILD_PY: ${{ steps.py312.outputs.python-path }}
+        run: .venv/bin/python tools/build_runtime.py
+
+      # 只重写 staging 产物里的用户可见品牌名；包名/类名/URL 受保护。幂等。
+      - name: Rebrand staging (DeepTutor -> ThinkBuddy)
+        working-directory: desktop-shell
+        run: .venv/bin/python tools/rebrand.py
+
+      - name: Build .app with PyInstaller
+        working-directory: desktop-shell
+        run: .venv/bin/python -m PyInstaller --noconfirm --clean build/ThinkBuddyDesktop-mac.spec
+
+      # ditto 保留 mac 元数据（权限/符号链接/扩展属性），比 zip 更适合 .app 打包。
+      - name: Zip .app bundle
+        working-directory: desktop-shell/dist
+        run: ditto -c -k --keepParent ThinkBuddyDesktop.app ThinkBuddyDesktop-mac-arm64.zip
+
+      - name: List outputs
+        working-directory: desktop-shell
+        run: ls -lh dist/ThinkBuddyDesktop-mac-arm64.zip
+
+      - name: Upload mac zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: ThinkBuddyDesktop-mac-arm64
+          path: desktop-shell/dist/ThinkBuddyDesktop-mac-arm64.zip
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: inputs.release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: desktop-mac-${{ github.run_number }}
+          name: ThinkBuddy Desktop (macOS) build ${{ github.run_number }}
+          body: |
+            ## macOS arm64 构建
+
+            **首次打开方式**（未签名应用绕过 Gatekeeper）：
+            1. 下载并解压 `ThinkBuddyDesktop-mac-arm64.zip`
+            2. 在 Finder 里找到 `ThinkBuddyDesktop.app`
+            3. **右键** → 「打开」→ 弹窗点「仍要打开」
+            4. 之后双击即可正常启动
+
+            首次启动会自解压运行时（python + node），可能需要 10-30 秒。
+          files: |
+            desktop-shell/dist/ThinkBuddyDesktop-mac-arm64.zip
