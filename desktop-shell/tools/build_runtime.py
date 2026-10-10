@@ -28,7 +28,9 @@ import argparse
 import hashlib
 import json
 import os
+import platform
 import shutil
+import stat
 import subprocess
 import sys
 import urllib.request
@@ -64,14 +66,51 @@ def _read_source_version(source_root: Path) -> str:
         raise SystemExit(f"cannot parse __version__ from {vf}")
     return m.group(1)
 
-# Relocatable Windows components (edit to bump versions)
+# Relocatable runtime components (edit to bump versions).
+# Windows 用 python.org embeddable + node win-x64 zip；
+# macOS 用 python-build-standalone（indygreg）+ node darwin tarball——
+# python.org 没有 mac 等价 embeddable 发行版，python-build-standalone 是
+# PyInstaller/Relink 生态公认的可重定位 mac Python 来源。
+# Mac 通过 --arch 选择 arm64 / x86_64，默认跟随当前构建机架构。
+IS_MAC = sys.platform == "darwin"
 PY_VER = "3.12.7"
-PY_URL = f"https://www.python.org/ftp/python/{PY_VER}/python-{PY_VER}-embed-amd64.zip"
-PY_ZIP = CACHE / f"python-{PY_VER}-embed-amd64.zip"
-
 NODE_VER = "v22.22.2"
-NODE_URL = f"https://nodejs.org/dist/{NODE_VER}/node-{NODE_VER}-win-x64.zip"
-NODE_ZIP = CACHE / f"node-{NODE_VER}-win-x64.zip"
+# --- 先解析 --arch（若在 main 里按 parse 结果再下载就太晚了：URL 在模块加载期确定）---
+_arch = "native"
+if IS_MAC:
+    for _i, _a in enumerate(sys.argv):
+        if _a == "--arch":
+            if _i + 1 < len(sys.argv):
+                _arch = sys.argv[_i + 1]
+        elif _a.startswith("--arch="):
+            _arch = _a.split("=", 1)[1]
+    if _arch == "native":
+        _arch = {"x86_64": "x86_64", "arm64": "arm64"}.get(
+            platform.machine().lower().replace("amd64", "x86_64"),
+            "arm64" if platform.machine().lower() in ("aarch64", "arm64") else "x86_64")
+if IS_MAC:
+    if _arch == "x86_64":
+        # x64 用 x86_64-apple-darwin 的 python-build-standalone + node x64 tarball
+        _PY_TAG = f"cpython-{PY_VER}+20241016-x86_64-apple-darwin-install_only"
+        _PY_OSNODE = "darwin-x64"
+        _AR = "x86_64"
+    else:  # arm64
+        _PY_TAG = f"cpython-{PY_VER}+20241016-aarch64-apple-darwin-install_only"
+        _PY_OSNODE = "darwin-arm64"
+        _AR = "aarch64"
+    # install_only flavor 只含运行时（无 doc/test），体积小、解包即可用。
+    # 解包后布局：python/bin/python3、python/lib/python3.12/...，展平到
+    # staging/python/ 即与 Windows embeddable 同 schema（runtime/python/...）。
+    PY_URL = (f"https://github.com/indygreg/python-build-standalone/"
+              f"releases/download/20241016/{_PY_TAG}.tar.gz")
+    PY_ZIP = CACHE / f"{_PY_TAG}.tar.gz"
+    NODE_URL = f"https://nodejs.org/dist/{NODE_VER}/node-{NODE_VER}-{_PY_OSNODE}.tar.gz"
+    NODE_ZIP = CACHE / f"node-{NODE_VER}-{_PY_OSNODE}.tar.gz"
+else:
+    PY_URL = f"https://www.python.org/ftp/python/{PY_VER}/python-{PY_VER}-embed-amd64.zip"
+    PY_ZIP = CACHE / f"python-{PY_VER}-embed-amd64.zip"
+    NODE_URL = f"https://nodejs.org/dist/{NODE_VER}/node-{NODE_VER}-win-x64.zip"
+    NODE_ZIP = CACHE / f"node-{NODE_VER}-win-x64.zip"
 
 # A system cp312 interpreter used only to resolve cp312 wheels into the
 # embeddable distribution during the *build* (not needed at run time).
@@ -108,9 +147,15 @@ def download(url: str, dest: Path) -> None:
 
 def extract(zip_path: Path, target: Path) -> None:
     target.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(zip_path) as zf:
-        zf.extractall(target)
-    # strip a possible single wrapper dir (node zip has one)
+    if zip_path.name.endswith(".tar.gz"):
+        # macOS：python-build-standalone 与 node darwin 都是 tar.gz
+        import tarfile
+        with tarfile.open(zip_path, "r:gz") as tf:
+            tf.extractall(target)
+    else:
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extractall(target)
+    # strip a possible single wrapper dir (node zip/tarball has one)
     subs = [p for p in target.iterdir() if p.is_dir()]
     if len(subs) == 1 and not list(target.glob("*.exe")) and not list(target.glob("python*.dll")):
         inner = subs[0]
@@ -121,7 +166,14 @@ def extract(zip_path: Path, target: Path) -> None:
 
 
 def enable_site(path: Path) -> None:
-    """Uncomment `import site` and ensure Lib\\site-packages is on sys.path."""
+    """Uncomment `import site` and ensure Lib\\site-packages is on sys.path.
+
+    Windows embeddable 用 ``python*._pth`` 控制 sys.path，默认注释掉
+    ``import site``，这里取消注释并追加 ``Lib\\site-packages``。
+    macOS 的 python-build-standalone 已启用 site 模块、无 _pth 文件，直接 return。
+    """
+    if IS_MAC:
+        return
     pth = next(path.glob("python*._pth"))
     lines = [l.rstrip() for l in pth.read_text(encoding="utf-8").splitlines()]
     out: list[str] = []
@@ -142,6 +194,24 @@ def enable_site(path: Path) -> None:
     log(f"enabled site-packages in {pth.name}")
 
 
+def _py_site_packages(target: Path) -> Path:
+    """staging python 树内 site-packages 路径。
+
+    Windows embeddable 是 ``Lib/site-packages``；python-build-standalone 是
+    ``lib/python{ver}/site-packages``（与 CPython 标准布局一致）。
+    """
+    if IS_MAC:
+        return target / "lib" / f"python{PY_VER.rsplit('.', 1)[0]}" / "site-packages"
+    return target / "Lib" / "site-packages"
+
+
+def _staging_py_exe(target: Path) -> Path:
+    """staging python 树内解释器路径（用于版本门禁/冒烟测试）。"""
+    if IS_MAC:
+        return target / "bin" / "python3"
+    return target / "python.exe"
+
+
 def install_deeptutor(target: Path, source_root: Path) -> None:
     """pip install --target 把【本地源】的 deeptutor 装进 embeddable 的 site-packages。
 
@@ -159,7 +229,7 @@ def install_deeptutor(target: Path, source_root: Path) -> None:
             f"run:  cd web && npm ci && npm run build && "
             f"python scripts/prepare_web_package.py"
         )
-    dest = target / "Lib" / "site-packages"
+    dest = _py_site_packages(target)
     dest.mkdir(parents=True, exist_ok=True)
     log(f"pip installing deeptutor from LOCAL SOURCE {source_root} ...")
     env = dict(os.environ)
@@ -187,7 +257,7 @@ def version_gate(target: Path, expected: str) -> str:
 
     防止「以为打了新版、其实静默回退到旧版」的事故再次发生。
     """
-    py_exe = target / "python.exe"
+    py_exe = _staging_py_exe(target)
     # 注意：deeptutor/__init__.py 不 re-export __version__，必须经子模块取
     code = "from deeptutor.__version__ import __version__; print(__version__)"
     res = subprocess.run([str(py_exe), "-c", code], capture_output=True, text=True, timeout=120)
@@ -220,15 +290,20 @@ def smoke_test(py_exe) -> None:
 #  - boto3/botocore/...: AWS; only llama_index.core.utilities.aws_utils (lazy) uses it
 #  - hf_xet            : optional huggingface_hub download accelerator
 #  - bin/              : pip console-script launchers (app runs via run_deeptutor.py)
-#  - PyWin32.chm       : pywin32 help file
+#  - PyWin32.chm       : pywin32 help file（Windows only）
 def PRUNE_GLOBS() -> list[str]:
-    return [
+    globs = [
         "litellm", "litellm-*.dist-info",
         "boto3", "boto3-*.dist-info", "botocore", "botocore-*.dist-info",
         "s3transfer", "s3transfer-*.dist-info",
         "hf_xet", "hf_xet-*.dist-info",
-        "bin", "PyWin32.chm",
     ]
+    if IS_MAC:
+        # mac 上 bin/ 是 python-build-standalone 的可执行入口（python3），
+        # prune 掉会导致运行时找不到解释器；PyWin32.chm 在 mac 不存在。
+        return globs
+    globs.extend(["bin", "PyWin32.chm"])
+    return globs
 
 
 def prune_runtime(site_packages: Path) -> None:
@@ -248,7 +323,18 @@ def prune_runtime(site_packages: Path) -> None:
 
 
 def _prepared(py: Path, node: Path) -> bool:
-    """True if staging already holds an extractable python + node."""
+    """True if staging already holds an extractable python + node of the right arch."""
+    if IS_MAC:
+        # python-build-standalone：bin/python3；node darwin tarball：bin/node
+        if not ((py / "bin" / "python3").exists() and (node / "bin" / "node").exists()):
+            return False
+        # 检查 arch marker：切换架构时（arm64 ↔ x86_64）必须重新下载。
+        marker = STAGE / ".staging-arch"
+        try:
+            existing = marker.read_text(encoding="utf-8").strip()
+        except Exception:
+            return False
+        return existing == _arch
 
     def check(root: Path, marker: str) -> bool:
         if not (root / marker).exists():
@@ -320,16 +406,18 @@ def build(make_zip: bool = False, source_root: Path | None = None,
         extract(PY_ZIP, STAGING_PY)
         extract(NODE_ZIP, STAGING_NODE)
         enable_site(STAGING_PY)
+        if IS_MAC:
+            (STAGE / ".staging-arch").write_text(_arch, encoding="utf-8")
 
     # pip install：本地源不存在、版本不一致、或 --force-deeptutor 时重装。
     # pip --target 不会卸旧版本（会叠加 dist-info），所以先清掉旧的 deeptutor*。
-    sp = STAGING_PY / "Lib" / "site-packages"
+    sp = _py_site_packages(STAGING_PY)
     state_changed = source_state_changed(source_root)
     if state_changed:
         log("source package fingerprint changed; reinstalling deeptutor")
     installed_ok = False
     if (sp / "deeptutor").exists():
-        py_exe = STAGING_PY / "python.exe"
+        py_exe = _staging_py_exe(STAGING_PY)
         res = subprocess.run([str(py_exe), "-c",
                               "from deeptutor.__version__ import __version__; print(__version__)"],
                              capture_output=True, text=True, timeout=120)
@@ -365,16 +453,16 @@ def build(make_zip: bool = False, source_root: Path | None = None,
     else:
         install_deeptutor(STAGING_PY, source_root)
 
-    smoke_test(STAGING_PY / "python.exe")
+    smoke_test(_staging_py_exe(STAGING_PY))
     version_gate(STAGING_PY, expected)   # 版本门禁：不过这里直接构建失败
     save_source_state(source_root)
 
-    sp = STAGING_PY / "Lib" / "site-packages"
+    sp = _py_site_packages(STAGING_PY)
     if (sp / "litellm").exists() or (sp / "boto3").exists():
         prune_runtime(sp)
     else:
         log("runtime already pruned; skipping")
-    smoke_test(STAGING_PY / "python.exe")  # re-verify after pruning
+    smoke_test(_staging_py_exe(STAGING_PY))  # re-verify after pruning
 
     # The portable flow (make_portable.py) packs `runtime-build/staging` as-is,
     # so the zip below is OPT-IN. Deflating thousands of tiny files is slow, so
@@ -388,7 +476,7 @@ def build(make_zip: bool = False, source_root: Path | None = None,
         zf.writestr(
             "runtime-manifest.json",
             json.dumps({
-                "layout_version": 2,
+                "layout_version": 5,
                 "deeptutor_version": expected,
                 "source_fingerprint": source_fingerprint(source_root),
             }),
@@ -396,10 +484,101 @@ def build(make_zip: bool = False, source_root: Path | None = None,
         for root_ in (STAGING_PY, STAGING_NODE):
             base = "python" if root_ is STAGING_PY else "node"
             for f in sorted(root_.rglob("*")):
+                if f.is_symlink() and IS_MAC:
+                    # python-build-standalone/node tarball 里 bin/python3、bin/node
+                    # 是符号链接（指向同目录真实可执行文件）。zipfile 无跨条目
+                    # symlink 表达，这里记录目标字符串 + S_IFLNK，解压端负责重建。
+                    target = os.readlink(f)
+                    info = zipfile.ZipInfo(
+                        f"{base}/{f.relative_to(root_).as_posix()}",
+                        date_time=(2020, 1, 1, 0, 0, 0),
+                    )
+                    # S_IFLNK 和权限位都要放在 external_attr 的高 16 位；
+                    # 低 16 位是 DOS 属性，放错位置会导致运行端 >> 16 后丢失。
+                    info.external_attr = ((stat.S_IMODE(f.lstat().st_mode)
+                                           | 0o120000) << 16)
+                    zf.writestr(info, target)
+                    continue
                 if f.is_file():
-                    zf.write(f, f"{base}/{f.relative_to(root_).as_posix()}")
+                    arc = f"{base}/{f.relative_to(root_).as_posix()}"
+                    info = zipfile.ZipInfo(arc, date_time=(2020, 1, 1, 0, 0, 0))
+                    if IS_MAC:
+                        # 只存权限位，不存 S_IFREG：运行端用 attr & 0o120000
+                        # 检测符号链接，S_IFREG (0o100000) 与 S_IFLNK (0o120000)
+                        # 有位重叠，加了 S_IFREG 的普通文件会被误判为符号链接。
+                        info.external_attr = (stat.S_IMODE(f.stat().st_mode) << 16)
+                    with open(f, "rb") as fh:
+                        zf.writestr(info, fh.read())
     size = out_zip.stat().st_size / 1e6
     log(f"built {out_zip} ({size:.1f} MB)")
+    if IS_MAC:
+        # macOS 打包段自我验证：把 runtime.zip 按最终用户路径完整走一遍
+        # （extract -> 权限/符号链接修复 -> 真实 spawn python3/node）。
+        # 这段检测的是「zip 元数据是否正确编码了 unix 模式位/符号链接」——
+        # python3 修复链上所有历史 bug（无执行位、python3.12 真身漏修、
+        # S_IFLNK 放错位导致 Exec format error）都会在这里直接失败，
+        # 而不是等你下载 dmg 后在 mac 上才暴露。
+        _self_check_zip_layout(out_zip)
+
+
+def _self_check_zip_layout(archive: Path) -> None:
+    """Zip-level smoke test: extract -> repair -> spawn, exactly like runtime.py.
+
+    与 desktop/runtime.py 的 _repair_runtime_perms 逻辑保持一致（不得漂移）：
+      * external_attr >> 16 取 unix 模式位
+      * 0o120000 (S_IFLNK)   = 符号链接 -> 重建（python3 -> python3.12）
+      * 其余且 mode & 0o111   = 有执行位的普通文件 -> chmod
+
+    先跑一遍修复再做 spawn 检查，能证明产物在用户 mac 上可直接执行。
+    """
+    tree = DIST / "__zip_selfcheck__"
+    if tree.exists():
+        shutil.rmtree(tree)
+    tree.mkdir(parents=True)
+    with zipfile.ZipFile(archive) as zf:
+        zf.extractall(tree)
+        for info in zf.infolist():
+            if info.is_dir():
+                continue
+            attr = info.external_attr >> 16
+            if not attr:
+                continue
+            name = info.filename
+            dest = tree.joinpath(*name.split("/"))
+            if not dest.exists():
+                continue
+            if attr & 0o120000:  # S_IFLNK：重建符号链接
+                link_dest = zf.read(info)
+                if isinstance(link_dest, bytes):
+                    link_dest = link_dest.decode("utf-8")
+                dest.unlink()
+                dest.symlink_to(link_dest, target_is_directory=False)
+                log(f"selfcheck: symlink {name} -> {link_dest}")
+            else:  # 普通文件：恢复执行权限位
+                mode = attr & 0o777
+                if mode & 0o111:
+                    dest.chmod(mode)
+    py = tree / "python" / "bin" / "python3"
+    node = tree / "node" / "bin" / "node"
+    if not py.exists():
+        raise SystemExit(f"zip self-check: python3 missing at {py} "
+                         f"(layout wrong, see build log)")
+    if not node.exists():
+        raise SystemExit(f"zip self-check: node missing at {node} "
+                         f"(layout wrong, see build log)")
+    for prog, args in ((py, ["-c", "import sys; print('selfcheck py OK', sys.version)"]),
+                       (node, ["--version"])):
+        res = subprocess.run([str(prog), *args], capture_output=True, text=True, timeout=120)
+        if res.returncode != 0:
+            raise SystemExit(
+                f"zip self-check FAILED: {prog} {args!r}\n"
+                f"stdout: {res.stdout.strip()}\nstderr: {res.stderr.strip()}\n"
+                f"产物在用户 mac 上同样无法启动——请检查 zip 的 external_attr/"
+                f"符号链接编码。"
+            )
+        log(f"selfcheck: {' '.join(args) or '--version'} -> "
+            + (res.stdout.strip().splitlines()[0] if res.stdout.strip() else "?"))
+    shutil.rmtree(tree)
 
 
 def main() -> None:
@@ -412,6 +591,10 @@ def main() -> None:
                          "(default: monorepo parent of desktop-shell/)")
     ap.add_argument("--force-deeptutor", action="store_true",
                     help="reinstall deeptutor from source even if version matches")
+    if IS_MAC:
+        ap.add_argument("--arch", choices=["arm64", "x86_64", "native"], default="native",
+                        help="macOS 目标架构：下载对应架构的 python-build-standalone + "
+                             "node tarball（默认 native 跟随构建机）")
     args = ap.parse_args()
     src = Path(args.deeptutor_source).resolve() if args.deeptutor_source else None
     build(make_zip=not args.no_zip, source_root=src,

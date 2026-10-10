@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import zipfile
@@ -25,8 +26,45 @@ from pathlib import Path
 
 log = logging.getLogger("dt.runtime")
 
+# -- platform helpers -------------------------------------------------------- #
+# 集中处理跨平台差异，避免在路径查找里散落 ``os.name == "nt"`` / 硬编码 .exe。
+# 变量名 LOCALAPPDATA 保留（即使 mac 上语义不同），以最小化下游代码改动。
+
+
+def _is_mac() -> bool:
+    return sys.platform == "darwin"
+
+
+def _py_bin_rel() -> tuple[str, ...]:
+    """运行时树内 python 解释器相对于 ``<base>/python/`` 的路径片段。"""
+    return ("bin", "python3") if _is_mac() else ("python.exe",)
+
+
+def _py_bin_name() -> str:
+    return "python3" if _is_mac() else "python.exe"
+
+
+def _node_bin_rel() -> tuple[str, ...]:
+    """node 可执行文件相对于 ``<base>/node/`` 的路径片段。
+
+    macOS 用官方 darwin tarball，解压剥离后是 ``bin/node``；
+    Windows 用官方 win zip，根目录直接是 ``node.exe``。
+    """
+    return ("bin", "node") if _is_mac() else ("node.exe",)
+
+
+def _venv_scripts() -> str:
+    """venv 内可执行目录名：mac/linux 是 ``bin``，Windows 是 ``Scripts``。"""
+    return "bin" if _is_mac() else "Scripts"
+
+
 # -- paths ------------------------------------------------------------------ #
-LOCALAPPDATA = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
+# macOS 上等价于 ~/Library/Application Support/ThinkBuddy（Apple 数据目录约定）；
+# Windows 上沿用 %LOCALAPPDATA%\ThinkBuddy。
+if _is_mac():
+    LOCALAPPDATA = Path.home() / "Library" / "Application Support"
+else:
+    LOCALAPPDATA = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
 
 
 def _migrate_legacy_dir(legacy: Path, target: Path) -> Path:
@@ -102,12 +140,27 @@ def _version_key(version: str | None) -> tuple[int, ...]:
     return tuple(int(p) for p in parts[:4]) if parts else (0,)
 
 
+def _py_site_packages(base: Path) -> Path | None:
+    """运行时树内嵌 python 的 site-packages 目录。
+
+    mac 的 python-build-standalone 布局是 ``python/lib/python<ver>/site-packages``
+    （带版本目录），Windows 是 ``python/Lib/site-packages``。返回 None 表示拿不到。
+    """
+    if _is_mac():
+        hits = sorted(base.glob("python/lib/python*/site-packages"))
+        return hits[0] if hits else None
+    site = base / "python" / "Lib" / "site-packages"
+    return site if site.is_dir() else None
+
+
 def _runtime_deeptutor_version(base: Path) -> tuple[int, ...] | None:
     """读取运行时树内嵌 python 的 deeptutor 版本（只读 dist-info，不执行代码）。
 
     返回 None 表示该树没有可读的 deeptutor 安装信息。
     """
-    site = base / "python" / "Lib" / "site-packages"
+    site = _py_site_packages(base)
+    if site is None:
+        return None
     versions: list[str] = []
     try:
         for dist in sorted(site.glob("deeptutor-*.dist-info")):
@@ -139,7 +192,7 @@ def select_runtime_base() -> Path | None:
     """
     existing = [
         cand for cand in _runtime_tree_candidates()
-        if (cand / "python" / "python.exe").exists()
+        if cand.joinpath("python", *_py_bin_rel()).exists()
     ]
     if not existing:
         return None
@@ -170,17 +223,22 @@ def app_dir() -> Path:
 
 # -- node ------------------------------------------------------------------- #
 def resolve_node_dir() -> Path | None:
-    """Return a directory containing node.exe, or None if unavailable.
+    """Return the directory containing the node executable, or None.
 
     与运行时树同一优先级：exe 旁自带的 node 优先于托管缓存。
+    mac 上 node 可执行文件在 ``<node>/bin``（darwin tarball 布局），
+    Windows 在 ``<node>`` 根目录；这里统一返回「可执行文件所在目录」，
+    调用方直接前置 PATH 即可。
     """
     candidates: list[Path] = []
-    if EXE_DIR.joinpath("runtime", "node", "node.exe").exists():
-        candidates.append(EXE_DIR / "runtime" / "node")
-    if NODE_RUNTIME.joinpath("node.exe").exists():
-        candidates.append(NODE_RUNTIME)
-    if APP_DIR.joinpath("node", "node.exe").exists():
-        candidates.append(APP_DIR / "node")
+    for root in (
+        (EXE_DIR / "runtime" / "node"),
+        NODE_RUNTIME,
+        (APP_DIR / "node"),
+    ):
+        exe = root.joinpath(*_node_bin_rel())
+        if exe.exists():
+            candidates.append(exe.parent)
     for cand in candidates:
         log.info("using managed node at %s", cand)
         return cand
@@ -204,7 +262,7 @@ def _path_or_none(p: Path) -> Path | None:
 def resolve_deeptutor() -> Path | None:
     """Return the path to the deeptutor executable, or None."""
     name = deeptutor_binary_name()
-    for cand in (MANAGED_VENV / "Scripts" / name, APP_DIR / name):
+    for cand in (MANAGED_VENV / _venv_scripts() / name, APP_DIR / name):
         found = _path_or_none(cand)
         if found:
             log.info("using managed deeptutor at %s", found)
@@ -228,7 +286,7 @@ def resolve_deeptutor_cmd() -> list[str] | None:
     """
     base = select_runtime_base()
     if base is not None:
-        embed_py = base / "python" / "python.exe"
+        embed_py = base.joinpath("python", *_py_bin_rel())
         log.info("using embedded runtime python: %s", embed_py)
         runner = base / "python" / "run_deeptutor.py"
         if runner.exists():
@@ -247,14 +305,16 @@ def resolve_deeptutor_version() -> str | None:
     供「关于 ThinkBuddy」等信息展示用。**与 resolve_deeptutor_cmd 同源**：
     先经 select_runtime_base() 选中实际运行的那棵树，再读它的 dist-info——
     否则可能出现「跑的是 A 树、显示的是 B 树版本」的错位。打包版运行时在
-    ``<runtime>/python/Lib/site-packages/deeptutor-<ver>.dist-info/METADATA``；
+    ``<runtime>/python/.../site-packages/deeptutor-<ver>.dist-info/METADATA``；
     开发态兜底尝试 import（读 deeptutor.__version__ 子模块）。
     """
     base = select_runtime_base()
     if base is not None:
-        version = _read_distinfo_version(base / "python" / "Lib" / "site-packages")
-        if version:
-            return version
+        site = _py_site_packages(base)
+        if site is not None:
+            version = _read_distinfo_version(site)
+            if version:
+                return version
     try:  # 开发态：壳脚本可能跑在已装 deeptutor 的 Python 里
         from deeptutor import __version__ as _sub  # noqa
         return str(getattr(_sub, "__version__", "") or "").strip() or None
@@ -296,6 +356,46 @@ def _read_managed_runtime_manifest() -> dict | None:
     return value if isinstance(value, dict) else None
 
 
+def _repair_runtime_perms(zf: zipfile.ZipFile) -> None:
+    """Restore executable bits + rebuild tool symlinks after zip extraction.
+
+    zipfile 不保证跨平台保留 unix 权限位/符号链接：bin/python3（mac，指向
+    bin/python3.12）与 bin/node 若缺失执行位或退化为普通文件，spawn 时会抛
+    PermissionError。这里从 zip 元数据恢复所有可执行文件的权限位，并重建
+    关键符号链接（python3 → python3.12、node 真身等）。
+    """
+    try:
+        for info in zf.infolist():
+            if info.is_dir():
+                continue
+            attr = info.external_attr >> 16
+            if not attr:
+                continue
+            name = info.filename
+            dest = RUNTIME.joinpath(*name.split("/"))
+            if not dest.exists():
+                continue
+            if attr & 0o120000:  # S_IFLNK：重建符号链接
+                # 仅重建已知的工具链接（python3 → python3.12、node），
+                # 避免误处理 site-packages 内的其他符号链接
+                if not name.endswith(("/bin/node", "/bin/python3")):
+                    continue
+                link_dest = zf.read(info)
+                if isinstance(link_dest, bytes):
+                    link_dest = link_dest.decode("utf-8")
+                dest.unlink()
+                dest.symlink_to(link_dest, target_is_directory=False)
+                log.info("recreated symlink %s -> %s", dest, link_dest)
+            else:
+                # 普通文件：恢复执行权限位（python3.12 真身、node 等）
+                mode = attr & 0o777
+                if mode & 0o111:  # 有执行位才需要修复
+                    dest.chmod(mode)
+                    log.info("restored exec bit on %s (%04o)", dest, mode)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("runtime perms repair skipped (%s); bootstrap will fall back", exc)
+
+
 def extract_bundled_runtime() -> bool:
     """Provision or refresh the managed runtime from the bundled runtime.zip."""
     zips = [z for z in _runtime_zip_candidates() if z.exists()]
@@ -305,7 +405,7 @@ def extract_bundled_runtime() -> bool:
     try:
         with zipfile.ZipFile(src) as zf:
             incoming = _read_zip_runtime_manifest(zf)
-            if RUNTIME.joinpath("python", "python.exe").exists():
+            if RUNTIME.joinpath("python", *_py_bin_rel()).exists():
                 if _read_managed_runtime_manifest() == incoming:
                     return True
                 log.info("managed runtime differs from bundled runtime; refreshing")
@@ -318,6 +418,7 @@ def extract_bundled_runtime() -> bool:
                 shutil.rmtree(RUNTIME)
             RUNTIME.mkdir(parents=True, exist_ok=True)
             zf.extractall(RUNTIME)
+            _repair_runtime_perms(zf)
         log.info("runtime extracted to %s", RUNTIME)
         return True
     except Exception as exc:  # noqa: BLE001
@@ -345,7 +446,7 @@ def provision_with_system_python(on_line=None) -> bool:
     if deeptutor_binary_name() == "deeptutor.exe":
         exe = MANAGED_VENV / "Scripts" / deeptutor_binary_name()
     else:
-        exe = MANAGED_VENV / "bin" / deeptutor_binary_name()
+        exe = MANAGED_VENV / _venv_scripts() / deeptutor_binary_name()
     if exe.exists():
         return True
     py = _find_system_python()
@@ -370,8 +471,7 @@ def provision_with_system_python(on_line=None) -> bool:
                 creationflags=0x08000000 if os.name == "nt" else 0,
             )
         say("正在安装 deeptutor（首次需要联网，请稍候）…")
-        pyv = MANAGED_VENV / "Scripts" / "python.exe" if os.name == "nt" \
-            else MANAGED_VENV / "bin" / "python"
+        pyv = MANAGED_VENV / _venv_scripts() / _py_bin_name()
         subprocess.run(
             [str(pyv), "-m", "pip", "install", "--upgrade", "pip"],
             check=True, capture_output=True, timeout=300,
