@@ -8,7 +8,7 @@
 # macOS（arm64 + x86_64）平行流程，同样是三步：
 #   1. 前端 standalone 构建 + prepare_web_package.py -> deeptutor_web/
 #   2. build_runtime.py --arch <arm64|x86_64> -> runtime-build/staging (python-build-standalone + deeptutor 源码 + Node 22)
-#   3. PyInstaller -> dist/ThinkBuddyDesktop.app；ditto -> dist/ThinkBuddyDesktop-mac-<arch>.zip
+#   3. PyInstaller -> dist/ThinkBuddyDesktop.app；hdiutil -> dist/ThinkBuddyDesktop-mac-<arch>.dmg
 #
 # 触发：
 #   - push 到 main/dev 且改动涉及 desktop-shell/**、web/**、deeptutor/** 等打包输入
@@ -22,7 +22,7 @@ on:
   workflow_dispatch:
     inputs:
       release:
-        description: "构建成功后发布 GitHub Release（desktop-N tag 附两个 exe，desktop-mac-N tag 附 arm64 + x86_64 两个 zip）"
+        description: "构建成功后发布 GitHub Release（desktop-N tag 附两个 exe，desktop-mac-N tag 附 arm64 + x86_64 两个 dmg）"
         type: boolean
         default: false
   push:
@@ -243,14 +243,22 @@ jobs:
         working-directory: desktop-shell
         run: .venv/bin/python -m PyInstaller --noconfirm --clean build/ThinkBuddyDesktop-mac.spec
 
-      # ditto 保留 mac 元数据（权限/符号链接/扩展属性），比 zip 更适合 .app 打包。
+      # artifact 保持 zip（和 Windows 一致，Actions 构建结果即 zip）。
       - name: Zip .app bundle
         working-directory: desktop-shell/dist
         run: ditto -c -k --keepParent ThinkBuddyDesktop.app ThinkBuddyDesktop-mac-${{ matrix.arch }}.zip
 
+      # 仅勾选 release 时，额外把 .app 包成 .dmg 发布到 GitHub Release。
+      - name: Create DMG (release only)
+        if: inputs.release
+        working-directory: desktop-shell/dist
+        run: |
+          hdiutil create -volname "ThinkBuddy" -srcfolder ThinkBuddyDesktop.app \
+            -ov -format UDZO ThinkBuddyDesktop-mac-${{ matrix.arch }}.dmg
+
       - name: List outputs
-        working-directory: desktop-shell
-        run: ls -lh dist/ThinkBuddyDesktop-mac-${{ matrix.arch }}.zip
+        working-directory: desktop-shell/dist
+        run: ls -lh ThinkBuddyDesktop-mac-*
 
       - name: Upload mac zip
         uses: actions/upload-artifact@v4
@@ -269,11 +277,11 @@ jobs:
             ## macOS ${{ matrix.arch }} 构建
 
             **首次打开方式**（未签名应用绕过 Gatekeeper）：
-            1. 下载并解压 `ThinkBuddyDesktop-mac-${{ matrix.arch }}.zip`
-            2. 在 Finder 里找到 `ThinkBuddyDesktop.app`
+            1. 下载 `ThinkBuddyDesktop-mac-${{ matrix.arch }}.dmg` 并双击挂载
+            2. 把 `ThinkBuddyDesktop.app` 拖入「应用程序」
             3. **右键** → 「打开」→ 弹窗点「仍要打开」
             4. 之后双击即可正常启动
 
             首次启动会自解压运行时（python + node），可能需要 10-30 秒。
           files: |
-            desktop-shell/dist/ThinkBuddyDesktop-mac-${{ matrix.arch }}.zip
+            desktop-shell/dist/ThinkBuddyDesktop-mac-${{ matrix.arch }}.dmg

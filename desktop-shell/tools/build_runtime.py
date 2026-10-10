@@ -30,6 +30,7 @@ import json
 import os
 import platform
 import shutil
+import stat
 import subprocess
 import sys
 import urllib.request
@@ -475,7 +476,7 @@ def build(make_zip: bool = False, source_root: Path | None = None,
         zf.writestr(
             "runtime-manifest.json",
             json.dumps({
-                "layout_version": 2,
+                "layout_version": 3,
                 "deeptutor_version": expected,
                 "source_fingerprint": source_fingerprint(source_root),
             }),
@@ -483,8 +484,28 @@ def build(make_zip: bool = False, source_root: Path | None = None,
         for root_ in (STAGING_PY, STAGING_NODE):
             base = "python" if root_ is STAGING_PY else "node"
             for f in sorted(root_.rglob("*")):
+                if f.is_symlink() and IS_MAC:
+                    # python-build-standalone/node tarball 里 bin/python3、bin/node
+                    # 是符号链接（指向同目录真实可执行文件）。zipfile 无跨条目
+                    # symlink 表达，这里记录目标字符串 + S_IFLNK，解压端负责重建。
+                    target = os.readlink(f)
+                    info = zipfile.ZipInfo(
+                        f"{base}/{f.relative_to(root_).as_posix()}",
+                        date_time=(2020, 1, 1, 0, 0, 0),
+                    )
+                    info.external_attr = ((stat.S_IMODE(f.lstat().st_mode) << 16)
+                                          | 0o120000)  # S_IFLNK
+                    zf.writestr(info, target)
+                    continue
                 if f.is_file():
-                    zf.write(f, f"{base}/{f.relative_to(root_).as_posix()}")
+                    arc = f"{base}/{f.relative_to(root_).as_posix()}"
+                    info = zipfile.ZipInfo(arc, date_time=(2020, 1, 1, 0, 0, 0))
+                    if IS_MAC:
+                        # 保存 unix 可执行权限位（external_attr 高 16 位），
+                        # 否则解压后 bin/python3、bin/node 无执行权限。
+                        info.external_attr = (stat.S_IMODE(f.stat().st_mode) << 16)
+                    with open(f, "rb") as fh:
+                        zf.writestr(info, fh.read())
     size = out_zip.stat().st_size / 1e6
     log(f"built {out_zip} ({size:.1f} MB)")
 

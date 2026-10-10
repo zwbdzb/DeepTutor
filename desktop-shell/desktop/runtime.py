@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import zipfile
@@ -355,6 +356,36 @@ def _read_managed_runtime_manifest() -> dict | None:
     return value if isinstance(value, dict) else None
 
 
+def _repair_runtime_perms(zf: zipfile.ZipFile) -> None:
+    """Restore executable bits + rebuild tool symlinks after zip extraction.
+
+    zipfile 不保证跨平台保留 unix 权限位/符号链接：bin/python3（mac，指向
+    bin/python3.12）与 bin/node（mac 指向同目录 node 真身）若缺失执行位或
+    退化为普通文件，spawn 时会抛 PermissionError。这里从 zip 元数据恢复。
+    """
+    try:
+        for info in zf.infolist():
+            name = info.filename
+            if info.is_dir() or not name.endswith(("/bin/node", "/bin/python3")):
+                continue
+            dest = RUNTIME.joinpath(*name.split("/"))
+            if not dest.exists():
+                continue
+            if info.external_attr & 0o120000:  # S_IFLNK：重建符号链接
+                link_dest = zf.read(info)
+                if isinstance(link_dest, bytes):
+                    link_dest = link_dest.decode("utf-8")
+                dest.unlink()
+                dest.symlink_to(link_dest, target_is_directory=False)
+                log.info("recreated symlink %s -> %s", dest, link_dest)
+            else:
+                mode = (info.external_attr >> 16) & 0o777 or 0o700
+                dest.chmod(mode)
+                log.info("restored exec bit on %s (%04o)", dest, mode)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("runtime perms repair skipped (%s); bootstrap will fall back", exc)
+
+
 def extract_bundled_runtime() -> bool:
     """Provision or refresh the managed runtime from the bundled runtime.zip."""
     zips = [z for z in _runtime_zip_candidates() if z.exists()]
@@ -377,6 +408,7 @@ def extract_bundled_runtime() -> bool:
                 shutil.rmtree(RUNTIME)
             RUNTIME.mkdir(parents=True, exist_ok=True)
             zf.extractall(RUNTIME)
+            _repair_runtime_perms(zf)
         log.info("runtime extracted to %s", RUNTIME)
         return True
     except Exception as exc:  # noqa: BLE001
