@@ -12,7 +12,7 @@ export interface LLMOption extends LLMSelection {
   provider: string;
   /** Human-readable provider name from the registry ("OpenRouter"). */
   provider_label?: string;
-  /** Tokengine model_type (1=chat 2=image 3=video 4=rerank 5=embedding).
+  /** Tokengine model_type (1=chat, other values are non-chat services).
    *  Absent for providers that don't classify their models. */
   model_type?: number;
   context_window?: number;
@@ -27,18 +27,15 @@ export interface LLMOptionsResponse {
   options: LLMOption[];
 }
 
-/** Rerank (4) and embedding (5) models are RAG pipeline components, never
- *  conversation targets. Mirrors the backend `is_chat_model` filter so the
- *  chat picker stays clean even against an older backend / stale catalog
- *  that synced such models into the LLM profile. */
-const NON_CHAT_MODEL_TYPES = new Set([4, 5]);
+/** Keep the UI in sync with the backend chat-model filter. */
+const CHAT_MODEL_TYPE = 1;
 
 export function isChatLLMOption(option: {
   model?: string;
   model_type?: number;
 }): boolean {
   if (typeof option.model_type === "number") {
-    return !NON_CHAT_MODEL_TYPES.has(option.model_type);
+    return option.model_type === CHAT_MODEL_TYPE;
   }
   // Untyped entries are treated as chat models (pure model_type judgment).
   return true;
