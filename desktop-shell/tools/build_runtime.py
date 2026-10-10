@@ -28,6 +28,7 @@ import argparse
 import hashlib
 import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -66,22 +67,44 @@ def _read_source_version(source_root: Path) -> str:
 
 # Relocatable runtime components (edit to bump versions).
 # Windows 用 python.org embeddable + node win-x64 zip；
-# macOS 用 python-build-standalone（indygreg）+ node darwin-arm64 tarball——
+# macOS 用 python-build-standalone（indygreg）+ node darwin tarball——
 # python.org 没有 mac 等价 embeddable 发行版，python-build-standalone 是
 # PyInstaller/Relink 生态公认的可重定位 mac Python 来源。
+# Mac 通过 --arch 选择 arm64 / x86_64，默认跟随当前构建机架构。
 IS_MAC = sys.platform == "darwin"
 PY_VER = "3.12.7"
 NODE_VER = "v22.22.2"
+# --- 先解析 --arch（若在 main 里按 parse 结果再下载就太晚了：URL 在模块加载期确定）---
+_arch = "native"
 if IS_MAC:
+    for _i, _a in enumerate(sys.argv):
+        if _a == "--arch":
+            if _i + 1 < len(sys.argv):
+                _arch = sys.argv[_i + 1]
+        elif _a.startswith("--arch="):
+            _arch = _a.split("=", 1)[1]
+    if _arch == "native":
+        _arch = {"x86_64": "x86_64", "arm64": "arm64"}.get(
+            platform.machine().lower().replace("amd64", "x86_64"),
+            "arm64" if platform.machine().lower() in ("aarch64", "arm64") else "x86_64")
+if IS_MAC:
+    if _arch == "x86_64":
+        # x64 用 x86_64-apple-darwin 的 python-build-standalone + node x64 tarball
+        _PY_TAG = f"cpython-{PY_VER}+20241016-x86_64-apple-darwin-install_only"
+        _PY_OSNODE = "darwin-x64"
+        _AR = "x86_64"
+    else:  # arm64
+        _PY_TAG = f"cpython-{PY_VER}+20241016-aarch64-apple-darwin-install_only"
+        _PY_OSNODE = "darwin-arm64"
+        _AR = "aarch64"
     # install_only flavor 只含运行时（无 doc/test），体积小、解包即可用。
     # 解包后布局：python/bin/python3、python/lib/python3.12/...，展平到
     # staging/python/ 即与 Windows embeddable 同 schema（runtime/python/...）。
-    _PY_TAG = f"cpython-{PY_VER}+20241016-aarch64-apple-darwin-install_only"
     PY_URL = (f"https://github.com/indygreg/python-build-standalone/"
               f"releases/download/20241016/{_PY_TAG}.tar.gz")
     PY_ZIP = CACHE / f"{_PY_TAG}.tar.gz"
-    NODE_URL = f"https://nodejs.org/dist/{NODE_VER}/node-{NODE_VER}-darwin-arm64.tar.gz"
-    NODE_ZIP = CACHE / f"node-{NODE_VER}-darwin-arm64.tar.gz"
+    NODE_URL = f"https://nodejs.org/dist/{NODE_VER}/node-{NODE_VER}-{_PY_OSNODE}.tar.gz"
+    NODE_ZIP = CACHE / f"node-{NODE_VER}-{_PY_OSNODE}.tar.gz"
 else:
     PY_URL = f"https://www.python.org/ftp/python/{PY_VER}/python-{PY_VER}-embed-amd64.zip"
     PY_ZIP = CACHE / f"python-{PY_VER}-embed-amd64.zip"
@@ -299,10 +322,18 @@ def prune_runtime(site_packages: Path) -> None:
 
 
 def _prepared(py: Path, node: Path) -> bool:
-    """True if staging already holds an extractable python + node."""
+    """True if staging already holds an extractable python + node of the right arch."""
     if IS_MAC:
         # python-build-standalone：bin/python3；node darwin tarball：bin/node
-        return (py / "bin" / "python3").exists() and (node / "bin" / "node").exists()
+        if not ((py / "bin" / "python3").exists() and (node / "bin" / "node").exists()):
+            return False
+        # 检查 arch marker：切换架构时（arm64 ↔ x86_64）必须重新下载。
+        marker = STAGE / ".staging-arch"
+        try:
+            existing = marker.read_text(encoding="utf-8").strip()
+        except Exception:
+            return False
+        return existing == _arch
 
     def check(root: Path, marker: str) -> bool:
         if not (root / marker).exists():
@@ -374,6 +405,8 @@ def build(make_zip: bool = False, source_root: Path | None = None,
         extract(PY_ZIP, STAGING_PY)
         extract(NODE_ZIP, STAGING_NODE)
         enable_site(STAGING_PY)
+        if IS_MAC:
+            (STAGE / ".staging-arch").write_text(_arch, encoding="utf-8")
 
     # pip install：本地源不存在、版本不一致、或 --force-deeptutor 时重装。
     # pip --target 不会卸旧版本（会叠加 dist-info），所以先清掉旧的 deeptutor*。
@@ -466,6 +499,10 @@ def main() -> None:
                          "(default: monorepo parent of desktop-shell/)")
     ap.add_argument("--force-deeptutor", action="store_true",
                     help="reinstall deeptutor from source even if version matches")
+    if IS_MAC:
+        ap.add_argument("--arch", choices=["arm64", "x86_64", "native"], default="native",
+                        help="macOS 目标架构：下载对应架构的 python-build-standalone + "
+                             "node tarball（默认 native 跟随构建机）")
     args = ap.parse_args()
     src = Path(args.deeptutor_source).resolve() if args.deeptutor_source else None
     build(make_zip=not args.no_zip, source_root=src,

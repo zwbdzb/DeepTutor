@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for ThinkBuddyDesktop.app (macOS arm64, onedir + BUNDLE).
+"""PyInstaller spec for ThinkBuddyDesktop.app (macOS arm64 + x86_64, onedir + BUNDLE).
 
 与 Windows 版 ``ThinkBuddyDesktop.spec`` 平行：
   * 入口仍是 ``desktop/main.py``（壳代码已平台化，mac 上 install_windows_shell_menu
@@ -8,6 +8,10 @@
   * icon 用 ``.icns``（CI inline 生成，不签入仓库；本地开发可手动生成）
   * 产出 ``dist/ThinkBuddyDesktop.app``（BUNDLE，onedir；onefile 在 mac 上不支持 BUNDLE）
   * runtime.zip 仍内嵌（mac 上 build_runtime.py 不带 --no-zip，shell 首启自解压）
+  * 架构由 CI runner + build_runtime.py --arch 决定：
+      arm64 job → macos-14 (M1) + --arch arm64
+      x86_64 job → macos-13 (Intel) + --arch x86_64
+    PyInstaller 自动跟随 runner 架构，spec 内无需显式 target_arch。
 
 不在 excludes 里去掉 tkinter：mac 上 dialogs.py 的 fallback 用 tkinter.messagebox。
 """
