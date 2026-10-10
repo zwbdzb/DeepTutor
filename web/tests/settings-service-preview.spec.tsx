@@ -32,6 +32,22 @@ it('loads live voices, preserves a saved ID and refreshes from the provider', as
   await screen.findByRole('option', { name: 'Live voice' })
 })
 
+it('applies a provider-supplied default voice when none is configured', async () => {
+  mock.fetch.mockResolvedValue({
+    ok: true,
+    json: async () => ({
+      status: 'ready',
+      scope: 'custom',
+      default_voice: 'Eric',
+      voices: [{ id: 'Eric', label: 'Eric（活泼成都男声）' }],
+    }),
+  })
+  const update = vi.fn()
+  render(<VoiceDiscoveryField profileId="p" modelId="m" value="" update={update} disabled={false} />)
+  await screen.findByRole('option', { name: 'Eric（活泼成都男声）' })
+  expect(update).toHaveBeenCalledWith('Eric')
+})
+
 it('ignores late voice results after switching models and retains manual entry', async () => {
   let resolve!: (v: unknown) => void
   mock.fetch.mockReturnValueOnce(new Promise(r => { resolve = r }))

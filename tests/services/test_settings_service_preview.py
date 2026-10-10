@@ -90,6 +90,54 @@ async def test_unsupported_never_guesses_a_voice_endpoint(monkeypatch, provider,
 
 
 @pytest.mark.asyncio
+async def test_qwen3_customvoice_returns_local_voice_catalog_without_network(monkeypatch):
+    def handler(request):
+        pytest.fail("Qwen3-TTS CustomVoice voice IDs are local model metadata")
+
+    mock_client(monkeypatch, handler)
+    result = await discovery.discover_voices(
+        catalog(
+            provider="custom",
+            model="Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+        ),
+        "p",
+        "edited",
+    )
+    assert result == {
+        "status": "ready",
+        "scope": "custom",
+        "default_voice": "Eric",
+        "voices": [
+            {"id": voice, "label": label}
+            for voice, label in zip(
+                (
+                    "Vivian",
+                    "Serena",
+                    "Uncle_Fu",
+                    "Dylan",
+                    "Eric",
+                    "Ryan",
+                    "Aiden",
+                    "Ono_Anna",
+                    "Sohee",
+                ),
+                (
+                    "Vivian（明亮、略带棱角的年轻女声）",
+                    "Serena（温暖、柔和的年轻女声）",
+                    "Uncle_Fu（成熟男声，低沉醇厚）",
+                    "Dylan（年轻北京男声，清晰自然）",
+                    "Eric（活泼成都男声，略带沙哑且明亮）",
+                    "Ryan（富有动感、节奏感强的男声）",
+                    "Aiden（阳光的美式男声，中音清晰）",
+                    "Ono_Anna（俏皮的日语女声，轻盈灵动）",
+                    "Sohee（温暖、情感丰富的韩语女声）",
+                ),
+            )
+        ],
+    }
+
+
+@pytest.mark.asyncio
 async def test_dashscope_verifies_each_custom_voice_target_model(monkeypatch):
     import json
 

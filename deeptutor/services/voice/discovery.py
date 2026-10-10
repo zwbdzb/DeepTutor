@@ -1,8 +1,12 @@
-"""Live voice discovery. No bundled voice IDs, guessed endpoints or static fallback.
+"""Discover selectable voice IDs for the configured TTS model.
 
 MiniMax: https://platform.minimax.io/docs/api-reference/voice-management-get
 DashScope: https://help.aliyun.com/en/model-studio/voice-clone-design-http-api
-Only the selected connection is contacted; credentials never leave its host.
+
+Most providers are queried live, and only the selected connection is contacted;
+credentials never leave its host. Qwen3-TTS CustomVoice is the exception: its
+voice IDs are built into the local model, so discovering them must not require a
+separate provider endpoint or an API key.
 """
 
 from __future__ import annotations
@@ -18,6 +22,48 @@ from deeptutor.services.config.provider_runtime import resolve_tts_runtime_confi
 
 class VoiceDiscoveryError(ValueError):
     """A public, credential-free failure message."""
+
+
+QWEN3_TTS_CUSTOMVOICE_MODEL = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
+QWEN3_TTS_CUSTOMVOICE_VOICES = (
+    "Vivian",
+    "Serena",
+    "Uncle_Fu",
+    "Dylan",
+    "Eric",
+    "Ryan",
+    "Aiden",
+    "Ono_Anna",
+    "Sohee",
+)
+QWEN3_TTS_CUSTOMVOICE_LABELS = {
+    "Vivian": "Vivian（明亮、略带棱角的年轻女声）",
+    "Serena": "Serena（温暖、柔和的年轻女声）",
+    "Uncle_Fu": "Uncle_Fu（成熟男声，低沉醇厚）",
+    "Dylan": "Dylan（年轻北京男声，清晰自然）",
+    "Eric": "Eric（活泼成都男声，略带沙哑且明亮）",
+    "Ryan": "Ryan（富有动感、节奏感强的男声）",
+    "Aiden": "Aiden（阳光的美式男声，中音清晰）",
+    "Ono_Anna": "Ono_Anna（俏皮的日语女声，轻盈灵动）",
+    "Sohee": "Sohee（温暖、情感丰富的韩语女声）",
+}
+QWEN3_TTS_CUSTOMVOICE_DEFAULT_VOICE = "Eric"
+
+
+def _qwen3_customvoice_result(model: str) -> dict | None:
+    """Return the local CustomVoice catalog for the exact Qwen3-TTS model."""
+    if model.strip() != QWEN3_TTS_CUSTOMVOICE_MODEL:
+        return None
+    return {
+        "status": "ready",
+        # ``custom`` is the existing UI scope for a model-specific voice list.
+        "scope": "custom",
+        "default_voice": QWEN3_TTS_CUSTOMVOICE_DEFAULT_VOICE,
+        "voices": [
+            {"id": voice, "label": QWEN3_TTS_CUSTOMVOICE_LABELS[voice]}
+            for voice in QWEN3_TTS_CUSTOMVOICE_VOICES
+        ],
+    }
 
 
 def selected_catalog(catalog: dict, service: str, profile_id: str, model_id: str | None) -> dict:
@@ -61,6 +107,9 @@ def discovery_url(base: str, provider: str) -> str:
 
 async def discover_voices(catalog: dict, profile_id: str, model_id: str) -> dict:
     config = resolve_tts_runtime_config(selected_catalog(catalog, "tts", profile_id, model_id))
+    local = _qwen3_customvoice_result(config.model)
+    if local is not None:
+        return local
     provider = config.provider_name
     # A vendor's speech API key is not permission to call its separately signed
     # control plane. Never fabricate a generic /voices API for compatible hosts.

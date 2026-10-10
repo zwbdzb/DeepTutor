@@ -2269,7 +2269,7 @@ async def update_enabled_tools(update: EnabledToolsUpdate):
 
 @router.post("/voice/voices")
 async def list_voice_choices(payload: VoiceDiscoveryPayload):
-    """Read live account voices for a draft selection, without applying it."""
+    """Read available voices for a draft selection, without applying it."""
     _require_settings_admin()
     from deeptutor.services.voice.discovery import discover_voices
 
