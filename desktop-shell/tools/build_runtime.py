@@ -476,7 +476,7 @@ def build(make_zip: bool = False, source_root: Path | None = None,
         zf.writestr(
             "runtime-manifest.json",
             json.dumps({
-                "layout_version": 4,
+                "layout_version": 5,
                 "deeptutor_version": expected,
                 "source_fingerprint": source_fingerprint(source_root),
             }),
@@ -493,17 +493,20 @@ def build(make_zip: bool = False, source_root: Path | None = None,
                         f"{base}/{f.relative_to(root_).as_posix()}",
                         date_time=(2020, 1, 1, 0, 0, 0),
                     )
-                    info.external_attr = ((stat.S_IMODE(f.lstat().st_mode) << 16)
-                                          | 0o120000)  # S_IFLNK
+                    # S_IFLNK 和权限位都要放在 external_attr 的高 16 位；
+                    # 低 16 位是 DOS 属性，放错位置会导致运行端 >> 16 后丢失。
+                    info.external_attr = ((stat.S_IMODE(f.lstat().st_mode)
+                                           | 0o120000) << 16)
                     zf.writestr(info, target)
                     continue
                 if f.is_file():
                     arc = f"{base}/{f.relative_to(root_).as_posix()}"
                     info = zipfile.ZipInfo(arc, date_time=(2020, 1, 1, 0, 0, 0))
                     if IS_MAC:
-                        # 保存 unix 可执行权限位（external_attr 高 16 位），
-                        # 否则解压后 bin/python3、bin/node 无执行权限。
-                        info.external_attr = (stat.S_IMODE(f.stat().st_mode) << 16)
+                        # 权限位 + S_IFREG 都放高 16 位，运行端 >> 16 后可正确
+                        # 区分普通文件与符号链接。
+                        info.external_attr = ((stat.S_IMODE(f.stat().st_mode)
+                                               | 0o100000) << 16)
                     with open(f, "rb") as fh:
                         zf.writestr(info, fh.read())
     size = out_zip.stat().st_size / 1e6
