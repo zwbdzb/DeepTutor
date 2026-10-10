@@ -13,6 +13,7 @@ import { registryButton } from './RegistryControls'
 type Result = {
   status: 'ready' | 'unsupported'
   scope: 'account' | 'custom' | 'none'
+  default_voice?: string
   voices: VoiceChoice[]
 }
 
@@ -115,7 +116,16 @@ function VoiceLookup({
           const data = (await response.json()) as Result
           if (!['ready', 'unsupported'].includes(data.status) || !Array.isArray(data.voices))
             throw new Error('Invalid voice response')
-          if (active) setResult(data)
+          if (active) {
+            setResult(data)
+            if (
+              !value &&
+              data.default_voice &&
+              data.voices.some(voice => voice.id === data.default_voice)
+            ) {
+              update(data.default_voice)
+            }
+          }
         } catch {
           if (active) setError(true)
         } finally {
