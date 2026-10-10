@@ -1,8 +1,11 @@
 """Tokengine OAuth 端点客户端（纯 urllib，无第三方依赖）。"""
 from __future__ import annotations
 
+import functools
 import json
 import logging
+import os
+import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -11,6 +14,77 @@ from typing import Any, Optional
 from . import config as cfg
 
 log = logging.getLogger("dt.auth.client")
+
+
+def _runtime_certifi_bundles() -> list[str]:
+    """内嵌托管运行时自带 certifi 根库的路径（Windows/mac 布局不同）。"""
+    try:
+        # 延迟导入：runtime 只依赖标准库，且 manager 侧已是这个方向，无循环风险。
+        from .. import runtime as _rt
+    except Exception:  # noqa: BLE001
+        return []
+    try:
+        base = _rt.select_runtime_base()
+    except Exception:  # noqa: BLE001
+        log.debug("select_runtime_base 失败，跳过运行时 certifi", exc_info=True)
+        return []
+    if not base:
+        return []
+    py_root = base / "python"
+    candidates = [
+        py_root / "Lib" / "site-packages" / "certifi" / "cacert.pem",  # Windows embeddable
+    ]
+    candidates.extend(
+        py_root.glob("lib/python3*/site-packages/certifi/cacert.pem")  # macOS standalone
+    )
+    return [str(p) for p in candidates if p.is_file()]
+
+
+@functools.lru_cache(maxsize=1)
+def _ssl_context() -> ssl.SSLContext:
+    """OAuth 请求专用 SSLContext。
+
+    冻结打包后的桌面进程只信任 Windows/macOS 系统根库。在精简镜像或企业
+    管控机器上，系统根库可能缺少站点链路上的根（实测 tokengine 的链为
+    WoTrus DV → USERTrust RSA → AAA Certificate Services），而授权页在
+    WebView2 里走 Chromium Root Store 仍可打开——于是表现为"浏览器登录
+    正常、换码报 SELF_SIGNED_CERT_IN_CHAIN"。这里在系统库之上叠加
+    certifi（Mozilla）根库，并允许通过环境变量追加企业 CA。
+    """
+    ctx = ssl.create_default_context()
+    bundles: list[str] = []
+
+    # 1) 进程内可直接导入的 certifi（开发态/已装环境）
+    try:
+        import certifi  # type: ignore
+
+        path = certifi.where()
+        ctx.load_verify_locations(path)
+        bundles.append(path)
+    except Exception:  # noqa: BLE001
+        pass
+
+    # 2) 内嵌托管运行时自带的 certifi（登录窗口出现时运行时必然已就绪）
+    for path in _runtime_certifi_bundles():
+        try:
+            ctx.load_verify_locations(path)
+            bundles.append(path)
+        except OSError:
+            log.debug("CA bundle 加载失败：%s", path, exc_info=True)
+
+    # 3) 企业/运维显式下发的额外 CA（SSL 拦截型代理的根证书等）
+    for env_name in ("DT_SSL_CA_BUNDLE", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE"):
+        path = os.environ.get(env_name)
+        if not path:
+            continue
+        try:
+            ctx.load_verify_locations(path)
+            bundles.append(f"{env_name}={path}")
+        except OSError:
+            log.warning("环境变量 %s 指定的 CA 加载失败：%s", env_name, path, exc_info=True)
+
+    log.info("OAuth SSL 信任源：%s", " | ".join(bundles) or "仅系统根库")
+    return ctx
 
 
 class OAuthError(RuntimeError):
@@ -56,7 +130,7 @@ def _post_form(url: str, data: dict[str, Any], timeout: float = 15.0) -> dict[st
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as resp:
+        with urllib.request.urlopen(request, timeout=timeout, context=_ssl_context()) as resp:
             text = resp.read().decode("utf-8")
             return unwrap(json.loads(text)) if text else {}
     except urllib.error.HTTPError as exc:
@@ -82,7 +156,7 @@ def _get_json(url: str, token: str, timeout: float = 10.0) -> dict[str, Any]:
         url, headers={"Authorization": f"Bearer {token}", "Accept": "application/json"}
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as resp:
+        with urllib.request.urlopen(request, timeout=timeout, context=_ssl_context()) as resp:
             text = resp.read().decode("utf-8")
             return unwrap(json.loads(text)) if text else {}
     except urllib.error.HTTPError as exc:
@@ -201,7 +275,7 @@ def fetch_relay_models(
         url, headers={"Authorization": f"Bearer {token}", "Accept": "application/json"}
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as resp:
+        with urllib.request.urlopen(request, timeout=timeout, context=_ssl_context()) as resp:
             text = resp.read().decode("utf-8")
             payload = json.loads(text) if text else {}
     except urllib.error.HTTPError as exc:
