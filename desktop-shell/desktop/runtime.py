@@ -43,8 +43,13 @@ def _py_bin_name() -> str:
     return "python3" if _is_mac() else "python.exe"
 
 
-def _node_bin_name() -> str:
-    return "node" if _is_mac() else "node.exe"
+def _node_bin_rel() -> tuple[str, ...]:
+    """node 可执行文件相对于 ``<base>/node/`` 的路径片段。
+
+    macOS 用官方 darwin tarball，解压剥离后是 ``bin/node``；
+    Windows 用官方 win zip，根目录直接是 ``node.exe``。
+    """
+    return ("bin", "node") if _is_mac() else ("node.exe",)
 
 
 def _venv_scripts() -> str:
@@ -134,12 +139,27 @@ def _version_key(version: str | None) -> tuple[int, ...]:
     return tuple(int(p) for p in parts[:4]) if parts else (0,)
 
 
+def _py_site_packages(base: Path) -> Path | None:
+    """运行时树内嵌 python 的 site-packages 目录。
+
+    mac 的 python-build-standalone 布局是 ``python/lib/python<ver>/site-packages``
+    （带版本目录），Windows 是 ``python/Lib/site-packages``。返回 None 表示拿不到。
+    """
+    if _is_mac():
+        hits = sorted(base.glob("python/lib/python*/site-packages"))
+        return hits[0] if hits else None
+    site = base / "python" / "Lib" / "site-packages"
+    return site if site.is_dir() else None
+
+
 def _runtime_deeptutor_version(base: Path) -> tuple[int, ...] | None:
     """读取运行时树内嵌 python 的 deeptutor 版本（只读 dist-info，不执行代码）。
 
     返回 None 表示该树没有可读的 deeptutor 安装信息。
     """
-    site = base / "python" / "Lib" / "site-packages"
+    site = _py_site_packages(base)
+    if site is None:
+        return None
     versions: list[str] = []
     try:
         for dist in sorted(site.glob("deeptutor-*.dist-info")):
@@ -202,17 +222,22 @@ def app_dir() -> Path:
 
 # -- node ------------------------------------------------------------------- #
 def resolve_node_dir() -> Path | None:
-    """Return a directory containing node.exe, or None if unavailable.
+    """Return the directory containing the node executable, or None.
 
     与运行时树同一优先级：exe 旁自带的 node 优先于托管缓存。
+    mac 上 node 可执行文件在 ``<node>/bin``（darwin tarball 布局），
+    Windows 在 ``<node>`` 根目录；这里统一返回「可执行文件所在目录」，
+    调用方直接前置 PATH 即可。
     """
     candidates: list[Path] = []
-    if EXE_DIR.joinpath("runtime", "node", _node_bin_name()).exists():
-        candidates.append(EXE_DIR / "runtime" / "node")
-    if NODE_RUNTIME.joinpath(_node_bin_name()).exists():
-        candidates.append(NODE_RUNTIME)
-    if APP_DIR.joinpath("node", _node_bin_name()).exists():
-        candidates.append(APP_DIR / "node")
+    for root in (
+        (EXE_DIR / "runtime" / "node"),
+        NODE_RUNTIME,
+        (APP_DIR / "node"),
+    ):
+        exe = root.joinpath(*_node_bin_rel())
+        if exe.exists():
+            candidates.append(exe.parent)
     for cand in candidates:
         log.info("using managed node at %s", cand)
         return cand
@@ -279,14 +304,16 @@ def resolve_deeptutor_version() -> str | None:
     供「关于 ThinkBuddy」等信息展示用。**与 resolve_deeptutor_cmd 同源**：
     先经 select_runtime_base() 选中实际运行的那棵树，再读它的 dist-info——
     否则可能出现「跑的是 A 树、显示的是 B 树版本」的错位。打包版运行时在
-    ``<runtime>/python/Lib/site-packages/deeptutor-<ver>.dist-info/METADATA``；
+    ``<runtime>/python/.../site-packages/deeptutor-<ver>.dist-info/METADATA``；
     开发态兜底尝试 import（读 deeptutor.__version__ 子模块）。
     """
     base = select_runtime_base()
     if base is not None:
-        version = _read_distinfo_version(base / "python" / "Lib" / "site-packages")
-        if version:
-            return version
+        site = _py_site_packages(base)
+        if site is not None:
+            version = _read_distinfo_version(site)
+            if version:
+                return version
     try:  # 开发态：壳脚本可能跑在已装 deeptutor 的 Python 里
         from deeptutor import __version__ as _sub  # noqa
         return str(getattr(_sub, "__version__", "") or "").strip() or None
