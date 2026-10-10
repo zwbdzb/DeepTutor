@@ -503,10 +503,10 @@ def build(make_zip: bool = False, source_root: Path | None = None,
                     arc = f"{base}/{f.relative_to(root_).as_posix()}"
                     info = zipfile.ZipInfo(arc, date_time=(2020, 1, 1, 0, 0, 0))
                     if IS_MAC:
-                        # 权限位 + S_IFREG 都放高 16 位，运行端 >> 16 后可正确
-                        # 区分普通文件与符号链接。
-                        info.external_attr = ((stat.S_IMODE(f.stat().st_mode)
-                                               | 0o100000) << 16)
+                        # 只存权限位，不存 S_IFREG：运行端用 attr & 0o120000
+                        # 检测符号链接，S_IFREG (0o100000) 与 S_IFLNK (0o120000)
+                        # 有位重叠，加了 S_IFREG 的普通文件会被误判为符号链接。
+                        info.external_attr = (stat.S_IMODE(f.stat().st_mode) << 16)
                     with open(f, "rb") as fh:
                         zf.writestr(info, fh.read())
     size = out_zip.stat().st_size / 1e6
