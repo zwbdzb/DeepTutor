@@ -329,15 +329,16 @@ class CodexReasoningEffortUpdate(BaseModel):
     reasoning_effort: str | None = None
 
 
-# Tokengine model_type values (models meta table): 1=chat, 2=image,
-# 3=video, 4=rerank, 5=embedding. Rerank has no DeepTutor catalog service,
-# so rerank-typed models are dropped from every list.
+# Tokengine model_type values route typed provider models to their catalog
+# service; only type 1 belongs in the LLM service.
 MODEL_TYPE_SERVICE: dict[int, str] = {
     1: "llm",
     2: "imagegen",
     3: "videogen",
     4: "rerank",
     5: "embedding",
+    6: "stt",
+    7: "tts",
 }
 
 # Services whose profiles host LLM-shaped (chat) models.
@@ -2044,10 +2045,8 @@ async def fetch_models_from_provider(payload: FetchModelsPayload):
     can populate a model picker. Copilot uses the caller's owner-private CLI
     login; other providers use ``base_url`` + ``api_key``.
 
-    Tokengine-style providers tag each model with a ``model_type``
-    (1=chat 2=image 3=video 4=rerank 5=embedding). Entries whose type is
-    known to belong to a different catalog service are dropped, so syncing
-    the LLM page no longer pulls in rerank/embedding models. Untyped entries
+    Tokengine-style providers tag each model with a ``model_type``. Entries
+    whose type belongs to another catalog service are dropped. Untyped entries
     pass through unchanged for providers that don't send the field.
     """
     _require_settings_admin()

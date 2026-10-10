@@ -8,20 +8,18 @@ from typing import Any
 
 from deeptutor.services.provider_registry import find_by_name
 
-# Tokengine model_type values: 1=chat 2=image 3=video 4=rerank 5=embedding.
-# Rerank/embedding models are RAG pipeline components, never chat targets —
-# they must not show up in the conversation model picker.
-_NON_CHAT_MODEL_TYPES: frozenset[int] = frozenset({4, 5})
+# Typed Tokengine models are chat models only when model_type is 1.
+_CHAT_MODEL_TYPE = 1
 
 
 def is_chat_model(model_id: str, model_type: Any = None) -> bool:
     """Whether a catalog model may be offered as a conversation/chat model.
 
-    Pure model_type judgment: 4 (rerank) and 5 (embedding) are excluded.
+    Pure model_type judgment: typed entries must be chat type 1.
     Untyped entries (no model_type) are treated as chat models.
     """
     if isinstance(model_type, int) and not isinstance(model_type, bool):
-        return model_type not in _NON_CHAT_MODEL_TYPES
+        return model_type == _CHAT_MODEL_TYPE
     return True
 
 
@@ -136,9 +134,8 @@ def list_llm_options(catalog: dict[str, Any]) -> dict[str, Any]:
             model_value = str(model.get("model") or "").strip()
             if not model_id or not model_value:
                 continue
-            # Rerank/embedding models are RAG components, not chat targets:
-            # hide them from the conversation picker even when they were
-            # synced into the LLM profile by an older build.
+            # Hide typed non-chat models even when an older build synced them
+            # into the LLM profile.
             if not is_chat_model(model_value, model.get("model_type")):
                 continue
 
@@ -183,8 +180,8 @@ def list_llm_options(catalog: dict[str, Any]) -> dict[str, Any]:
                     option[f"declared_{capability}"] = declared[capability]
             options.append(option)
 
-    # The configured default may itself be a now-hidden rerank/embedding
-    # model; never advertise a default the picker doesn't offer.
+    # The configured default may itself be a now-hidden non-chat model; never
+    # advertise a default the picker doesn't offer.
     active_is_offered = any(option["is_active_default"] for option in options)
     return {
         "active": {"profile_id": active_profile_id, "model_id": active_model_id}

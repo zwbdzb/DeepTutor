@@ -72,6 +72,8 @@ export const MODEL_TYPE_SERVICE: Record<number, ServiceName | "rerank"> = {
   3: "videogen",
   4: "rerank",
   5: "embedding",
+  6: "stt",
+  7: "tts",
 };
 
 /**

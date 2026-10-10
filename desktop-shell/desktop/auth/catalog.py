@@ -110,12 +110,14 @@ def _model_entries(
 
 # 平台 /oauth/userinfo 下发的 model_type 枚举（与模型管理后台
 # 「模型类型」下拉一致，oauth_provider.go 注释同步维护）：
-#   1=文生文 2=文生图 3=文生视频 4=重排序 5=向量；0/缺失=未标注。
+#   1=文生文 2=文生图 3=文生视频 4=重排序 5=向量 6=语音识别 7=语音合成。
 _MT_LLM = 1
 _MT_IMAGEGEN = 2
 _MT_VIDEOGEN = 3
 _MT_RERANK = 4          # DeepTutor 无重排服务：平台明确标注时确定性丢弃
 _MT_EMBEDDING = 5
+_MT_STT = 6
+_MT_TTS = 7
 
 # model_type -> DeepTutor 服务名（不在表内 = 该类型桌面端不自动绑定）
 _MODEL_TYPE_SERVICE: dict[int, str] = {
@@ -123,6 +125,8 @@ _MODEL_TYPE_SERVICE: dict[int, str] = {
     _MT_IMAGEGEN: "imagegen",
     _MT_VIDEOGEN: "videogen",
     _MT_EMBEDDING: "embedding",
+    _MT_STT: "stt",
+    _MT_TTS: "tts",
 }
 
 # 服务名 -> model_type 反推：名称启发式归类后仍给每条盖上权威类型章。
@@ -133,12 +137,14 @@ _SERVICE_MODEL_TYPE: dict[str, int] = {
     "imagegen": _MT_IMAGEGEN,
     "videogen": _MT_VIDEOGEN,
     "embedding": _MT_EMBEDDING,
+    "stt": _MT_STT,
+    "tts": _MT_TTS,
 }
 
 # 除 llm 外由登录流程自动挂 tokengine profile 的服务。
 # task 刻意保留在表内：split 对 task 恒产空列表，驱动 ensure 的
 # 「空授权摘除」分支把 1.6.9 时代双挂载写入的历史 task profile 清掉。
-_TYPED_SERVICES = ("task", "embedding", "imagegen", "videogen")
+_TYPED_SERVICES = ("task", "embedding", "imagegen", "videogen", "stt", "tts")
 
 
 def _normalized_model_type(mt: Any) -> Optional[int]:
@@ -161,6 +167,8 @@ def split_models_by_service(
       3=文生视频 → videogen
       4=重排序 → 丢弃（DeepTutor 无重排服务）
       5=向量 → embedding
+      6=语音识别 → stt
+      7=语音合成 → tts
       0/缺失/未知 → 保守归对话（llm）
 
     **task 恒为空**（2026-09-24 起，对齐 1.6.11 语义）：DeepTutor 的 task
@@ -204,6 +212,10 @@ def split_models_by_service(
             _emit("videogen", name, _MT_VIDEOGEN)
         elif mt == _MT_IMAGEGEN:
             _emit("imagegen", name, _MT_IMAGEGEN)
+        elif mt == _MT_STT:
+            _emit("stt", name, _MT_STT)
+        elif mt == _MT_TTS:
+            _emit("tts", name, _MT_TTS)
         else:
             # 只进 llm。不复制进 task：1.6.11 里 task 留空 = inherit
             # （跟随对话模型），复制一份只会把提供商页计数翻倍。
