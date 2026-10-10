@@ -476,7 +476,7 @@ def build(make_zip: bool = False, source_root: Path | None = None,
         zf.writestr(
             "runtime-manifest.json",
             json.dumps({
-                "layout_version": 3,
+                "layout_version": 4,
                 "deeptutor_version": expected,
                 "source_fingerprint": source_fingerprint(source_root),
             }),

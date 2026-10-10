@@ -360,18 +360,26 @@ def _repair_runtime_perms(zf: zipfile.ZipFile) -> None:
     """Restore executable bits + rebuild tool symlinks after zip extraction.
 
     zipfile 不保证跨平台保留 unix 权限位/符号链接：bin/python3（mac，指向
-    bin/python3.12）与 bin/node（mac 指向同目录 node 真身）若缺失执行位或
-    退化为普通文件，spawn 时会抛 PermissionError。这里从 zip 元数据恢复。
+    bin/python3.12）与 bin/node 若缺失执行位或退化为普通文件，spawn 时会抛
+    PermissionError。这里从 zip 元数据恢复所有可执行文件的权限位，并重建
+    关键符号链接（python3 → python3.12、node 真身等）。
     """
     try:
         for info in zf.infolist():
-            name = info.filename
-            if info.is_dir() or not name.endswith(("/bin/node", "/bin/python3")):
+            if info.is_dir():
                 continue
+            attr = info.external_attr >> 16
+            if not attr:
+                continue
+            name = info.filename
             dest = RUNTIME.joinpath(*name.split("/"))
             if not dest.exists():
                 continue
-            if info.external_attr & 0o120000:  # S_IFLNK：重建符号链接
+            if attr & 0o120000:  # S_IFLNK：重建符号链接
+                # 仅重建已知的工具链接（python3 → python3.12、node），
+                # 避免误处理 site-packages 内的其他符号链接
+                if not name.endswith(("/bin/node", "/bin/python3")):
+                    continue
                 link_dest = zf.read(info)
                 if isinstance(link_dest, bytes):
                     link_dest = link_dest.decode("utf-8")
@@ -379,9 +387,11 @@ def _repair_runtime_perms(zf: zipfile.ZipFile) -> None:
                 dest.symlink_to(link_dest, target_is_directory=False)
                 log.info("recreated symlink %s -> %s", dest, link_dest)
             else:
-                mode = (info.external_attr >> 16) & 0o777 or 0o700
-                dest.chmod(mode)
-                log.info("restored exec bit on %s (%04o)", dest, mode)
+                # 普通文件：恢复执行权限位（python3.12 真身、node 等）
+                mode = attr & 0o777
+                if mode & 0o111:  # 有执行位才需要修复
+                    dest.chmod(mode)
+                    log.info("restored exec bit on %s (%04o)", dest, mode)
     except Exception as exc:  # noqa: BLE001
         log.warning("runtime perms repair skipped (%s); bootstrap will fall back", exc)
 
