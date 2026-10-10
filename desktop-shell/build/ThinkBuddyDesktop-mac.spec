@@ -9,8 +9,8 @@
   * 产出 ``dist/ThinkBuddyDesktop.app``（BUNDLE，onedir；onefile 在 mac 上不支持 BUNDLE）
   * runtime.zip 仍内嵌（mac 上 build_runtime.py 不带 --no-zip，shell 首启自解压）
   * 架构由 CI runner + build_runtime.py --arch 决定：
-      arm64 job → macos-14 (M1) + --arch arm64
-      x86_64 job → macos-13 (Intel) + --arch x86_64
+      arm64 job → macos-15 (Apple Silicon) + --arch arm64
+      x86_64 job → macos-15-intel (Intel) + --arch x86_64
     PyInstaller 自动跟随 runner 架构，spec 内无需显式 target_arch。
 
 不在 excludes 里去掉 tkinter：mac 上 dialogs.py 的 fallback 用 tkinter.messagebox。

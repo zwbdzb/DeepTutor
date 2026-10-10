@@ -26,7 +26,6 @@ import sys
 import threading
 import time
 import webbrowser
-import ctypes
 from collections import deque
 
 from desktop import APP_NAME, __version__, clipboard, dialogs, native_menu_backend
@@ -525,17 +524,14 @@ def main() -> int:
 
     if not _single_instance():
         log.warning("another instance is already running")
-        try:
-            import ctypes
-
-            ctypes.windll.user32.MessageBoxW(
-                0,
-                "ThinkBuddy 已在运行，请直接切换到已打开的窗口。",
-                APP_NAME,
-                0x40,  # MB_ICONINFORMATION
-            )
-        except Exception:  # noqa: BLE001
-            pass
+        # 用跨平台 dialogs.message_box（mac 走 tkinter/osascript）。
+        # 之前直接调 ctypes.windll.user32.MessageBoxW，在 mac 上抛
+        # AttributeError 被吞掉后静默 return 1 —— 表现就是“图标闪一下没窗口”。
+        dialogs.message_box(
+            APP_NAME,
+            "ThinkBuddy 已在运行，请直接切换到已打开的窗口。",
+            0x40,  # MB_ICONINFORMATION
+        )
         return 1
 
     try:
@@ -592,6 +588,19 @@ def main() -> int:
             ).start(),
             debug=False,
         )
+    except Exception as exc:  # noqa: BLE001
+        # mac 打包 console=False，任何窗口创建/事件循环阶段的崩溃都会被
+        # 吞掉 → 表现就是“图标闪一下就没”。加兜底：写死日志 + 弹可见错误框，
+        # 不再静默退出。
+        log.exception("窗口启动失败（webview.start 抛异常）：%s", exc)
+        dialogs.message_box(
+            APP_NAME,
+            "ThinkBuddy 窗口启动失败。\n"
+            f"错误：{exc}\n\n"
+            "若反复失败，请把日志文件发给技术支持：\n" + str(LOG_FILE),
+            0x10,  # MB_ICONERROR
+        )
+        return 3
     finally:
         _shutdown()
     return 0

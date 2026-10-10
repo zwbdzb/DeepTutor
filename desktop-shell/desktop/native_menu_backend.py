@@ -88,10 +88,7 @@ class _POINT(ctypes.Structure):
     _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
 
 
-_WNDPROC = ctypes.WINFUNCTYPE(
-    ctypes.c_ssize_t, ctypes.c_void_p, ctypes.c_uint,
-    ctypes.c_size_t, ctypes.c_ssize_t,
-)
+_WNDPROC = None  # 延迟绑定：ctypes.WINFUNCTYPE 在 mac 上不存在，不能在模块顶层定义
 
 _user32 = None  # 延迟绑定；mac 上 import 阶段不触发 ctypes.windll 访问
 
@@ -104,10 +101,14 @@ def _bind_user32() -> None:
     import install_windows_shell_menu`` 即失败）；延迟到 Windows-only 路径才
     绑定，mac 上安全，Windows 行为零变化。
     """
-    global _user32
+    global _user32, _WNDPROC
     if _user32 is not None or os.name != "nt":
         return
     _user32 = ctypes.windll.user32
+    _WNDPROC = ctypes.WINFUNCTYPE(
+        ctypes.c_ssize_t, ctypes.c_void_p, ctypes.c_uint,
+        ctypes.c_size_t, ctypes.c_ssize_t,
+    )
     _user32.CallWindowProcW.restype = ctypes.c_ssize_t
     _user32.CallWindowProcW.argtypes = [
         ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint,
