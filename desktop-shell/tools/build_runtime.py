@@ -511,6 +511,74 @@ def build(make_zip: bool = False, source_root: Path | None = None,
                         zf.writestr(info, fh.read())
     size = out_zip.stat().st_size / 1e6
     log(f"built {out_zip} ({size:.1f} MB)")
+    if IS_MAC:
+        # macOS 打包段自我验证：把 runtime.zip 按最终用户路径完整走一遍
+        # （extract -> 权限/符号链接修复 -> 真实 spawn python3/node）。
+        # 这段检测的是「zip 元数据是否正确编码了 unix 模式位/符号链接」——
+        # python3 修复链上所有历史 bug（无执行位、python3.12 真身漏修、
+        # S_IFLNK 放错位导致 Exec format error）都会在这里直接失败，
+        # 而不是等你下载 dmg 后在 mac 上才暴露。
+        _self_check_zip_layout(out_zip)
+
+
+def _self_check_zip_layout(archive: Path) -> None:
+    """Zip-level smoke test: extract -> repair -> spawn, exactly like runtime.py.
+
+    与 desktop/runtime.py 的 _repair_runtime_perms 逻辑保持一致（不得漂移）：
+      * external_attr >> 16 取 unix 模式位
+      * 0o120000 (S_IFLNK)   = 符号链接 -> 重建（python3 -> python3.12）
+      * 其余且 mode & 0o111   = 有执行位的普通文件 -> chmod
+
+    先跑一遍修复再做 spawn 检查，能证明产物在用户 mac 上可直接执行。
+    """
+    tree = DIST / "__zip_selfcheck__"
+    if tree.exists():
+        shutil.rmtree(tree)
+    tree.mkdir(parents=True)
+    with zipfile.ZipFile(archive) as zf:
+        zf.extractall(tree)
+        for info in zf.infolist():
+            if info.is_dir():
+                continue
+            attr = info.external_attr >> 16
+            if not attr:
+                continue
+            name = info.filename
+            dest = tree.joinpath(*name.split("/"))
+            if not dest.exists():
+                continue
+            if attr & 0o120000:  # S_IFLNK：重建符号链接
+                link_dest = zf.read(info)
+                if isinstance(link_dest, bytes):
+                    link_dest = link_dest.decode("utf-8")
+                dest.unlink()
+                dest.symlink_to(link_dest, target_is_directory=False)
+                log(f"selfcheck: symlink {name} -> {link_dest}")
+            else:  # 普通文件：恢复执行权限位
+                mode = attr & 0o777
+                if mode & 0o111:
+                    dest.chmod(mode)
+    py = tree / "python" / "bin" / "python3"
+    node = tree / "node" / "bin" / "node"
+    if not py.exists():
+        raise SystemExit(f"zip self-check: python3 missing at {py} "
+                         f"(layout wrong, see build log)")
+    if not node.exists():
+        raise SystemExit(f"zip self-check: node missing at {node} "
+                         f"(layout wrong, see build log)")
+    for prog, args in ((py, ["-c", "import sys; print('selfcheck py OK', sys.version)"]),
+                       (node, ["--version"])):
+        res = subprocess.run([str(prog), *args], capture_output=True, text=True, timeout=120)
+        if res.returncode != 0:
+            raise SystemExit(
+                f"zip self-check FAILED: {prog} {args!r}\n"
+                f"stdout: {res.stdout.strip()}\nstderr: {res.stderr.strip()}\n"
+                f"产物在用户 mac 上同样无法启动——请检查 zip 的 external_attr/"
+                f"符号链接编码。"
+            )
+        log(f"selfcheck: {' '.join(args) or '--version'} -> "
+            + (res.stdout.strip().splitlines()[0] if res.stdout.strip() else "?"))
+    shutil.rmtree(tree)
 
 
 def main() -> None:
