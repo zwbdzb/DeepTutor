@@ -698,7 +698,7 @@ function ModelEditor({
               <RegistryModelIdField
                 label={t(speechProvider === "volcengine_speech" && service === "tts" ? "Model / resource ID" : "Model ID")}
                 value={model.model}
-                options={[...new Set([...(speechOptions?.models.map(m => m.id) ?? []), ...list.map((item) => item.id)])]}
+                options={[...new Set(list.map((item) => item.id))]}
                 disabled={managed}
                 onChange={(value) => update("model", value)}
                 placeholder={t("Choose a listed model or enter a model ID")}
