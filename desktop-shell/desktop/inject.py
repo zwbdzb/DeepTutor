@@ -404,6 +404,7 @@ class AccountChipInjector:
                         # 按钮被重建（页面刷新/路由重建 DOM）——初始文案写死
                         # 「登录」，已登录用户会一直看到「登录」直到模型重推。
                         # 清缓存强制下方 _push_model 重新执行。
+                        log.info("mac 账号 chip 已注入页面（DOM 就绪/重建后补挂）")
                         self._w.evaluate_js(_chip_update_js(self._model or {}))
                     else:
                         self._push_model()
