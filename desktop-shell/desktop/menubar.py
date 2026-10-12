@@ -273,14 +273,66 @@ def _account_info(api) -> None:
             if amount:
                 lines.append(f"余额 ¥{amount}")
         elif st.get("configured"):
-            lines = ["已配置令牌", "本机已配置令牌，可通过「登录 / 切换账号」登录"]
+            lines = ["已配置令牌", "本机已配置令牌，可通过「切换账号」登录"]
         elif st.get("in_progress"):
             lines = ["等待浏览器完成…", "请在浏览器中完成登录与授权"]
         else:
-            lines = ["未登录 Tokengine", "通过「登录 / 切换账号」发起登录"]
+            lines = ["未登录 Tokengine", "通过「切换账号」发起登录"]
         dialogs.message_box("账号信息", "\n".join(lines))
     except Exception:  # noqa: BLE001  菜单线程里兜底，别让异常炸进菜单
         log.exception("account info failed")
+
+
+# --------------------------------------------------------------------------- #
+# macOS：菜单栏「账号」菜单标题动态跟随登录态 ------------------------------------ #
+_ACCT_MENU_MARKER = "账号"  # 子菜单标题恒为「账号」，作为查找菜单条目的稳定标记
+
+
+def _darwin_set_account_menu_title(title: str) -> None:
+    try:
+        import AppKit  # type: ignore
+        from PyObjCTools import AppHelper  # type: ignore
+    except Exception:  # noqa: BLE001  非 mac / 无 pyobjc 环境
+        return
+
+    def _apply() -> None:
+        try:
+            main_menu = AppKit.NSApplication.sharedApplication().mainMenu()
+            if main_menu is None:
+                return
+            for i in range(main_menu.numberOfItems()):
+                item = main_menu.itemAtIndex_(i)
+                sub = item.submenu()
+                if sub is not None and str(sub.title() or "") == _ACCT_MENU_MARKER:
+                    if str(item.title() or "") != title:
+                        item.setTitle_(title)
+                    return
+        except Exception:  # noqa: BLE001
+            log.exception("update account menu title failed")
+
+    AppHelper.callAfter(_apply)  # AppKit 的 UI 变更必须在主线程执行
+
+
+class _DarwinAccountMenuTitle:
+    """账号区模型的 mac 落点：把 chip 文案写到菜单栏「账号」菜单标题上。
+
+    AccountStatusSync 只认 ``set_model()``；Windows 上是标题栏 AccountChip，
+    mac 没有标题栏 chip，用菜单标题顶替——已登录显示用户名，
+    未登录显示「登录」，文案与 Windows 账号区逐字一致。
+    """
+
+    def set_model(self, model: dict) -> None:
+        label = str((model or {}).get("label") or "").strip()
+        if label:
+            _darwin_set_account_menu_title(label)
+
+
+_DARWIN_TITLE_CHIP = _DarwinAccountMenuTitle()
+
+
+def account_title_chip():
+    """供 AccountStatusSync 的 chip_fn 使用：仅 darwin 返回菜单标题适配器。"""
+    return _DARWIN_TITLE_CHIP if sys.platform == "darwin" else None
 
 
 def _account_menu(api, actions: dict) -> Menu:
@@ -309,13 +361,12 @@ def _account_menu(api, actions: dict) -> Menu:
         [
             MenuAction("账号信息…", lambda: _account_info(api)),
             MenuSeparator(),
-            MenuAction("邀请好友得积分", guarded(actions["invite"])),
-            MenuAction("签到加积分", guarded(actions["checkin"])),
+            MenuAction("邀请好友赢积分", guarded(actions["invite"])),
+            MenuAction("签到得积分", guarded(actions["checkin"])),
             MenuAction("刷新可用模型", guarded(actions["refresh"])),
             MenuSeparator(),
             MenuAction("打开 Tokengine 平台", actions["platform"]),
-            MenuAction("登录 / 切换账号", actions["switch"]),
-            MenuSeparator(),
+            MenuAction("切换账号", actions["switch"]),
             MenuAction("退出登录", guarded(actions["logout"])),
             MenuSeparator(),
             MenuAction(f"关于 {APP_NAME}", actions["about"]),
