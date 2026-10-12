@@ -10,10 +10,13 @@ WinForms 自绘条带，mac 上不存在；这里在系统菜单栏追加一个�
 动作表直接复用 main._chip_actions（与 Windows 账号区同一套回调），功能
 一比一对齐。仅 darwin 生效，Windows 菜单栏零变化。
 
-关于「检查更新」：壳当前没有自动更新机制，这里先做轻量探测——比较
-安装目录里 exe 的修改时间与首次记录的基线时间，若明显更新（被安装器
-覆盖过）则提示重启生效；否则提示已是最新版本。后续接入 AppUpdater 时
-只需替换 ``_check_updates`` 的实现。
+关于「检查更新」：**真正的服务器检查更新** —— 拉取 ``latest.json`` 做
+版本比对，有新版本则询问→下载（SHA256 校验）→静默安装（Inno
+/VERYSILENT）→ 安装器自动重启新模式（见 docs/adr/ADR-006）。开发态
+（非 frozen）与更新服务器不可达时降级为本地 mtime 探测（比较 exe 修改
+时间与基线），保住旧版「重启生效」提示行为；服务器明确返回「已是最新」
+时则稳定提示最新（并刷新 mtime 基线），不再走探测，避免「重装同版本
+包」把 exe 覆盖误报成新版本。
 """
 from __future__ import annotations
 
@@ -21,11 +24,13 @@ import json
 import logging
 import os
 import sys
+import urllib.parse
 
 import webview
 from webview.menu import Menu, MenuAction, MenuSeparator
 
-from desktop import APP_NAME, __version__
+from desktop import APP_NAME, __version__, updater
+from desktop.auth import config as auth_config
 from desktop.runtime import ROOT
 
 log = logging.getLogger("dt.menubar")
@@ -93,10 +98,11 @@ def _save_baseline(mtime: float) -> None:
         pass
 
 
-def _check_updates(api) -> None:
-    """轻量更新探测：exe 被安装器覆盖（mtime 明显变新）→ 提示重开生效。
+def _probe_local_overwrite() -> bool:
+    """本地覆盖探测（旧「轻量探测」语义，降级兜底用）。
 
-    仅打包版（PyInstaller frozen）可探测；开发态直接提示已是最新。
+    exe 被安装器覆盖（mtime 明显变新）→ 提示重启生效并返回 True。
+    仅打包版（PyInstaller frozen）可探测；开发态无覆盖，返回 False。
     """
     try:
         if getattr(sys, "frozen", False):
@@ -105,13 +111,124 @@ def _check_updates(api) -> None:
             baseline = _load_baseline()
             if baseline and mtime > baseline + 60:  # 允许 1 分钟误差
                 _toast("发现新版本已就绪，重启 ThinkBuddy 后生效。")
-                return
+                return True
             if not baseline:
                 _save_baseline(mtime)
-        _toast(f"{APP_NAME} 已是最新版本 ✓（v{__version__}）")
     except Exception:  # noqa: BLE001
-        log.exception("check updates failed")
+        log.exception("local overwrite probe failed")
+    return False
+
+
+def _download_progress(received: int, total: int) -> None:
+    if total > 0:
+        _toast(f"正在下载更新… {min(99, round(received * 100 / total))}%")
+    else:
+        _toast(f"正在下载更新…（{received // 1024 // 1024} MB）")
+
+
+def _update_prompt_text(manifest: dict, installed: str | None) -> str:
+    lines = [f"发现新版本 v{manifest['version']}", ""]
+    if installed:
+        lines.append(f"当前版本：v{installed}")
+    changelog = manifest.get("changelog")
+    if changelog:
+        lines += ["", "本次更新："] + changelog.splitlines()[:8]
+    lines += ["", "是否立即下载并安装？"]
+    return "\n".join(lines)
+
+
+def _download_and_verify(manifest: dict):
+    """下载到 ROOT/updates 并做 SHA256 校验；失败弹错误框并返回 None。"""
+    from desktop import dialogs
+
+    dest_dir = ROOT / "updates"
+    filename = os.path.basename(urllib.parse.urlparse(manifest["url"]).path) \
+        or "ThinkBuddySetup.exe"
+    dest = dest_dir / filename
+    try:
+        updater.download(
+            manifest["url"],
+            dest,
+            expected_sha256=manifest.get("sha256"),
+            on_progress=_download_progress,
+        )
+    except updater.UpdateError as exc:
+        log.warning("update download failed: %s", exc)
+        dialogs.message_box("更新失败", str(exc), 0x10)  # MB_ICONERROR
+        return None
+    finally:
+        updater.cleanup_updates_dir(dest_dir, keep=dest)
+    return dest
+
+
+def _check_updates(api) -> None:
+    """真正的更新链路：服务器检查 → 比对 → 询问 → 下载校验 → 静默安装。
+
+    开发态 / 无更新源 / 服务器不可达 → 降级为本地 mtime 探测（旧行为）。
+    菜单回调本身跑在独立线程，这里的网络与模态对话框不会卡 UI。
+    """
+    from desktop import dialogs
+
+    if not getattr(sys, "frozen", False):
         _toast(f"{APP_NAME} 已是最新版本 ✓（v{__version__}）")
+        return
+
+    try:
+        base = auth_config.update_base(ROOT)
+    except Exception:  # noqa: BLE001
+        base = ""
+    if not base:
+        if not _probe_local_overwrite():
+            _toast(f"{APP_NAME} 已是最新版本 ✓（v{__version__}）")
+        return
+
+    _toast("正在检查更新…")
+    try:
+        manifest = updater.check_latest(base)
+    except updater.UpdateError as exc:
+        log.warning("update check failed: %s", exc)
+        if not _probe_local_overwrite():
+            _toast("检查更新失败，请检查网络后重试。")
+        return
+
+    installed = updater.installed_version()
+    if not updater.is_newer(manifest["version"], installed):
+        # 服务器明确说没有更高的版本 → 稳定提示「已是最新」，不再走本地 mtime 兜底。
+        # 原因：旧兜底在「用户重装同版本包后首查」场景会被误触发成
+        #  「发现新版本已就绪」——那只说明 exe 被覆盖过，不代表服务器有新版本。
+        # 顺手把 baseline 刷新为当前 exe 时间，消除陈旧基线带来的长期误报。
+        if getattr(sys, "frozen", False):
+            try:
+                _save_baseline(os.path.getmtime(sys.executable))
+            except Exception:  # noqa: BLE001  刷新失败不影响本次提示
+                pass
+        shown = installed or manifest["version"]
+        _toast(f"{APP_NAME} 已是最新版本 ✓（v{shown}）")
+        return
+
+    # ---- 发现新版本：询问 → 下载校验 → 再确认 → 静默安装 ----
+    # MB_OKCANCEL | MB_ICONQUESTION == 0x21；IDOK == 1
+    if dialogs.message_box("发现新版本", _update_prompt_text(manifest, installed), 0x21) != 1:
+        return
+
+    dest = _download_and_verify(manifest)
+    if dest is None:
+        return
+
+    if dialogs.message_box(
+        "更新就绪",
+        "更新包已下载并校验通过。\n"
+        "点击「确定」将关闭 ThinkBuddy 并开始安装，安装完成后会自动重启进入新版。\n"
+        "若未自动重启，请手动重新打开。",
+        0x21,
+    ) != 1:
+        return
+
+    _toast("正在安装更新…")
+    try:
+        updater.run_installer(dest)
+    except updater.UpdateError as exc:
+        dialogs.message_box("更新失败", str(exc), 0x10)  # MB_ICONERROR
 
 
 # --------------------------------------------------------------------------- #

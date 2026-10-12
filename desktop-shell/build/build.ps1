@@ -16,7 +16,11 @@ param(
     [switch]$SkipRuntime,       # kept for compatibility; the version gate ALWAYS runs (see below)
     [switch]$MakePortable,      # also build dist\ThinkBuddyPortable.zip (slow, ~8 min)
     [switch]$MakeZip,           # also build dist\runtime.zip (slow, for Inno path)
-    [switch]$SkipInstaller      # do not compile the Inno .iss
+    [switch]$SkipInstaller,     # do not compile the Inno .iss
+    # ADR-006 更新发布参数：出包后自动生成「带版本名安装包 + latest.json」（dist/）
+    [string]$UpdateBase = "https://thinkbuddy.hanyoai.com/update",
+    [string]$MinVersion = "0.1.0",
+    [string]$Changelog = ""
 )
 $ErrorActionPreference = "Stop"
 $Root   = Split-Path -Parent $PSScriptRoot
@@ -143,6 +147,37 @@ try {
             Write-Host "[3/3] compiling ThinkBuddySetup.exe (Inno Setup, AppVersion=$appVer) ..."
             & $iscc "/DMyAppVersion=$appVer" "build\installer.iss"
             if ($LASTEXITCODE -ne 0) { throw "iscc failed" }
+
+            # ---------- 3b. publish artifacts (named installer + latest.json) ----------
+            # ADR-006：出包后自动生成发布产物——带版本名安装包（'+'→'_' 防 URL path 把 '+' 当空格）
+            # + 无 BOM latest.json；上传顺序铁律：先安装包，后清单。与
+            # tools/make_publish_artifacts.ps1 同源逻辑（独立脚本可对既有包快速验证链路）。
+            $setupExe = Join-Path $Root "dist\ThinkBuddySetup.exe"
+            if (Test-Path -LiteralPath $setupExe) {
+                $safeVer = $appVer.Replace('+', '_')
+                $namedSetup = Join-Path $Root "dist\ThinkBuddySetup-$safeVer.exe"
+                Copy-Item -LiteralPath $setupExe -Destination $namedSetup -Force
+                $fileHash = (Get-FileHash -LiteralPath $namedSetup -Algorithm SHA256).Hash.ToLower()
+                $size = (Get-Item -LiteralPath $namedSetup).Length
+                $manifest = @{
+                    app          = "ThinkBuddy"
+                    version      = $appVer
+                    min_version  = $MinVersion
+                    url          = ("{0}/ThinkBuddySetup-{1}.exe" -f $UpdateBase.TrimEnd('/'), $safeVer)
+                    sha256       = $fileHash
+                    size         = $size
+                    published_at = (Get-Date).ToString("o")
+                    changelog    = $Changelog
+                } | ConvertTo-Json
+                $manifestPath = Join-Path $Root "dist\latest.json"
+                # UTF8 无 BOM：PS 5.1 的 Set-Content -Encoding UTF8 会带 BOM，客户端严格解析会卡住。
+                [System.IO.File]::WriteAllText($manifestPath, $manifest, (New-Object System.Text.UTF8Encoding($false)))
+                Write-Host "[3b] 发布产物已生成（上传顺序：先安装包，后 latest.json）："
+                Write-Host "  $namedSetup"
+                Write-Host "  $manifestPath  ->  $UpdateBase/"
+            } else {
+                Write-Host "[3b] dist\ThinkBuddySetup.exe 不存在，跳过发布产物生成"
+            }
         }
     }
     Write-Host ""
