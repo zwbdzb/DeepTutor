@@ -5,11 +5,6 @@
 （见 webview/platforms/winforms.py 的 ``set_window_menu``），点击动作在
 独立线程执行。
 
-macOS 差异：Windows 的标题栏账号区（AccountChip，见 ADR-004）走的是
-WinForms 自绘条带，mac 上不存在；这里在系统菜单栏追加一个「账号」菜单，
-动作表直接复用 main._chip_actions（与 Windows 账号区同一套回调），功能
-一比一对齐。仅 darwin 生效，Windows 菜单栏零变化。
-
 关于「检查更新」：壳当前没有自动更新机制，这里先做轻量探测——比较
 安装目录里 exe 的修改时间与首次记录的基线时间，若明显更新（被安装器
 覆盖过）则提示重启生效；否则提示已是最新版本。后续接入 AppUpdater 时
@@ -194,14 +189,12 @@ def _refresh_models(api) -> None:
         log.exception("refresh models failed")
 
 
-def build_native_menu(api, chip_actions: dict | None = None) -> list[Menu]:
-    """构造常规桌面菜单栏：文件 / 编辑 / 视图 /（macOS：账号）/ 帮助。
+def build_native_menu(api) -> list[Menu]:
+    """构造常规桌面菜单栏：文件 / 编辑 / 视图 / 帮助。
 
     ``api`` 是 main.Api 实例；闭包捕获它来提供关于信息 / 平台跳转 / 模型刷新。
-    ``chip_actions`` 是 main._chip_actions(api) 的动作表；仅 macOS 用于构建
-    「账号」菜单（Windows 账号入口在自绘标题栏 AccountChip，不用菜单）。
     """
-    menus: list[Menu] = [
+    return [
         Menu(
             "文件",
             [
@@ -237,10 +230,6 @@ def build_native_menu(api, chip_actions: dict | None = None) -> list[Menu]:
                 MenuAction("关闭", _win_close),
             ],
         ),
-    ]
-    if sys.platform == "darwin" and chip_actions:
-        menus.append(_account_menu(api, chip_actions))
-    menus.append(
         Menu(
             "帮助",
             [
@@ -249,126 +238,4 @@ def build_native_menu(api, chip_actions: dict | None = None) -> list[Menu]:
                 MenuAction(f"关于 {APP_NAME}", lambda: _menu_about(api)),
             ],
         ),
-    )
-    return menus
-
-
-# --------------------------------------------------------------------------- #
-# 账号（仅 macOS；与 Windows 标题栏账号区同一动作表）-------------------------- #
-def _account_info(api) -> None:
-    """「账号信息…」：承担 Windows 账号菜单头（显示名 + 余额）的角色。
-
-    pywebview 的菜单是静态的（构建后改不了标题），显示名放不进菜单标题，
-    统一弹系统信息框展示；未登录/进行中态给出对应文案与操作指引。
-    """
-    try:
-        from desktop import dialogs
-        from desktop.titlebar_account import _display_name, _fmt_balance
-
-        st = api.auth_status() or {}
-        acct = st.get("account") or {}
-        if st.get("logged_in"):
-            lines = [_display_name(acct)]
-            amount = _fmt_balance(acct.get("balance"))
-            if amount:
-                lines.append(f"余额 ¥{amount}")
-        elif st.get("configured"):
-            lines = ["已配置令牌", "本机已配置令牌，可通过「切换账号」登录"]
-        elif st.get("in_progress"):
-            lines = ["等待浏览器完成…", "请在浏览器中完成登录与授权"]
-        else:
-            lines = ["未登录 Tokengine", "通过「切换账号」发起登录"]
-        dialogs.message_box("账号信息", "\n".join(lines))
-    except Exception:  # noqa: BLE001  菜单线程里兜底，别让异常炸进菜单
-        log.exception("account info failed")
-
-
-# --------------------------------------------------------------------------- #
-# macOS：菜单栏「账号」菜单标题动态跟随登录态 ------------------------------------ #
-_ACCT_MENU_MARKER = "账号"  # 子菜单标题恒为「账号」，作为查找菜单条目的稳定标记
-
-
-def _darwin_set_account_menu_title(title: str) -> None:
-    try:
-        import AppKit  # type: ignore
-        from PyObjCTools import AppHelper  # type: ignore
-    except Exception:  # noqa: BLE001  非 mac / 无 pyobjc 环境
-        return
-
-    def _apply() -> None:
-        try:
-            main_menu = AppKit.NSApplication.sharedApplication().mainMenu()
-            if main_menu is None:
-                return
-            for i in range(main_menu.numberOfItems()):
-                item = main_menu.itemAtIndex_(i)
-                sub = item.submenu()
-                if sub is not None and str(sub.title() or "") == _ACCT_MENU_MARKER:
-                    if str(item.title() or "") != title:
-                        item.setTitle_(title)
-                    return
-        except Exception:  # noqa: BLE001
-            log.exception("update account menu title failed")
-
-    AppHelper.callAfter(_apply)  # AppKit 的 UI 变更必须在主线程执行
-
-
-class _DarwinAccountMenuTitle:
-    """账号区模型的 mac 落点：把 chip 文案写到菜单栏「账号」菜单标题上。
-
-    AccountStatusSync 只认 ``set_model()``；Windows 上是标题栏 AccountChip，
-    mac 没有标题栏 chip，用菜单标题顶替——已登录显示用户名，
-    未登录显示「登录」，文案与 Windows 账号区逐字一致。
-    """
-
-    def set_model(self, model: dict) -> None:
-        label = str((model or {}).get("label") or "").strip()
-        if label:
-            _darwin_set_account_menu_title(label)
-
-
-_DARWIN_TITLE_CHIP = _DarwinAccountMenuTitle()
-
-
-def account_title_chip():
-    """供 AccountStatusSync 的 chip_fn 使用：仅 darwin 返回菜单标题适配器。"""
-    return _DARWIN_TITLE_CHIP if sys.platform == "darwin" else None
-
-
-def _account_menu(api, actions: dict) -> Menu:
-    """macOS 菜单栏「账号」菜单：结构与 Windows 已登录账号下拉一致。
-
-    Windows 上邀请/签到/刷新/退出只在已登录态出现在 chip 下拉里；mac 菜单
-    是静态的，无法按登录态增删项，改为点击时现读登录态——未登录 toast
-    提示并不执行，语义等价。
-    """
-
-    def guarded(action):
-        def run() -> None:
-            try:
-                st = api.auth_status() or {}
-            except Exception:  # noqa: BLE001
-                st = {}
-            if not st.get("logged_in"):
-                _toast("请先登录 Tokengine 账号")
-                return
-            action()
-
-        return run
-
-    return Menu(
-        "账号",
-        [
-            MenuAction("账号信息…", lambda: _account_info(api)),
-            MenuSeparator(),
-            MenuAction("邀请好友赢积分", guarded(actions["invite"])),
-            MenuAction("签到得积分", guarded(actions["checkin"])),
-            MenuAction("刷新可用模型", guarded(actions["refresh"])),
-            MenuSeparator(),
-            MenuAction("打开 Tokengine 平台", actions["platform"]),
-            MenuAction("切换账号", actions["switch"]),
-            MenuAction("退出登录", guarded(actions["logout"])),
-            MenuSeparator(),
-            MenuAction(f"关于 {APP_NAME}", actions["about"]),
-        ],
-    )
+    ]

@@ -32,8 +32,8 @@ from desktop import APP_NAME, __version__, clipboard, dialogs, native_menu_backe
 from desktop.auth import AuthManager
 from desktop.auth import config as auth_config
 from desktop.checkin import CheckinCoordinator, checkin_message
-from desktop.inject import ToastInjector
-from desktop.menubar import build_native_menu, account_title_chip
+from desktop.inject import ToastInjector, AccountChipInjector
+from desktop.menubar import build_native_menu
 from desktop.native_menu_backend import (
     configure_account_chip,
     install_windows_shell_menu,
@@ -477,17 +477,28 @@ def bootstrap(window, api: Api, auth: AuthManager) -> None:
 
         threading.Thread(target=_boot_refresh, daemon=True, name="dt-boot-refresh").start()
 
-        # 5. 标题栏账号区（ADR-004）+ toast 注入（后台线程）。
-        #    账号区的点击与下拉菜单由原生 AccountChip 直接回调（见
-        #    configure_account_chip），这里只负责两件事：
-        #      a) AccountStatusSync —— 轮询登录态推送账号区模型 + 登录/换号
-        #         跃迁时刷新应用页面（重新读取刚写入的模型目录）；
-        #      b) ToastInjector —— 在应用页面维持 toast 浮层（菜单动作反馈）。
-        #    macOS 上没有标题栏 chip，AccountStatusSync 的模型落到菜单栏
-        #    「账号」菜单标题上（menubar.account_title_chip），登录后菜单栏
-        #    直接显示用户名，与 Windows 账号区文案一致。
+        # 5. 账号区 + toast 注入（后台线程）。
+        #    Windows：账号入口走原生标题栏 AccountChip（configure_account_chip）。
+        #    macOS：没有 WinForms 标题栏条带，原生菜单栏账号标题又依赖
+        #    AppKit（pyobjc 未打进 .app 时无法动态跟随登录态）。为绕开
+        #    AppKit 并让账号出现在窗口右上角，mac 上由 AccountChipInjector
+        #    往应用页面注入右上角悬浮 chip + 自绘下拉菜单，模型复用
+        #    chip_model（AccountStatusSync 推送），动作复用 _chip_actions。
+        _account_chip_injector = None
+        if sys.platform == "darwin":
+            _account_chip_injector = AccountChipInjector(
+                window=window,
+                on_login=api.login,
+                menu_actions=_chip_actions(api),
+                expect_url=url,
+            )
+            _shared["account_chip_injector"] = _account_chip_injector
+            threading.Thread(
+                target=_account_chip_injector.run, daemon=True, name="dt-acct-chip"
+            ).start()
+
         sync = AccountStatusSync(
-            chip_fn=lambda: native_menu_backend.account_chip() or account_title_chip(),
+            chip_fn=lambda: native_menu_backend.account_chip() or _account_chip_injector,
             status_of=api.auth_status,
             on_authenticated=_reload_page,
             on_app_page=lambda: _on_app_page(url),
@@ -495,8 +506,7 @@ def bootstrap(window, api: Api, auth: AuthManager) -> None:
         _shared["account_sync"] = sync
         threading.Thread(target=sync.run, daemon=True, name="dt-account-sync").start()
 
-        toaster = ToastInjector(webview_windows[0] if webview_windows else None,
-                                expect_url=url)
+        toaster = ToastInjector(window, expect_url=url)
         _shared["toast_injector"] = toaster
         threading.Thread(target=toaster.run, daemon=True, name="dt-toast").start()
 
@@ -572,7 +582,7 @@ def main() -> int:
         min_size=(1024, 680),
         js_api=api,
         background_color="#ffffff",
-        menu=build_native_menu(api, _chip_actions(api)),
+        menu=build_native_menu(api),
     )
     webview_windows.append(window)
 
