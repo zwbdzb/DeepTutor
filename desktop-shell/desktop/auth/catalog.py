@@ -242,7 +242,7 @@ def _remove_tokengine_profile(
         return
     profiles = list(service.get("profiles") or [])
     kept = [p for p in profiles
-            if not (isinstance(p, dict) and p.get("connection_id") == connection_id)]
+            if not (isinstance(p, dict) and _effective_connection_id(p) == connection_id)]
     if len(kept) == len(profiles):
         return                          # 没有我们的 profile，无事可做
     service["profiles"] = kept
@@ -278,10 +278,11 @@ def _upsert_tokengine_profile(
     service = catalog.setdefault("services", {}).setdefault(
         service_name, _service_shell())
     profiles = service.setdefault("profiles", [])
+    owned = [p for p in profiles
+             if isinstance(p, dict) and _effective_connection_id(p) == connection_id]
     profile = next(
-        (p for p in profiles
-         if isinstance(p, dict) and p.get("connection_id") == connection_id),
-        None,
+        (p for p in owned if p.get("id") == service.get("active_profile_id")),
+        owned[0] if owned else None,
     )
     if profile is None:
         profile = {
@@ -297,13 +298,31 @@ def _upsert_tokengine_profile(
         }
         profiles.append(profile)
     else:
+        profile["connection_id"] = connection_id
         profile["api_key"] = api_key
         if base_url:
             profile["base_url"] = base_url
+        # 复用当前默认配置，并摘除两种绑定格式产生的重复 profile。
+        profiles[:] = [p for p in profiles
+                       if p is profile or not (
+                           isinstance(p, dict) and _effective_connection_id(p) == connection_id)]
 
     if not model_entries:
         return                      # 平台无此类型模型：保留 profile 现状
-    profile["models"] = _model_entries(model_entries, service_name)
+    previous = {m.get("model"): m for p in reversed(owned)
+                for m in p.get("models", []) if isinstance(m, dict)}
+    # 默认 profile 的音色和模型 ID 优先保留，避免刷新重置用户选择。
+    previous.update({m.get("model"): m for m in profile.get("models", [])
+                     if isinstance(m, dict)})
+    models = _model_entries(model_entries, service_name)
+    for model in models:
+        saved = previous.get(model["model"])
+        if saved:
+            default_voice = model.get("voice")
+            model.update(saved)
+            if default_voice and not model.get("voice"):
+                model["voice"] = default_voice
+    profile["models"] = models
     if not service.get("active_profile_id"):
         service["active_profile_id"] = profile["id"]
         service["active_model_id"] = profile["models"][0]["id"]
@@ -355,7 +374,7 @@ def remove_tokengine_catalog(home: Path, token: str = "") -> Path:
             if not isinstance(p, dict):
                 kept.append(p)          # 异常结构绝不碰
                 continue
-            if p.get("connection_id") == "tokengine":
+            if _effective_connection_id(p) == "tokengine":
                 dirty = True            # 我们建的，整条移除
                 continue
             if token and p.get("api_key") == token:
