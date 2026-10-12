@@ -104,6 +104,9 @@ def _model_entries(
         }
         if isinstance(model_type, int) and not isinstance(model_type, bool):
             row["model_type"] = model_type
+        if prefix == "tts" and name == "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice":
+            # 登录导入时直接保存默认音色，无需进入设置页生成草稿。
+            row["voice"] = "Eric"
         rows.append(row)
     return rows
 

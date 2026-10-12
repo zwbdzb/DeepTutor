@@ -32,7 +32,7 @@ it('loads live voices, preserves a saved ID and refreshes from the provider', as
   await screen.findByRole('option', { name: 'Live voice' })
 })
 
-it('applies a provider-supplied default voice when none is configured', async () => {
+it('shows a provider-supplied default voice without staging a change', async () => {
   mock.fetch.mockResolvedValue({
     ok: true,
     json: async () => ({
@@ -45,7 +45,8 @@ it('applies a provider-supplied default voice when none is configured', async ()
   const update = vi.fn()
   render(<VoiceDiscoveryField profileId="p" modelId="m" value="" update={update} disabled={false} />)
   await screen.findByRole('option', { name: 'Eric（活泼成都男声）' })
-  expect(update).toHaveBeenCalledWith('Eric')
+  expect(update).not.toHaveBeenCalled()
+  expect((screen.getByLabelText('settings.voiceDiscovery.choose') as HTMLSelectElement).value).toBe('Eric')
 })
 
 it('ignores late voice results after switching models and retains manual entry', async () => {
