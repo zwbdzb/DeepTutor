@@ -118,13 +118,6 @@ function VoiceLookup({
             throw new Error('Invalid voice response')
           if (active) {
             setResult(data)
-            if (
-              !value &&
-              data.default_voice &&
-              data.voices.some(voice => voice.id === data.default_voice)
-            ) {
-              update(data.default_voice)
-            }
           }
         } catch {
           if (active) setError(true)
@@ -141,7 +134,13 @@ function VoiceLookup({
       clearTimeout(timeout)
     }
   }, [profileId, modelId, attempt, hasModel])
-  const listed = result?.voices.some(v => v.id === value)
+  // Display the default without creating a draft edit.
+  const displayed =
+    value ||
+    (result?.default_voice && result.voices.some(v => v.id === result.default_voice)
+      ? result.default_voice
+      : '')
+  const listed = result?.voices.some(v => v.id === displayed)
   return (
     <section
       className="space-y-3 rounded-xl border border-[var(--border)] p-4"
@@ -182,7 +181,7 @@ function VoiceLookup({
           <select
             className={selectClass}
             disabled={disabled}
-            value={listed ? value : ''}
+            value={listed ? displayed : ''}
             onChange={e => {
               if (e.target.value) update(e.target.value)
             }}

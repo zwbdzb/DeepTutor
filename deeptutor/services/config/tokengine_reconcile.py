@@ -5,7 +5,7 @@
 按 ``model_type`` 分拣写入 model catalog：
 
   - ``id == "tokengine"`` 的 connection（携带 sk- 业务令牌）；
-  - llm/embedding/imagegen/videogen 各服务里
+  - llm/embedding/imagegen/videogen/stt/tts 各服务里
     ``connection_id == "tokengine"`` 的 profile（模型名单来自登录流程，
     见 catalog.py）。task 不再由登录写入：1.6.11 里 task 留空即
     inherit（跟随对话模型）。
@@ -45,7 +45,7 @@ _PROFILE_EDITABLE_FIELDS = ("name", "user_name")
 # 本表意味着 live 里的历史 task profile 不会被 Apply 回插复活，设置页
 # 保存一次即被自然清掉；用户在设置页手动给 task 配 Tokengine（1.6.11
 # 合法操作）也不受 reconcile 干扰。search 走独立 provider 结构，不写入）。
-_TOKENGINE_SERVICES = ("llm", "embedding", "imagegen", "videogen")
+_TOKENGINE_SERVICES = ("llm", "embedding", "imagegen", "videogen", "stt", "tts")
 
 
 def _live_connection(current: Mapping[str, Any]) -> dict[str, Any] | None:
