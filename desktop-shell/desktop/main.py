@@ -33,7 +33,7 @@ from desktop.auth import AuthManager
 from desktop.auth import config as auth_config
 from desktop.checkin import CheckinCoordinator, checkin_message
 from desktop.inject import ToastInjector
-from desktop.menubar import build_native_menu
+from desktop.menubar import build_native_menu, account_title_chip
 from desktop.native_menu_backend import (
     configure_account_chip,
     install_windows_shell_menu,
@@ -483,8 +483,11 @@ def bootstrap(window, api: Api, auth: AuthManager) -> None:
         #      a) AccountStatusSync —— 轮询登录态推送账号区模型 + 登录/换号
         #         跃迁时刷新应用页面（重新读取刚写入的模型目录）；
         #      b) ToastInjector —— 在应用页面维持 toast 浮层（菜单动作反馈）。
+        #    macOS 上没有标题栏 chip，AccountStatusSync 的模型落到菜单栏
+        #    「账号」菜单标题上（menubar.account_title_chip），登录后菜单栏
+        #    直接显示用户名，与 Windows 账号区文案一致。
         sync = AccountStatusSync(
-            chip_fn=native_menu_backend.account_chip,
+            chip_fn=lambda: native_menu_backend.account_chip() or account_title_chip(),
             status_of=api.auth_status,
             on_authenticated=_reload_page,
             on_app_page=lambda: _on_app_page(url),
@@ -569,7 +572,7 @@ def main() -> int:
         min_size=(1024, 680),
         js_api=api,
         background_color="#ffffff",
-        menu=build_native_menu(api),
+        menu=build_native_menu(api, _chip_actions(api)),
     )
     webview_windows.append(window)
 

@@ -14,6 +14,10 @@
 #   - push 到 main/dev 且改动涉及 desktop-shell/**、web/**、deeptutor/** 等打包输入
 #   - 手动 workflow_dispatch（可勾选 release 额外发布 GitHub Release）
 #
+# 发布模型：三个构建 job（Windows / macOS arm64 / macOS x86_64）只负责
+# 产出并上传 artifact；勾选 release 时由统一的 release job 汇总【所有】
+# Windows + macOS 包到【同一个】GitHub Release（desktop-N tag）。
+#
 # macOS MVP 阶段不做 codesigning：用户首次打开需右键 → 打开 → 仍要打开 绕过 Gatekeeper。
 # 后续接 APPLE_DEVELOPER_ID secrets + codesign --deep + notarytool。
 name: ThinkBuddy Desktop Build
@@ -133,18 +137,8 @@ jobs:
           path: desktop-shell/dist/ThinkBuddySetup.exe
           if-no-files-found: error
 
-      - name: Publish GitHub Release
-        if: inputs.release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: desktop-${{ github.run_number }}
-          name: ThinkBuddy Desktop build ${{ github.run_number }}
-          files: |
-            desktop-shell/dist/ThinkBuddyDesktop.exe
-            desktop-shell/dist/ThinkBuddySetup.exe
-
   mac:
-    name: macOS ${{ matrix.arch }} · runtime + app + zip
+    name: macOS ${{ matrix.arch }} · runtime + app + dmg
     strategy:
       fail-fast: false
       matrix:
@@ -263,25 +257,57 @@ jobs:
       - name: Upload mac zip
         uses: actions/upload-artifact@v4
         with:
-          name: ThinkBuddyDesktop-mac-${{ matrix.arch }}
+          name: ThinkBuddyDesktop-mac-${{ matrix.arch }}-zip
           path: desktop-shell/dist/ThinkBuddyDesktop-mac-${{ matrix.arch }}.zip
           if-no-files-found: error
 
-      - name: Publish GitHub Release
+      - name: Upload mac dmg (release only)
         if: inputs.release
+        uses: actions/upload-artifact@v4
+        with:
+          name: ThinkBuddyDesktop-mac-${{ matrix.arch }}-dmg
+          path: desktop-shell/dist/ThinkBuddyDesktop-mac-${{ matrix.arch }}.dmg
+          if-no-files-found: error
+
+  # 统一发布：把 Windows + macOS 的所有包汇总到【同一个】GitHub Release。
+  # 只在上游构建 job 全部成功且勾选 release 时运行；日常 push 构建不触发。
+  release:
+    name: Release · 汇总 Windows + macOS 包发布
+    runs-on: ubuntu-latest
+    needs: [build, mac]
+    if: inputs.release
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: List release artifacts
+        run: ls -lh release-artifacts
+
+      - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: desktop-mac-${{ github.run_number }}
-          name: ThinkBuddy Desktop (macOS) build ${{ github.run_number }}
+          tag_name: desktop-${{ github.run_number }}
+          name: ThinkBuddy Desktop build ${{ github.run_number }}
           body: |
-            ## macOS ${{ matrix.arch }} 构建
+            ## Windows
+            - `ThinkBuddyDesktop.exe` — 便携单文件（含离线运行时）
+            - `ThinkBuddySetup.exe` — 安装包（Inno Setup）
 
-            **首次打开方式**（未签名应用绕过 Gatekeeper）：
-            1. 下载 `ThinkBuddyDesktop-mac-${{ matrix.arch }}.dmg` 并双击挂载
+            ## macOS
+            - `ThinkBuddyDesktop-mac-arm64.dmg` — Apple Silicon
+            - `ThinkBuddyDesktop-mac-x86_64.dmg` — Intel
+
+            **macOS 首次打开方式**（未签名应用绕过 Gatekeeper）：
+            1. 下载对应架构的 `ThinkBuddyDesktop-mac-<arch>.dmg` 并双击挂载
             2. 把 `ThinkBuddyDesktop.app` 拖入「应用程序」
             3. **右键** → 「打开」→ 弹窗点「仍要打开」
             4. 之后双击即可正常启动
 
             首次启动会自解压运行时（python + node），可能需要 10-30 秒。
-          files: |
-            desktop-shell/dist/ThinkBuddyDesktop-mac-${{ matrix.arch }}.dmg
+          files: release-artifacts/*
