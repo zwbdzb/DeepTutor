@@ -371,7 +371,21 @@ class AccountChipInjector:
             if self._chip_label is None:
                 return
             model = self._model or {}
-            label = str(model.get("label") or "登录").strip()
+            logged_in = bool(model.get("logged_in"))
+
+            # chip 视图本身（label 的 superview 的 superview 是 titlebarAccessory 的 view）
+            chip_view = self._chip_label.superview()
+            if chip_view is None:
+                return
+
+            if not logged_in:
+                # 未登录：隐藏整个 chip 视图（从标题栏移除视觉占用）
+                chip_view.setHidden_(True)
+                return
+
+            # 已登录：显示 chip + 更新文案
+            chip_view.setHidden_(False)
+            label = str(model.get("label") or "").strip()
             self._chip_label.setStringValue_(label[:20] + ("…" if len(label) > 20 else ""))
 
         AppHelper.callAfter(_do_update)
