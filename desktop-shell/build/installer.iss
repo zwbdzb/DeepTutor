@@ -17,12 +17,12 @@
 ; %USERPROFILE%\EduBuddy dirs to their ThinkBuddy counterparts on first run.
 
 #define MyAppName "ThinkBuddy"
-; AppVersion is injected by build.ps1 via /DMyAppVersion=<0.2.0+dt<source version>>,
-; so the installer metadata always tracks deeptutor/__version__.py.
+; AppVersion is injected by build.ps1 via /DMyAppVersion=<engine_version.timestamp>,
+; (e.g. 1.6.14.10121554) so the installer metadata tracks deeptutor/__version__.py + build time.
 ; The fallback below only applies to a bare manual `ISCC installer.iss` run
 ; and is intentionally wrong-looking so a stale build is easy to spot.
 #ifndef MyAppVersion
-#define MyAppVersion "0.2.0+dtSET-BY-build.ps1"
+#define MyAppVersion "0.0.0.SET-BY-build.ps1"
 #endif
 #define MyAppPublisher "HKUDS"
 #define MyAppExeName "ThinkBuddyDesktop.exe"

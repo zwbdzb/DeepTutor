@@ -10,16 +10,16 @@
 
 ``latest.json`` 字段：
     app        "ThinkBuddy"          （校验用，防御放错目录）
-    version    "0.2.0+dt1.6.11"      （与 build.ps1 注入安装器的 AppVersion 同源）
+    version    "1.6.14.10121554"     （与 build.ps1 注入安装器的 AppVersion 同源）
     min_version "0.1.0"              （低于该版本视为强制更新；可缺省）
     url        安装包完整下载地址
     sha256     安装包 SHA256（小写十六进制）
     size       字节数
     published_at / changelog         展示用，缺省无害
 
-版本语义（本项目三轴，详见 ADR-006）：
-  * ``version`` 编码「壳产品线 + dt 后缀引擎版本」；比较时先比产品线，
-    相同再比 dt 后的引擎版本——任一变新即触发更新。
+版本语义：
+  * ``version`` 格式为 ``主版本.次版本.引擎版本.MMDDHHmm``，末段是打包时间戳。
+    比较时按 ``.`` 分段逐段数字比较——引擎版本不变时时间戳自然区分先后。
   * 「本机已装版本」以 Inno 卸载注册表 DisplayVersion 为准；
     读不到（开发态/便携）时由调用方兜底。
 """
@@ -53,32 +53,21 @@ PROGRESS_MIN_INTERVAL = 1.2
 
 _USER_AGENT = "ThinkBuddyDesktop/updater"
 
-# 版本串形如 "0.2.0+dt1.6.11" | "1.6.11" | "0.1.3"
-_RE = re.compile(r"(\d+(?:\.\d+)*)(?:\+dt([\d.]*))?")
-
 
 def _num_key(text: str) -> tuple[int, ...]:
     parts = re.findall(r"\d+", text or "")
     return tuple(int(p) for p in parts) or (0,)
 
 
-def version_key(version: str) -> tuple:
-    """把版本串解析成可比较元组 (产品线, dt引擎线)。
+def version_key(version: str) -> tuple[int, ...]:
+    """把版本串解析成可比较的数字元组。
 
-    - "0.2.0+dt1.6.11" → ((0,2,0), (1,6,11))
-    - "0.2.0"          → ((0,2,0), (-1,))       -- 无引擎后缀，视为最低引擎
-    - "1.6.11"         → ((1,6,11), (-1,))      -- 裸引擎版本
-    - "" / None        → ((0,), (-1,))          -- 解析失败是最低
+    - "1.6.14.10121554" → (1, 6, 14, 10121554)
+    - "1.6.14"           → (1, 6, 14)
+    - "0.1.0"            → (0, 1, 0)
+    - "" / None          → (0,)
     """
-    m = _RE.search(str(version or ""))
-    if not m:
-        return ((0,), (-1,))
-    main = _num_key(m.group(1))
-    if m.group(2):
-        dt = _num_key(m.group(2))
-    else:
-        dt = (-1,)
-    return (main, dt)
+    return _num_key(str(version or ""))
 
 
 def is_newer(remote_version: str, local_version: str | None) -> bool:
