@@ -47,10 +47,8 @@ STAGING_PY = STAGE / "staging" / "python"
 STAGING_NODE = STAGE / "staging" / "node"
 DIST = ROOT / "dist"
 
-# pip 源（2026-09-24）：国内直连 pypi.org 极不稳定——实测本机 12s 无响应，
-# pip 侧表现为 SSL: UNEXPECTED_EOF_WHILE_READING（重试 5 次全灭，连 PyYAML
-# 都拉不到，构建必死）。默认走清华镜像；用户 shell 里显式设置了 PIP_INDEX_URL
-# （或代理）时以用户为准（见 install_deeptutor 的 setdefault）。
+# pip 源：默认清华镜像（国内直连 pypi.org 不稳定）；用户 shell 已设置
+# PIP_INDEX_URL（或代理）时以用户为准（见 install_deeptutor 的 setdefault）。
 DEFAULT_PIP_INDEX_URL = "https://pypi.tuna.tsinghua.edu.cn/simple"
 
 
@@ -216,12 +214,11 @@ def install_deeptutor(target: Path, source_root: Path, *,
                       with_deps: bool = True) -> None:
     """pip install --target 把【本地源】的 deeptutor 装进 embeddable 的 site-packages。
 
-    注意：这里刻意安装本地源路径而不是 PyPI 包名 —— PyPI 版本永远滞后于仓库，
-    且自研修复根本不会发布到 PyPI（历史教训：打包出来是 1.6.7 而仓库已是 1.6.8）。
+    注意：刻意安装本地源路径而非 PyPI 包名——PyPI 版本滞后且不含自研修复。
     本地源需先构建前端（web/.next/standalone），否则 wheel 里没有 deeptutor_web 数据。
 
-    with_deps=False（快速路径）：依赖声明未变时只装我们自己的 3 个包，
-    不重新解析/下载/复制 ~500MB 第三方依赖树（那一步要 5-15 分钟）。
+    with_deps=False（快速路径）：依赖声明未变时只装我们自己的包，跳过 ~500MB
+    第三方依赖树的重新解析/下载/复制。
     """
     if BUILD_PY is None or not BUILD_PY.exists():
         raise SystemExit("no cp312 build interpreter found (set BUILD_PY=...py)")
@@ -239,8 +236,6 @@ def install_deeptutor(target: Path, source_root: Path, *,
     log(f"pip installing {desc} from LOCAL SOURCE {source_root} ...")
     env = dict(os.environ)
     # setdefault：用户已设置镜像/代理时尊重用户，没有才落默认国内镜像。
-    # build isolation（"Installing build dependencies" 阶段）继承本环境，
-    # 所以一个 env 同时覆盖依赖解析与构建隔离两层。
     env.setdefault("PIP_INDEX_URL", DEFAULT_PIP_INDEX_URL)
     env.setdefault("PIP_DISABLE_PIP_VERSION_CHECK", "1")
     env.setdefault("PIP_DEFAULT_TIMEOUT", "60")
@@ -385,12 +380,9 @@ def _iter_source_files(source_root: Path) -> list[Path]:
 def source_fingerprint(source_root: Path, *, strict: bool = False) -> str:
     """Fingerprint the Python packages shipped into the offline runtime.
 
-    strict=False（默认）：size+mtime 指纹。任何编辑/git checkout 都会更新
-    mtime，所以「源码变了却没被发现」实际不可达；万一遇到（极端工具保留
-    mtime），还有版本门禁 + 冒烟测试兜底。读取 ~21k 个文件的 stat 只是
-    秒级操作，而逐字节内容哈希要 1-3 分钟且每次构建跑两遍。
-    strict=True：逐文件内容 sha256，发布前人工核验用（--strict-fingerprint）。
-    指纹模式不一致时视为变更 → 触发重装（安全方向）。
+    默认 size+mtime（编辑/git checkout 必更新 mtime，漏检不可达；且有版本门禁
+    + 冒烟测试兜底）。strict=True 时逐文件 sha256（--strict-fingerprint，发布前
+    人工核验）。模式不一致视为变更 → 触发重装（安全方向）。
     """
     digest = hashlib.sha256()
     digest.update(b"mode=" + (b"strict" if strict else b"fast") + b"\0")
@@ -411,11 +403,7 @@ def source_fingerprint(source_root: Path, *, strict: bool = False) -> str:
 
 
 def dependencies_signature(source_root: Path) -> str:
-    """pyproject.toml 内容哈希——区分「只改了代码」与「依赖声明变了」。
-
-    依赖没变时走 pip --no-deps 快速路径（只装我们自己的 3 个包，~1 分钟），
-    避免每次改代码都重新解析/下载/铺满 ~500MB 的完整依赖树（5-15 分钟）。
-    """
+    """pyproject.toml 内容哈希——区分「只改了代码」（--no-deps 快速路径）与「依赖声明变了」（全量安装）。"""
     pyproject = source_root / "pyproject.toml"
     if not pyproject.is_file():
         return ""
@@ -457,10 +445,8 @@ def build(make_zip: bool = False, source_root: Path | None = None,
         if IS_MAC:
             (STAGE / ".staging-arch").write_text(_arch, encoding="utf-8")
 
-    # pip install 决策（一次算完指纹，不再重复哈希 600MB）：
-    #   源码指纹变  → 重装（deps 未变走 --no-deps 快速路径，只装自家 3 包）
-    #   依赖签名变  → 全量重装（重新解析/下载完整依赖树）
-    # 指纹模式（fast/strict）与上次不同也算变更（安全方向）。
+    # pip install 决策：源码指纹变 → 重装（deps 未变走 --no-deps 快速路径）；
+    # 依赖签名变 → 全量重装。指纹模式（fast/strict）变化也算变更（安全方向）。
     fp = source_fingerprint(source_root, strict=strict_fingerprint)
     deps_sig = dependencies_signature(source_root)
     mode = "strict" if strict_fingerprint else "fast"
@@ -494,10 +480,8 @@ def build(make_zip: bool = False, source_root: Path | None = None,
                         "deeptutor_cli-*.dist-info", "deeptutor_web",
                         "deeptutor_web-*.dist-info"):
                 for entry in sp.glob(pat):
-                    # 清理失败必须响：ignore_errors 曾在文件被占用（应用未关/
-                    # 杀毒扫描）时静默残留旧文件，产出「1.6.10 版本 + 1.6.9
-                    # 前端 chunk」的混合运行时且能通过版本门禁（门禁只查
-                    # deeptutor.__version__）。宁可构建失败，不可静默混合。
+                    # 清理失败必须响：ignore_errors 会静默残留旧文件，产出混合运行时
+                    # 且能通过版本门禁。宁可构建失败，不可静默混合。
                     try:
                         if entry.is_dir():
                             shutil.rmtree(entry)

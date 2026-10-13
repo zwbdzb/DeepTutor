@@ -55,7 +55,7 @@
 | 形态 | 谁用 | 需要什么 | 默认产出 |
 |---|---|---|---|
 | `ThinkBuddyDesktop.exe`（单文件） | 开发者 / 已有 deeptutor 的机器 | 系统里有 Python+Node+`deeptutor` | ✅ |
-| `ThinkBuddySetup-dt<版本>_<时间戳>.exe`（Inno 安装器） | 分发 | 安装向导 + 开始菜单 + 卸载器，自带运行时 | ✅ |
+| `ThinkBuddySetup-dt<版本>.<时间戳>.exe`（Inno 安装器） | 分发 | 安装向导 + 开始菜单 + 卸载器，自带运行时 | ✅ |
 | `ThinkBuddyPortable.zip`（内置运行时） | 免安装场景 | **什么都不用装**，解压即用 | 加 `-MakePortable` |
 
 ## 快速开始（本仓库开发态）
@@ -71,7 +71,7 @@ py -3.12 -m venv .venv
 
 ## 构建
 
-**默认只出两个包**：`ThinkBuddyDesktop.exe` + `ThinkBuddySetup-dt<版本>_<时间戳>.exe`。
+**默认只出两个包**：`ThinkBuddyDesktop.exe` + `ThinkBuddySetup-dt<版本>.<时间戳>.exe`。
 便携 zip 默认不制作（它只是同一份运行时的另一种分发形态，每次重压 ~500MB/2.1 万文件、约 8 分钟），
 需要时显式加 `-MakePortable`。
 
@@ -118,7 +118,7 @@ powershell -ExecutionPolicy Bypass -File build\build.ps1 -MakePortable     # 额
 | 文件 | 说明 | 默认 |
 |---|---|---|
 | `ThinkBuddyDesktop.exe` | 桌面壳单文件（~14MB），机器上需已有 Python+Node+`deeptutor` | ✅ |
-| `ThinkBuddySetup-dt1.6.14_10131700.exe` | 安装向导（文件名带版本与构建时间戳，Inno 直接输出、无中间副本），内置运行时装进 `{app}\runtime`（~190MB，lzma2）；装完自动启动，卸载保留 `~/ThinkBuddy` 学习数据 | ✅ |
+| `ThinkBuddySetup-dt1.6.14.10131621.exe` | 安装向导（文件名 = `dt` + AppVersion，全点分隔，Inno 直接输出、无中间副本），内置运行时装进 `{app}\runtime`（~190MB，lzma2）；装完自动启动，卸载保留 `~/ThinkBuddy` 学习数据 | ✅ |
 | `ThinkBuddyPortable.zip` | 解压即用的离线包，**默认不制作** | 加 `-MakePortable` |
 
 > 安装器直接从 `dist\ThinkBuddyDesktop.exe` + `runtime-build\staging` 打包，**不依赖便携 zip**，
