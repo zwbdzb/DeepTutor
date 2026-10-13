@@ -17,12 +17,12 @@
 ; %USERPROFILE%\EduBuddy dirs to their ThinkBuddy counterparts on first run.
 
 #define MyAppName "ThinkBuddy"
-; AppVersion is injected by build.ps1 via /DMyAppVersion=<0.2.0+dt<source version>>,
-; so the installer metadata always tracks deeptutor/__version__.py.
+; AppVersion is injected by build.ps1 via /DMyAppVersion=<engine_version.timestamp>,
+; (e.g. 1.6.14.10121554) so the installer metadata tracks deeptutor/__version__.py + build time.
 ; The fallback below only applies to a bare manual `ISCC installer.iss` run
 ; and is intentionally wrong-looking so a stale build is easy to spot.
 #ifndef MyAppVersion
-#define MyAppVersion "0.2.0+dtSET-BY-build.ps1"
+#define MyAppVersion "0.0.0.SET-BY-build.ps1"
 #endif
 #define MyAppPublisher "HKUDS"
 #define MyAppExeName "ThinkBuddyDesktop.exe"
@@ -75,7 +75,8 @@ Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\assets\icon.ico"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+; nowait + postinstall：装完自动拉起新版本；不带 skipifsilent，/VERYSILENT 更新流程也要自动重启
+Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall
 
 [InstallDelete]
 ; 安装新版时清掉本机遗留的托管运行时缓存（%LOCALAPPDATA%\ThinkBuddy\runtime，

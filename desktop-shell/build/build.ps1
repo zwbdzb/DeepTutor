@@ -1,4 +1,4 @@
-﻿# Build ThinkBuddy end-to-end (Windows).
+# Build ThinkBuddy end-to-end (Windows).
 #   1. builds the offline runtime staging tree (embeddable python + deeptutor + node)
 #   2. packages the native shell into dist\ThinkBuddyDesktop.exe  (PyInstaller)
 #   3. (optional) compiles dist\ThinkBuddySetup.exe with Inno Setup 7
@@ -139,22 +139,26 @@ try {
         if (-not $iscc) {
             Write-Host "Inno Setup not found — skipping installer. Install from https://jrsoftware.org/isdl.php"
         } else {
-            # version injection: app version tracks deeptutor/__version__.py
+            # version injection: app version = deeptutor engine version + build timestamp
+            # 格式: X.Y.Z.MMDDHHmm（如 1.6.14.10121554）
+            # 引擎版本不变时每次打包时间戳刷新 → 客户端检测到更新
             $verPy = Join-Path (Split-Path -Parent $Root) "deeptutor\__version__.py"
             $m = Select-String -Path $verPy -Pattern '__version__\s*=\s*"([^"]+)"'
             if (-not $m) { throw "cannot parse __version__ from $verPy" }
-            $appVer = "0.2.0+dt" + $m.Matches[0].Groups[1].Value
+            $dtVer = $m.Matches[0].Groups[1].Value
+            $timestamp = (Get-Date).ToString("MMddHHmm")
+            $appVer = "$dtVer.$timestamp"
             Write-Host "[3/3] compiling ThinkBuddySetup.exe (Inno Setup, AppVersion=$appVer) ..."
             & $iscc "/DMyAppVersion=$appVer" "build\installer.iss"
             if ($LASTEXITCODE -ne 0) { throw "iscc failed" }
 
             # ---------- 3b. publish artifacts (named installer + latest.json) ----------
-            # ADR-006：出包后自动生成发布产物——带版本名安装包（'+'→'_' 防 URL path 把 '+' 当空格）
-            # + 无 BOM latest.json；上传顺序铁律：先安装包，后清单。与
-            # tools/make_publish_artifacts.ps1 同源逻辑（独立脚本可对既有包快速验证链路）。
+            # ADR-006：出包后自动生成发布产物——带版本名安装包 + 无 BOM latest.json。
+            # 文件名格式: ThinkBuddySetup-dt<引擎版本>_<时间戳>.exe
+            # 上传顺序铁律：先安装包，后清单。
             $setupExe = Join-Path $Root "dist\ThinkBuddySetup.exe"
             if (Test-Path -LiteralPath $setupExe) {
-                $safeVer = $appVer.Replace('+', '_')
+                $safeVer = "dt" + $dtVer + "_" + $timestamp
                 $namedSetup = Join-Path $Root "dist\ThinkBuddySetup-$safeVer.exe"
                 Copy-Item -LiteralPath $setupExe -Destination $namedSetup -Force
                 $fileHash = (Get-FileHash -LiteralPath $namedSetup -Algorithm SHA256).Hash.ToLower()

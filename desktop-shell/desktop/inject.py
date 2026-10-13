@@ -57,6 +57,20 @@ TOAST_ENSURE_JS = """
     document.body.appendChild(t);
     result = 'created';
   }
+  // 挂载全局 toast 函数，供 menubar._toast / main.toast 通过 evaluate_js 调用。
+  // SPA 路由切换 / 整页刷新后 window 上下文重建，需由定时器重新挂载。
+  if (!window.__edubuddyToast) {
+    window.__edubuddyToast = function (msg, duration) {
+      var el = document.getElementById('%(id)s');
+      if (!el) { return; }
+      el.textContent = msg;
+      el.style.opacity = '1';
+      clearTimeout(window.__edubuddyToastTimer);
+      window.__edubuddyToastTimer = setTimeout(function () {
+        el.style.opacity = '0';
+      }, duration || 2000);
+    };
+  }
   return result;
 })();
 """

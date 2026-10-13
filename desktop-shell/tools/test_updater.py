@@ -50,7 +50,7 @@ def serve(update_dir: Path):
     return f"http://127.0.0.1:{server.server_address[1]}", server
 
 
-def make_payload(version="0.2.0+dt1.6.11", sha="0" * 64, size=123, url=None):
+def make_payload(version="1.6.14.10121554", sha="0" * 64, size=123, url=None):
     return {
         "app": "ThinkBuddy",
         "version": version,
@@ -66,20 +66,27 @@ def make_payload(version="0.2.0+dt1.6.11", sha="0" * 64, size=123, url=None):
 def main() -> None:
     print("== 1. 版本比较 ==")
     cases = [
-        (("0.2.0+dt1.6.11", "0.2.0+dt1.6.10"), True),
-        (("0.2.0+dt1.6.10", "0.2.0+dt1.6.11"), False),
-        (("0.2.1+dt1.5.0", "0.2.0+dt2.0.0"), True),   # 产品线不同 → 产品线优先
-        (("0.2.0", "0.2.0+dt9.9.9"), False),           # 无 dt 后缀视为比 dt 旧
-        (("0.2.0+dt1.6.11", "0.1.3"), True),           # 本地兜底壳版本 0.1.3 < 安装包版
-        (("0.2.0+dt1.6.11", None), True),              # 本地读不到 → 视为有更新
-        (("", "0.2.0"), False),
+        # 正常引擎升级
+        (("1.6.14.10081400", "1.6.13.10030900"), True),
+        # 引擎不变，小改动重打包 → 时间戳更新触发更新
+        (("1.6.14.10130920", "1.6.14.10081400"), True),
+        # 已经是最新
+        (("1.6.14.10130920", "1.6.14.10130920"), False),
+        # 本地读不到 → 视为有更新
+        (("1.6.14.10121554", None), True),
+        # 空版本 → 不提示
+        (("", "1.6.14.10121554"), False),
+        # 兼容旧格式 0.2.0+dt1.6.14（注册表残留）
+        (("1.6.14.10121554", "0.2.0+dt1.6.14"), True),
     ]
     for (remote, local), want in cases:
         got = updater.is_newer(remote, local)
         check(f"is_newer({remote!r}, {local!r}) == {want} (got {got})", got == want)
 
-    check("version_key('0.2.0+dt1.6.11')", updater.version_key("0.2.0+dt1.6.11") == ((0, 2, 0), (1, 6, 11)))
-    check("forced_by_min_version: below threshold", updater.forced_by_min_version("0.2.0", "0.1.9"))
+    check("version_key('1.6.14.10121554')", updater.version_key("1.6.14.10121554") == (1, 6, 14, 10121554))
+    check("version_key('1.6.14')", updater.version_key("1.6.14") == (1, 6, 14))
+    check("version_key('')", updater.version_key("") == (0,))
+    check("forced_by_min_version: below threshold", updater.forced_by_min_version("1.6.14", "1.6.13"))
     check("forced_by_min_version: empty -> no force", not updater.forced_by_min_version("", "0.0.1"))
     check("forced_by_min_version: local unknown -> force", updater.forced_by_min_version("0.1.0", None))
 
@@ -90,7 +97,7 @@ def main() -> None:
         update_dir.mkdir()
         ds = b"fake-installer-bytes" * 1024
         digest = hashlib.sha256(ds).hexdigest()
-        (update_dir / "ThinkBuddySetup-0.2.0_dt1.6.11.exe").write_bytes(ds)
+        (update_dir / "ThinkBuddySetup-dt1.6.14_10121554.exe").write_bytes(ds)
 
         (update_dir / "latest.json").write_text(
             json.dumps(make_payload(
@@ -101,11 +108,11 @@ def main() -> None:
         try:
             mani = updater.check_latest(f"{base}/update")
             check("check_latest ok: version parsed",
-                  mani["version"] == "0.2.0+dt1.6.11", str(mani))
+                  mani["version"] == "1.6.14.10121554", str(mani))
             check("check_latest ok: sha256 echo field", mani["sha256"] == "0" * 64)
 
             # --- build 产物形态：URL 指向同目录下的具体安装包 ---
-            url = f"{base}/update/ThinkBuddySetup-0.2.0_dt1.6.11.exe"
+            url = f"{base}/update/ThinkBuddySetup-dt1.6.14_10121554.exe"
             dest = root / "dl" / "Setup.exe"
             progress = []
             updater.download(url, dest, expected_sha256=digest,
