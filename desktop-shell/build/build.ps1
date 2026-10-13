@@ -1,4 +1,4 @@
-﻿# Build ThinkBuddy end-to-end (Windows).
+# Build ThinkBuddy end-to-end (Windows).
 #   1. builds the offline runtime staging tree (embeddable python + deeptutor + node)
 #   2. packages the native shell into dist\ThinkBuddyDesktop.exe  (PyInstaller)
 #   3. (optional) compiles dist\ThinkBuddySetup.exe with Inno Setup 7
@@ -113,9 +113,33 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "rebrand failed" }
 
     # ---------- 2. native shell exe ------------------------------------------
-    Write-Host "[2/3] packaging ThinkBuddyDesktop.exe (PyInstaller) ..."
-    & $VenPy -m PyInstaller --noconfirm --clean build\ThinkBuddyDesktop.spec
-    if ($LASTEXITCODE -ne 0) { throw "pyinstaller failed" }
+    # 版本号注入：壳版本 = 引擎版本 + 打包时间戳。
+    $verPy = Join-Path (Split-Path -Parent $Root) "deeptutor\__version__.py"
+    $m = Select-String -Path $verPy -Pattern '__version__\s*=\s*"([^"]+)"'
+    if (-not $m) { throw "cannot parse __version__ from $verPy" }
+    $dtVer = $m.Matches[0].Groups[1].Value
+    $timestamp = (Get-Date).ToString("MMddHHmm")
+    $shellVer = "$dtVer+$timestamp"
+
+    # 把 desktop/__init__.py 的 __version__ 行替换为打包版本号字面量。
+    $initPy = Join-Path $Root "desktop\__init__.py"
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    $origInit = [System.IO.File]::ReadAllText($initPy, [System.Text.Encoding]::UTF8)
+    Write-Host "[2/3] packaging ThinkBuddyDesktop.exe (PyInstaller, shell v$shellVer) ..."
+    try {
+        $newInit = $origInit -replace '__version__\s*=\s*"[^"]*"', "__version__ = `"$shellVer`""
+        if ($newInit -eq $origInit) { throw 'failed to replace __version__ in __init__.py' }
+        [System.IO.File]::WriteAllText($initPy, $newInit, $utf8NoBom)
+        Write-Host "  __init__.py __version__ -> $shellVer"
+
+        & $VenPy -m PyInstaller --noconfirm --clean build\ThinkBuddyDesktop.spec
+        if ($LASTEXITCODE -ne 0) { throw "pyinstaller failed" }
+    }
+    finally {
+        # 无论打包成功与否都还原，避免把临时版本号留在源码里。
+        [System.IO.File]::WriteAllText($initPy, $origInit, $utf8NoBom)
+        Write-Host "  __init__.py restored to original"
+    }
 
     # ---------- 2b. portable dir + zip (opt-in) ------------------------------
     if ($MakePortable) {
@@ -140,13 +164,9 @@ try {
             Write-Host "Inno Setup not found — skipping installer. Install from https://jrsoftware.org/isdl.php"
         } else {
             # version injection: app version = deeptutor engine version + build timestamp
-            # 格式: X.Y.Z.MMDDHHmm（如 1.6.14.10121554）
-            # 引擎版本不变时每次打包时间戳刷新 → 客户端检测到更新
-            $verPy = Join-Path (Split-Path -Parent $Root) "deeptutor\__version__.py"
-            $m = Select-String -Path $verPy -Pattern '__version__\s*=\s*"([^"]+)"'
-            if (-not $m) { throw "cannot parse __version__ from $verPy" }
-            $dtVer = $m.Matches[0].Groups[1].Value
-            $timestamp = (Get-Date).ToString("MMddHHmm")
+            # 格式: X.Y.Z.MMddHHmm（如 1.6.14.10121554）
+            # 复用第 2 步计算的 $dtVer / $timestamp，确保"关于"对话框（+ 分隔）
+            # 与注册表 DisplayVersion（. 分隔）的时间戳同源。
             $appVer = "$dtVer.$timestamp"
             Write-Host "[3/3] compiling ThinkBuddySetup.exe (Inno Setup, AppVersion=$appVer) ..."
             & $iscc "/DMyAppVersion=$appVer" "build\installer.iss"
