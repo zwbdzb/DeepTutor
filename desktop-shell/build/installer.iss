@@ -39,11 +39,25 @@ DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 OutputDir=..\dist
+; 输出文件名：build.ps1 传 /DMyOutputName=dt<版本>_<时间戳>，直接产出带版本名的
+; 发布文件（如 ThinkBuddySetup-dt1.6.14_10131700.exe），不再复制中间产物。
+; 裸跑 ISCC（无 define）时回退固定名 ThinkBuddySetup.exe。
+#ifdef MyOutputName
+OutputBaseFilename=ThinkBuddySetup-{#MyOutputName}
+#else
 OutputBaseFilename=ThinkBuddySetup
+#endif
 SetupIconFile=..\assets\icon.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 UninstallDisplayName={#MyAppName}
+; Compression: 默认 lzma2（发布档，体积最小但 ~600MB 压缩要 8-15 分钟）。
+; /DFastCompression 切到 lzma2/fast——开发迭代用，压缩时间缩短到分钟级以内，
+; 体积代价 +10~15%。build.ps1 的 -FastInstaller 会传这个 define。
+#ifdef FastCompression
+Compression=lzma2/fast
+#else
 Compression=lzma2
+#endif
 SolidCompression=yes
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible

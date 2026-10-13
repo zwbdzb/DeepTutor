@@ -1,22 +1,26 @@
-# Build ThinkBuddy end-to-end (Windows).
+﻿# Build ThinkBuddy end-to-end (Windows).
 #   1. builds the offline runtime staging tree (embeddable python + deeptutor + node)
 #   2. packages the native shell into dist\ThinkBuddyDesktop.exe  (PyInstaller)
-#   3. (optional) compiles dist\ThinkBuddySetup.exe with Inno Setup 7
+#   3. (optional) compiles dist\ThinkBuddySetup-dt<版本>_<时间戳>.exe with Inno Setup 7
 #
-# 默认只产出两个包：ThinkBuddyDesktop.exe + ThinkBuddySetup.exe。
+# 默认只产出两个包：ThinkBuddyDesktop.exe + ThinkBuddySetup-dt<版本>_<时间戳>.exe。
 # dist\ThinkBuddyPortable.zip 默认【不】制作——它只是同一个运行时的另一种分发形态，
 # 每次都要重新压缩 ~500MB / 2.1 万个文件（约 8 分钟），日常迭代没必要。
 # 确实需要时显式加 -MakePortable。
 #
 # Prereqs: Python 3.11+ with PyInstaller, and Inno Setup 7 installed at the
 #          standard path (only needed for step 3).
-# Run:     powershell -ExecutionPolicy Bypass -File build\build.ps1 [-SkipRuntime] [-MakePortable] [-MakeZip] [-SkipInstaller]
+# Run:     powershell -ExecutionPolicy Bypass -File build\build.ps1
+#              [-SkipRuntime] [-MakePortable] [-MakeZip] [-SkipInstaller]
+#              [-StrictRuntime] [-FastInstaller]
 
 param(
     [switch]$SkipRuntime,       # kept for compatibility; the version gate ALWAYS runs (see below)
     [switch]$MakePortable,      # also build dist\ThinkBuddyPortable.zip (slow, ~8 min)
     [switch]$MakeZip,           # also build dist\runtime.zip (slow, for Inno path)
     [switch]$SkipInstaller,     # do not compile the Inno .iss
+    [switch]$StrictRuntime,     # content-hash runtime sources (slower; release-time assurance)
+    [switch]$FastInstaller,     # Inno lzma2/fast（开发迭代用，安装包体积 +10~15%，压缩时间大幅缩短）
     # ADR-006 更新发布参数：出包后自动生成「带版本名安装包 + latest.json」（dist/）
     [string]$UpdateBase = "https://thinkbuddy.hanyoai.com/update",
     [string]$MinVersion = "0.1.0",
@@ -26,6 +30,12 @@ $ErrorActionPreference = "Stop"
 $Root   = Split-Path -Parent $PSScriptRoot
 $VenPy  = Join-Path $Root ".venv\Scripts\python.exe"
 if (-not (Test-Path $VenPy)) { Write-Host "venv missing. run:  python -m venv .venv && .\.venv\Scripts\pip install pywebview pillow pyinstaller" -ForegroundColor Red; exit 1 }
+
+# 每阶段计时：优化/定位耗时靠数据，不靠猜。
+$script:StageStart = Get-Date
+$BuildTotal = Get-Date
+function Start-Stage { $script:StageStart = Get-Date }
+function Stop-Stage($name) { Write-Host ("  [{0}] done in {1:mm\:ss}" -f $name, ((Get-Date) - $script:StageStart)) }
 
 Push-Location $Root
 
@@ -44,7 +54,8 @@ function Get-WebFingerprint {
         if ($LASTEXITCODE -ne 0 -or -not $rel) { return $null }
         $sb = New-Object System.Text.StringBuilder
         foreach ($r in ($rel | Sort-Object)) {
-            if ($r -eq '.web-build-stamp') { continue }   # 指纹戳自身不参与指纹（防自指：写戳后指纹恒变）
+            # 指纹戳自身不参与指纹（防自指：写戳后指纹恒变）
+            if ($r -eq '.web-build-stamp' -or $r -eq '.deeptutor_web-stamp') { continue }
             $p = Join-Path $WebDir $r
             if (Test-Path -LiteralPath $p -PathType Leaf) {
                 $fi = Get-Item -LiteralPath $p
@@ -68,21 +79,36 @@ if (Test-Path -LiteralPath $StampFile) { try { $prev = (Get-Content -LiteralPath
 $standaloneDir = Join-Path $WebDir ".next\standalone"
 $haveOutput = (Test-Path (Join-Path $standaloneDir "server.js")) -and `
               (Test-Path (Join-Path $standaloneDir "node_modules\next\dist\build\output\log.js"))
-if ($fp -and $prev -and ($fp -eq $prev) -and $haveOutput) {
-    Write-Host "[0/3] web sources unchanged since last build - reusing .next output (stamp match)"
+# web → deeptutor_web 拷贝也做增量：web 未变且上次已把同一指纹的产物拷进
+# deeptutor_web（.deeptutor_web-stamp）时，跳过 prepare_web_package 的
+# 删+拷 82MB/数千文件（Windows + 杀毒下 1-3 分钟的纯浪费）。
+$PkgStampFile = Join-Path $WebDir ".deeptutor_web-stamp"
+$pkgStamp = $null
+if (Test-Path -LiteralPath $PkgStampFile) { try { $pkgStamp = (Get-Content -LiteralPath $PkgStampFile -Raw).Trim() } catch {} }
+$webFresh = ($fp -and $prev -and ($fp -eq $prev) -and $haveOutput)
+if ($webFresh -and ($pkgStamp -eq $fp)) {
+    Write-Host "[0/3] web sources unchanged AND deeptutor_web already packaged - skipping build & copy (stamp match)"
 } else {
-    Push-Location $WebDir
-    try {
-        npm run build
-        if ($LASTEXITCODE -ne 0) { throw "web build failed" }
-    } finally { Pop-Location }
-    # 指纹在构建【后】重算：build.mjs 会改写并还原 next-env.d.ts/tsconfig.json，
-    # 以构建落定后的树状态为准，下次构建才能命中 stamp。
-    $fp2 = Get-WebFingerprint
-    if ($fp2) { try { Set-Content -LiteralPath $StampFile -Value $fp2 -Encoding ASCII -NoNewline } catch {} }
+    if (-not $webFresh) {
+        Push-Location $WebDir
+        try {
+            npm run build
+            if ($LASTEXITCODE -ne 0) { throw "web build failed" }
+        } finally { Pop-Location }
+        # 指纹在构建【后】重算：build.mjs 会改写并还原 next-env.d.ts/tsconfig.json，
+        # 以构建落定后的树状态为准，下次构建才能命中 stamp。
+        $fp2 = Get-WebFingerprint
+        if ($fp2) {
+            try { Set-Content -LiteralPath $StampFile -Value $fp2 -Encoding ASCII -NoNewline } catch {}
+            $fp = $fp2   # deeptutor_web-stamp 与 web stamp 同源
+        }
+    }
+    Start-Stage
+    & $VenPy (Join-Path (Split-Path -Parent $Root) "scripts\prepare_web_package.py") --skip-build
+    if ($LASTEXITCODE -ne 0) { throw "web package preparation failed" }
+    if ($fp) { try { Set-Content -LiteralPath $PkgStampFile -Value $fp -Encoding ASCII -NoNewline } catch {} }
+    Stop-Stage "web package copy"
 }
-& $VenPy (Join-Path (Split-Path -Parent $Root) "scripts\prepare_web_package.py") --skip-build
-if ($LASTEXITCODE -ne 0) { throw "web package preparation failed" }
 try {
     # ---------- 1. offline runtime (staging tree) ---------------------------
     # 无条件跑 build_runtime.py：它自身幂等——staging 版本与本地源一致且源码未变时
@@ -90,27 +116,32 @@ try {
     # 【版本门禁不可跳过】-SkipRuntime 不再绕过它：曾因跳过这一步把 1.6.9 旧运行时
     # 打进安装包而源码已是 1.6.10（1.6.7 时也发生过一次）。
     Write-Host "[1/3] building/verifying offline runtime (embeddable python + deeptutor + node) ..."
-    if ($MakeZip) {
-        & $VenPy tools\build_runtime.py
-    } else {
-        & $VenPy tools\build_runtime.py --no-zip
-        # 陈旧 zip 防线：spec 只在 dist\runtime.zip 存在时才把它内嵌进 onefile
-        # exe。若本轮没打 zip 而 dist 里留着上次的旧 zip，旧运行时会被静默
-        # 打进新壳（2026-09-23 曾因此把 1.6.9 缓存刷新给用户）。不打包时就
-        # 删掉残留，宁可壳里没运行时（安装版兜底），不可静默回退旧版。
+    Start-Stage
+    $rtArgs = @("tools\build_runtime.py")
+    if (-not $MakeZip) { $rtArgs += "--no-zip" }
+    if ($StrictRuntime) { $rtArgs += "--strict-fingerprint" }
+    & $VenPy @rtArgs
+    if ($LASTEXITCODE -ne 0) { throw "runtime build/gate failed" }
+    Stop-Stage "runtime build/gate"
+    # 陈旧 zip 防线：spec 只在 dist\runtime.zip 存在时才把它内嵌进 onefile
+    # exe。若本轮没打 zip 而 dist 里留着上次的旧 zip，旧运行时会被静默
+    # 打进新壳（2026-09-23 曾因此把 1.6.9 缓存刷新给用户）。不打包时就
+    # 删掉残留，宁可壳里没运行时（安装版兜底），不可静默回退旧版。
+    if (-not $MakeZip) {
         $staleZip = Join-Path $Root "dist\runtime.zip"
         if ($staleZip -and (Test-Path -LiteralPath $staleZip)) {
             Write-Host "[1] removing stale dist\runtime.zip (built without -MakeZip; prevents embedding an old runtime)"
             Remove-Item -LiteralPath $staleZip -Force
         }
     }
-    if ($LASTEXITCODE -ne 0) { throw "runtime build/gate failed" }
 
     # ---------- 1b. rebrand staging (DeepTutor -> ThinkBuddy) -----------------
     # 只重写 staging 产物里的用户可见品牌名；包名/类名/URL 受保护。幂等。
     Write-Host "[1b] rebranding staging (DeepTutor -> ThinkBuddy) ..."
+    Start-Stage
     & $VenPy tools\rebrand.py
     if ($LASTEXITCODE -ne 0) { throw "rebrand failed" }
+    Stop-Stage "rebrand"
 
     # ---------- 2. native shell exe ------------------------------------------
     # 版本号注入：壳版本 = 引擎版本 + 打包时间戳。
@@ -119,20 +150,25 @@ try {
     if (-not $m) { throw "cannot parse __version__ from $verPy" }
     $dtVer = $m.Matches[0].Groups[1].Value
     $timestamp = (Get-Date).ToString("MMddHHmm")
-    $shellVer = "$dtVer+$timestamp"
+    # 壳版本号 形如 1.6.14.10131621：引擎版本 + 时间戳用「.」拼接，
+    # 与注册表 DisplayVersion 同源同格式，避免"关于"框出现 +（用户要求）。
+    $shellVer = "$dtVer.$timestamp"
 
     # 把 desktop/__init__.py 的 __version__ 行替换为打包版本号字面量。
     $initPy = Join-Path $Root "desktop\__init__.py"
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     $origInit = [System.IO.File]::ReadAllText($initPy, [System.Text.Encoding]::UTF8)
     Write-Host "[2/3] packaging ThinkBuddyDesktop.exe (PyInstaller, shell v$shellVer) ..."
+    Start-Stage
     try {
         $newInit = $origInit -replace '__version__\s*=\s*"[^"]*"', "__version__ = `"$shellVer`""
         if ($newInit -eq $origInit) { throw 'failed to replace __version__ in __init__.py' }
         [System.IO.File]::WriteAllText($initPy, $newInit, $utf8NoBom)
         Write-Host "  __init__.py __version__ -> $shellVer"
 
-        & $VenPy -m PyInstaller --noconfirm --clean build\ThinkBuddyDesktop.spec
+        # 不加 --clean：PyInstaller 的分析缓存（build\）对壳这种几乎不变的输入
+        # 完全可复用，--clean 每次强制全量重分析，纯浪费 1-3 分钟。
+        & $VenPy -m PyInstaller --noconfirm build\ThinkBuddyDesktop.spec
         if ($LASTEXITCODE -ne 0) { throw "pyinstaller failed" }
     }
     finally {
@@ -140,6 +176,7 @@ try {
         [System.IO.File]::WriteAllText($initPy, $origInit, $utf8NoBom)
         Write-Host "  __init__.py restored to original"
     }
+    Stop-Stage "pyinstaller shell exe"
 
     # ---------- 2b. portable dir + zip (opt-in) ------------------------------
     if ($MakePortable) {
@@ -165,22 +202,35 @@ try {
         } else {
             # version injection: app version = deeptutor engine version + build timestamp
             # 格式: X.Y.Z.MMddHHmm（如 1.6.14.10121554）
-            # 复用第 2 步计算的 $dtVer / $timestamp，确保"关于"对话框（+ 分隔）
+            # 复用第 2 步计算的 $dtVer / $timestamp，确保"关于"对话框（. 分隔）
             # 与注册表 DisplayVersion（. 分隔）的时间戳同源。
             $appVer = "$dtVer.$timestamp"
-            Write-Host "[3/3] compiling ThinkBuddySetup.exe (Inno Setup, AppVersion=$appVer) ..."
-            & $iscc "/DMyAppVersion=$appVer" "build\installer.iss"
+            # 发布文件名安全版（dt<引擎版本>_<时间戳>，点号换下划线），
+            # 直接作为 Inno 输出名，不再产出/复制中间的 ThinkBuddySetup.exe。
+            $safeVer = "dt$dtVer" + "_" + "$timestamp"
+            Write-Host "[3/3] compiling ThinkBuddySetup-$safeVer.exe (Inno Setup, AppVersion=$appVer) ..."
+            Start-Stage
+            # 编译前清掉上次（改造前）可能残留的固定名 ThinkBuddySetup.exe，
+            # 避免与带版本名的发布产物混淆；非关键路径，失败仅提示。
+            $legacySetup = Join-Path $Root "dist\ThinkBuddySetup.exe"
+            if (Test-Path -LiteralPath $legacySetup) {
+                try { Remove-Item -LiteralPath $legacySetup -Force; Write-Host "  removed stale dist\ThinkBuddySetup.exe (pre-rename artifact)" }
+                catch { Write-Host "  WARN: cannot remove stale dist\ThinkBuddySetup.exe: $_" }
+            }
+            # -FastInstaller：lzma2/fast + 非迭代发布时也可一直用（见 installer.iss）
+            $isccArgs = @()
+            if ($FastInstaller) { $isccArgs += "/DFastCompression" }
+            $isccArgs += @("/DMyAppVersion=$appVer", "/DMyOutputName=$safeVer", "build\installer.iss")
+            & $iscc @isccArgs
             if ($LASTEXITCODE -ne 0) { throw "iscc failed" }
+            Stop-Stage "inno setup installer"
 
             # ---------- 3b. publish artifacts (named installer + latest.json) ----------
             # ADR-006：出包后自动生成发布产物——带版本名安装包 + 无 BOM latest.json。
-            # 文件名格式: ThinkBuddySetup-dt<引擎版本>_<时间戳>.exe
+            # 安装包已由 Inno 直接输出为带版本名（ThinkBuddySetup-$safeVer.exe），无复制。
             # 上传顺序铁律：先安装包，后清单。
-            $setupExe = Join-Path $Root "dist\ThinkBuddySetup.exe"
-            if (Test-Path -LiteralPath $setupExe) {
-                $safeVer = "dt" + $dtVer + "_" + $timestamp
-                $namedSetup = Join-Path $Root "dist\ThinkBuddySetup-$safeVer.exe"
-                Copy-Item -LiteralPath $setupExe -Destination $namedSetup -Force
+            $namedSetup = Join-Path $Root "dist\ThinkBuddySetup-$safeVer.exe"
+            if (Test-Path -LiteralPath $namedSetup) {
                 $fileHash = (Get-FileHash -LiteralPath $namedSetup -Algorithm SHA256).Hash.ToLower()
                 $size = (Get-Item -LiteralPath $namedSetup).Length
                 $manifest = @{
@@ -200,11 +250,12 @@ try {
                 Write-Host "  $namedSetup"
                 Write-Host "  $manifestPath  ->  $UpdateBase/"
             } else {
-                Write-Host "[3b] dist\ThinkBuddySetup.exe 不存在，跳过发布产物生成"
+                Write-Host "[3b] dist\ThinkBuddySetup-$safeVer.exe 不存在，跳过发布产物生成"
             }
         }
     }
     Write-Host ""
+    Write-Host ("TOTAL build time: {0:hh\:mm\:ss}" -f ((Get-Date) - $BuildTotal))
     Get-ChildItem "$Root\dist" -Filter *.exe | Select-Object Name, @{n='MB';e={[math]::Round($_.Length/1MB,1)}}, LastWriteTime | Format-Table -AutoSize
 }
 finally { Pop-Location }
