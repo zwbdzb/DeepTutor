@@ -87,6 +87,7 @@ web/.next-*/
 # PDF.js decoder files are copied from node_modules for local/dev and release
 # builds; they are dependency-generated assets, not source files.
 web/public/pdfjs/
+web/public/pptx-preview/pptx-preview.umd.js
 
 # ---------------------------------------------------------------------------
 # deeptutor_web —— pip 打包时由 scripts/prepare_web_package.py 从

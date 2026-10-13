@@ -15,7 +15,7 @@ export type BinarySourceState =
 
 /**
  * Fetch the bytes at *url* as an ArrayBuffer for a client-side office
- * renderer (docx-preview / exceljs). Size-guards via the content-length
+ * renderer (docx-preview / exceljs / pptx-preview). Size-guards the body and content-length
  * header and aborts on unmount / url change. Mirrors {@link useTextSource}
  * but yields raw bytes instead of decoded text.
  */
@@ -24,12 +24,12 @@ export function useBinarySource(url: string | null): BinarySourceState {
   const reqIdRef = useRef(0);
 
   useEffect(() => {
+    const reqId = ++reqIdRef.current;
     if (!url) {
       setState({ kind: "error", message: "Preview source is not available." });
       return;
     }
 
-    const reqId = ++reqIdRef.current;
     const controller = new AbortController();
     setState({ kind: "loading" });
 
@@ -44,7 +44,10 @@ export function useBinarySource(url: string | null): BinarySourceState {
           );
         }
         const buffer = await res.arrayBuffer();
-        if (reqIdRef.current !== reqId) return; // superseded
+        if (controller.signal.aborted || reqIdRef.current !== reqId) return;
+        if (buffer.byteLength > MAX_BYTES) {
+          throw new Error("File is too large to preview. Use the Download button.");
+        }
         setState({ kind: "ready", buffer });
       } catch (err) {
         if (controller.signal.aborted) return;
