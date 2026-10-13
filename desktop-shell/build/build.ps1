@@ -1,4 +1,4 @@
-# Build ThinkBuddy end-to-end (Windows).
+﻿# Build ThinkBuddy end-to-end (Windows).
 #   1. builds the offline runtime staging tree (embeddable python + deeptutor + node)
 #   2. packages the native shell into dist\ThinkBuddyDesktop.exe  (PyInstaller)
 #   3. (optional) compiles dist\ThinkBuddySetup.exe with Inno Setup 7
