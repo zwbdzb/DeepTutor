@@ -2,7 +2,7 @@
 
 用途
 ----
-1. **排查平台发码问题**：不启动 EduBuddy、不碰 DeepTutor，只跑一个回环服务，
+1. **排查平台发码问题**：不启动 ThinkBuddy、不碰 DeepTutor，只跑一个回环服务，
    把平台 302 回来的每一个参数原样打印出来（含 error / error_description）。
 2. **端到端验证 OAuth 链路**：自己生成 PKCE，给出可直接打开的授权 URL，
    收到 code 后立刻做 token 交换 + userinfo，把平台原始响应摊开。

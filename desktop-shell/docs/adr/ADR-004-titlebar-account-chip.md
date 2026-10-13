@@ -4,7 +4,7 @@
 
 **Accepted** — 2026-09-23：取代 ADR-002 v2 的「页面内左下角按钮 + 自绘菜单」方案。
 
-- 决策者：EduBuddy 桌面端
+- 决策者：ThinkBuddy 桌面端
 - 相关：`docs/adr/ADR-002-login-context-menu.md`、`desktop/native_menu_backend.py`、
   `desktop/titlebar_account.py`、`desktop/inject.py`
 
@@ -32,7 +32,7 @@ ADR-002 的方案把登录/账号按钮注入 DeepTutor 页面（`position:fixed
   - 未登录 → 显示「登录」，点击直接发起 OAuth（与旧按钮一致）；
   - 已登录 → 显示用户名（回退脱敏手机号），点击弹**原生 ContextMenuStrip**
     账号菜单：刷新可用模型 / 打开 Tokengine 平台 / 切换账号 / 退出登录 /
-    关于 EduBuddy，顶部灰色只读项显示 用户名 · 余额 · 模型数；
+    关于 ThinkBuddy，顶部灰色只读项显示 用户名 · 余额 · 模型数；
   - 登录进行中 → 显示「等待浏览器…」，点击弹「重新发起登录」菜单；
   - 已配置令牌（本机残留）→ 显示「已配置令牌」，点击直发登录（configured
     不算登录，与旧版一致）。

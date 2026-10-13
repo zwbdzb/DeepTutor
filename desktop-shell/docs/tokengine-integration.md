@@ -34,7 +34,8 @@
   │                                   │◀─ 302 ?code=&state= ───┤                       │
   │                                   ├───────────────────────────────────────────────▶│
   │◀── 换令牌 POST /oauth/token ──────────────────────────────┤                       │
-  │◀── 拉 userinfo（余额 / 模型）──────────────────────────────┤                       │
+  │◀── 拉 userinfo（业务令牌 ai_token / 余额 / 中继域名）───────┤                       │
+  │◀── 拉中继 /v1/models（模型名单唯一来源，每项自带 model_type）┤                      │
   ├── 解析域名 + 写 model_catalog + DPAPI 落盘                                          │
   └── 会话主循环放行 → load_url 进入应用（页面载入可用模型）                              │
 
@@ -88,7 +89,8 @@ OpenAI 连接 profile。桌面登录刷新会同时识别顶层的 `connection_i
 | 端点 | 响应 |
 | --- | --- |
 | `POST /oauth/token` | **扁平**：`access_token` / `refresh_token` / `token_type` / `expires_in` |
-| `GET /oauth/userinfo` | **扁平**：`sub` / `phone` / `username` / `balance` / `ai_token` / `models[]` |
+| `GET /oauth/userinfo` | **扁平**：`sub` / `phone` / `username` / `balance` / `ai_token`（平台仍会返回 `models[]`，但 2026-09-24 起桌面端**不再消费**） |
+| `GET /v1/models` | OpenAI 兼容：`{"object":"list","data":[{"id","model_type"},...]}`——**模型名单唯一来源** |
 | `GET /api/status` | `{success, data{server_address, system_name, ...}}`（公开，无需鉴权） |
 
 - `client_id` 必须是平台侧已注册的（DB 配置项 `OAuthClients`，默认空 → 未注册会被拒）；

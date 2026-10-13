@@ -6,7 +6,7 @@
 （Deferred，触发条件见 §7）。
 
 - 日期：2026-09-15
-- 决策者：EduBuddy 桌面端 / Tokengine 平台
+- 决策者：ThinkBuddy 桌面端 / Tokengine 平台
 - 相关：`docs/tokengine-oauth-spec.md`、`docs/architecture.md`
 
 ---
@@ -139,7 +139,7 @@ response_type=token                    -> unsupported_response_type / response_t
 
 ### 零侵入回调探针（推荐）
 
-不启动 EduBuddy、不改 DeepTutor，独立跑完整 OAuth 握手（自生成 PKCE、收码、换码）：
+不启动 ThinkBuddy、不改 DeepTutor，独立跑完整 OAuth 握手（自生成 PKCE、收码、换码）：
 
 ```bash
 # 交互式：打印授权 URL，在浏览器完成登录后自动换码并打印平台原始响应

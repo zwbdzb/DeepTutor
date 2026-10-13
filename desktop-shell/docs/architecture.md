@@ -68,10 +68,10 @@ venv 里的 `pyvenv.cfg`/绝对路径搬迁即坏；embeddable 分发天生可�
 
 | 产物 | 工具 | 说明 |
 |---|---|---|
-| `EduBuddyDesktop.exe` | PyInstaller onefile(windowed) | 壳本体，无内置运行时(可选 runtime.zip 内嵌) |
+| `ThinkBuddyDesktop.exe` | PyInstaller onefile(windowed) | 壳本体，无内置运行时(可选 runtime.zip 内嵌) |
 | 离线运行时 | `tools/build_runtime.py --no-zip` | embeddable python + pip --target deeptutor + portable node，产出 `runtime-build/staging` |
 | `Portable.zip` | `tools/make_portable.py` | **从 staging 直接打包（无需中间拷贝）+ deflate 压缩**，解压即用；体积约为解压后一半 |
-| `DeepTutorSetup.exe` | Inno Setup 7 `installer.iss` | 向导 + 快捷方式 + 卸载器；`runtime/` 树直接装进 `{app}\runtime`(recursesubdirs)，无需解压 |
+| `ThinkBuddySetup.exe` | Inno Setup 7 `installer.iss` | 向导 + 快捷方式 + 卸载器；`runtime/` 树直接装进 `{app}\runtime`(recursesubdirs)，无需解压 |
 
 > 默认裁剪优化：安装到 embeddable python 的 deeptutor 依赖闭包很大(尤其 faiss 63MB、
 > litellm 72MB、PyMuPDF 48MB)。`build_runtime.py` 之后默认移除 deeptutor 已弃用的

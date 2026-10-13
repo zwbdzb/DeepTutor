@@ -23,9 +23,10 @@
 登录门控页「登录」按钮（未登录启动时整页显示；登录后也可从**标题栏右上角账号区**发起）
    → 系统浏览器打开 <平台>/oauth/authorize（PKCE S256 + 本机回环回调 127.0.0.1:<随机端口>）
    → 手机号/账密登录 →「确认授权」→ 平台 302 回本机回环带 code
-   → 客户端换取 OAuth 凭证，再从 userinfo 取得业务令牌，按 model_type 分流写入
-     ~/ThinkBuddy/data/user/settings/model_catalog.json
-     （对话→llm/task、向量→embedding、图像/视频各归其位），随后自动进入应用
+   → 客户端换取 OAuth 凭证，再从 userinfo 取得业务令牌（`ai_token`）；模型名单
+     则从中继 `GET /v1/models` 拉取（每项自带 model_type），
+     按 model_type 分流写入 ~/ThinkBuddy/data/user/settings/model_catalog.json
+     （对话→llm、向量→embedding、图像/视频/语音各归其位），随后自动进入应用
 ```
 
 - **必须登录才能使用**：服务就绪后检查登录态，未登录停在登录页；登录成功自动进入
