@@ -79,11 +79,21 @@ node_modules
 # pnpm metadata generated locally; this project tracks package-lock.json instead.
 web/pnpm-lock.yaml
 web/pnpm-workspace.yaml
+# npm lockfile accidentally generated at repo root (npm install run in the
+# wrong cwd); the real one is web/package-lock.json.
+/package-lock.json
+
+# PyInstaller workpath (build cache: .toc/.pyz/.pkg/xref/warn — regenerated
+# every build; keeping it locally speeds up incremental shell builds).
+desktop-shell/build/ThinkBuddyDesktop/
 
 # Next.js build output
 .next/
 # Custom distDir builds (DEEPTUTOR_NEXT_DIST_DIR / parallel dev servers)
 web/.next-*/
+# Build-tool state stamps (fingerprints written by build\build.ps1)
+web/.web-build-stamp
+web/.deeptutor_web-stamp
 # PDF.js decoder files are copied from node_modules for local/dev and release
 # builds; they are dependency-generated assets, not source files.
 web/public/pdfjs/

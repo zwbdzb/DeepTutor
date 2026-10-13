@@ -52,7 +52,8 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,                      # off: UPX 压缩每个 DLL 费时数分钟，且易触发杀软误报；
+                                    # 安装包侧 Inno lzma2 已做整体压缩，这里压不压收益趋零
     console=False,                  # no console window (WorkBuddy-like)
     disable_windowed_traceback=False,
     icon=str(ASSETS / "icon.ico"),

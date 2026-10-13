@@ -310,7 +310,7 @@ def scenario_splash_js_smoke() -> None:
     check("splash 模板包含 <script> 块", m is not None)
     if m is None:
         return
-    script_path = Path(tempfile.gettempdir()) / f"edubuddy_splash_{uuid.uuid4().hex[:8]}.js"
+    script_path = Path(tempfile.gettempdir()) / f"thinkbuddy_splash_{uuid.uuid4().hex[:8]}.js"
     script_path.write_text(m.group(1), encoding="utf-8")
     try:
         proc = subprocess.run(
@@ -500,7 +500,7 @@ def scenario_stale_logout_signal(base: Path) -> None:
 
 def main() -> int:
     print("=== ThinkBuddy 登录门控会话循环 无头验证 ===")
-    with tempfile.TemporaryDirectory(prefix="edubuddy-gate-test-") as td:
+    with tempfile.TemporaryDirectory(prefix="thinkbuddy-gate-test-") as td:
         base = Path(td)
         scenario_gate_then_login(base)
         scenario_already_logged_in(base)

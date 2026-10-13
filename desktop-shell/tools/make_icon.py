@@ -1,4 +1,4 @@
-"""Generate the EduBuddy icon: assets/icon.png + assets/icon.ico.
+"""Generate the ThinkBuddy icon: assets/icon.png + assets/icon.ico.
 
 Sources the artwork from the provided image (the white-cat-graduation-cap
 mascot on a green octagonal tile) and converts it into a Windows .ico that

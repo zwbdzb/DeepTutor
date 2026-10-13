@@ -23,9 +23,10 @@
 登录门控页「登录」按钮（未登录启动时整页显示；登录后也可从**标题栏右上角账号区**发起）
    → 系统浏览器打开 <平台>/oauth/authorize（PKCE S256 + 本机回环回调 127.0.0.1:<随机端口>）
    → 手机号/账密登录 →「确认授权」→ 平台 302 回本机回环带 code
-   → 客户端换取 OAuth 凭证，再从 userinfo 取得业务令牌，按 model_type 分流写入
-     ~/ThinkBuddy/data/user/settings/model_catalog.json
-     （对话→llm/task、向量→embedding、图像/视频各归其位），随后自动进入应用
+   → 客户端换取 OAuth 凭证，再从 userinfo 取得业务令牌（`ai_token`）；模型名单
+     则从中继 `GET /v1/models` 拉取（每项自带 model_type），
+     按 model_type 分流写入 ~/ThinkBuddy/data/user/settings/model_catalog.json
+     （对话→llm、向量→embedding、图像/视频/语音各归其位），随后自动进入应用
 ```
 
 - **必须登录才能使用**：服务就绪后检查登录态，未登录停在登录页；登录成功自动进入
@@ -54,7 +55,7 @@
 | 形态 | 谁用 | 需要什么 | 默认产出 |
 |---|---|---|---|
 | `ThinkBuddyDesktop.exe`（单文件） | 开发者 / 已有 deeptutor 的机器 | 系统里有 Python+Node+`deeptutor` | ✅ |
-| `ThinkBuddySetup.exe`（Inno 安装器） | 分发 | 安装向导 + 开始菜单 + 卸载器，自带运行时 | ✅ |
+| `ThinkBuddySetup-dt<版本>.<时间戳>.exe`（Inno 安装器） | 分发 | 安装向导 + 开始菜单 + 卸载器，自带运行时 | ✅ |
 | `ThinkBuddyPortable.zip`（内置运行时） | 免安装场景 | **什么都不用装**，解压即用 | 加 `-MakePortable` |
 
 ## 快速开始（本仓库开发态）
@@ -65,24 +66,39 @@ py -3.12 -m venv .venv
 .\.venv\Scripts\python -m desktop.main        # 开发跑起来
 ```
 
-> 开发态复用系统里的 `deeptutor` 与 `node`；没有则首次运行会自动用系统 python 建
-> 独立 venv 并 `pip install -U deeptutor`。
+> 开发态复用系统 PATH 里的 `deeptutor` 与 `node`（Node 20+）；缺失时启动画面会
+> 报错提示手动安装（`pip install -U deeptutor`）。打包版不受影响——安装器内置完整运行时。
 
 ## 构建
 
-**默认只出两个包**：`ThinkBuddyDesktop.exe` + `ThinkBuddySetup.exe`。
+**默认只出两个包**：`ThinkBuddyDesktop.exe` + `ThinkBuddySetup-dt<版本>.<时间戳>.exe`。
 便携 zip 默认不制作（它只是同一份运行时的另一种分发形态，每次重压 ~500MB/2.1 万文件、约 8 分钟），
 需要时显式加 `-MakePortable`。
 
-**日常与首次构建都是同一条命令**——`build_runtime.py` 自带增量：staging 运行时与源码
-一致且未变化时只跑冒烟测试 + 版本门禁（十几秒），源码变了自动重装。版本门禁不可跳过
-（曾因跳过把 1.6.9 旧运行时打进新包，见 `docs/adr/ADR-005`）。
+**日常与首次构建都是同一条命令**——整条链路增量：
+
+- **运行时**：源码指纹（size+mtime）未变 → 只跑版本门禁（秒级）；改了代码 →
+  `pip --no-deps` 只重装自家 3 个包（~20 秒）；`pyproject.toml` 依赖变了 →
+  全量重装一次，之后恢复快速路径。版本门禁不可跳过（曾因跳过把 1.6.9 旧运行时
+  打进新包，见 `docs/adr/ADR-005`）。
+- **web**：源码未变时跳过 next build；`web → deeptutor_web` 拷贝按指纹增量跳过。
+- **壳**：PyInstaller 不带 `--clean`（复用分析缓存），UPX 关闭。
+- **安装包**：`-FastInstaller` 用 `lzma2/fast`（快，体积 +10~15%）；不加则
+  `lzma2` 最小体积（压缩 8~15 分钟）。
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File build\build.ps1                    # 日常/首次
-powershell -ExecutionPolicy Bypass -File build\build.ps1 -SkipInstaller    # 只要壳 exe，不编安装包
+# 日常迭代（推荐）：全增量 + 快速压缩，改代码后整包 ~1-3 分钟
+powershell -ExecutionPolicy Bypass -File build\build.ps1 -FastInstaller
+
+# 正式发布：严格内容指纹核验源码 + 最小体积安装包
+powershell -ExecutionPolicy Bypass -File build\build.ps1 -StrictRuntime
+
+powershell -ExecutionPolicy Bypass -File build\build.ps1 -SkipInstaller    # 只要壳 exe
 powershell -ExecutionPolicy Bypass -File build\build.ps1 -MakePortable     # 额外做便携 zip（~8 分钟）
 ```
+
+两个开关正交：`-FastInstaller` 管压缩速度，`-StrictRuntime` 管源码校验强度，
+可同时使用。每阶段耗时都会打印（`[阶段名] done in mm:ss` + 总耗时）。
 
 打包机制科普（runtime / PyInstaller / 安装位置 / 自检清单）见
 [`docs/packaging-guide.md`](docs/packaging-guide.md)。
@@ -90,11 +106,11 @@ powershell -ExecutionPolicy Bypass -File build\build.ps1 -MakePortable     # 额
 也可以分步手动执行（`build.ps1` 做的就是这几步）：
 
 ```powershell
-.\.venv\Scripts\python tools\build_runtime.py --no-zip                                   # 1) 离线运行时 + 版本门禁
-.\.venv\Scripts\python tools\rebrand.py                                                  # 2) staging 改品牌（幂等）
-.\.venv\Scripts\python -m PyInstaller --noconfirm --clean build\ThinkBuddyDesktop.spec     # 3) 桌面壳 exe
-& "C:\Program Files\Inno Setup 7\ISCC.exe" /DMyAppVersion=0.2.0+dt<版本> build\installer.iss   # 4) 安装向导（版本号自动读自 deeptutor/__version__.py；裸跑会得到占位版本）
-.\.venv\Scripts\python tools\make_portable.py                                            # 5) 便携包（可选）
+.\.venv\Scripts\python tools\build_runtime.py --no-zip                              # 1) 离线运行时 + 版本门禁
+.\.venv\Scripts\python tools\rebrand.py                                             # 2) staging 改品牌（幂等）
+.\.venv\Scripts\python -m PyInstaller --noconfirm build\ThinkBuddyDesktop.spec      # 3) 桌面壳 exe
+& "C:\Program Files\Inno Setup 7\ISCC.exe" /DMyAppVersion=1.6.14.10121554 build\installer.iss   # 4) 安装向导（版本 = 引擎版本.时间戳；裸跑会得到占位版本）
+.\.venv\Scripts\python tools\make_portable.py                                       # 5) 便携包（可选）
 ```
 
 产物都在 `dist/`：
@@ -102,7 +118,7 @@ powershell -ExecutionPolicy Bypass -File build\build.ps1 -MakePortable     # 额
 | 文件 | 说明 | 默认 |
 |---|---|---|
 | `ThinkBuddyDesktop.exe` | 桌面壳单文件（~14MB），机器上需已有 Python+Node+`deeptutor` | ✅ |
-| `ThinkBuddySetup.exe` | 安装向导，内置运行时装进 `{app}\runtime`（~170MB，lzma2）；装完自动启动，卸载保留 `~/ThinkBuddy` 学习数据 | ✅ |
+| `ThinkBuddySetup-dt1.6.14.10131621.exe` | 安装向导（文件名 = `dt` + AppVersion，全点分隔，Inno 直接输出、无中间副本），内置运行时装进 `{app}\runtime`（~190MB，lzma2）；装完自动启动，卸载保留 `~/ThinkBuddy` 学习数据 | ✅ |
 | `ThinkBuddyPortable.zip` | 解压即用的离线包，**默认不制作** | 加 `-MakePortable` |
 
 > 安装器直接从 `dist\ThinkBuddyDesktop.exe` + `runtime-build\staging` 打包，**不依赖便携 zip**，

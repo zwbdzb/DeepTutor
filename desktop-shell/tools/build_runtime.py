@@ -47,10 +47,8 @@ STAGING_PY = STAGE / "staging" / "python"
 STAGING_NODE = STAGE / "staging" / "node"
 DIST = ROOT / "dist"
 
-# pip 源（2026-09-24）：国内直连 pypi.org 极不稳定——实测本机 12s 无响应，
-# pip 侧表现为 SSL: UNEXPECTED_EOF_WHILE_READING（重试 5 次全灭，连 PyYAML
-# 都拉不到，构建必死）。默认走清华镜像；用户 shell 里显式设置了 PIP_INDEX_URL
-# （或代理）时以用户为准（见 install_deeptutor 的 setdefault）。
+# pip 源：默认清华镜像（国内直连 pypi.org 不稳定）；用户 shell 已设置
+# PIP_INDEX_URL（或代理）时以用户为准（见 install_deeptutor 的 setdefault）。
 DEFAULT_PIP_INDEX_URL = "https://pypi.tuna.tsinghua.edu.cn/simple"
 
 
@@ -212,12 +210,15 @@ def _staging_py_exe(target: Path) -> Path:
     return target / "python.exe"
 
 
-def install_deeptutor(target: Path, source_root: Path) -> None:
+def install_deeptutor(target: Path, source_root: Path, *,
+                      with_deps: bool = True) -> None:
     """pip install --target 把【本地源】的 deeptutor 装进 embeddable 的 site-packages。
 
-    注意：这里刻意安装本地源路径而不是 PyPI 包名 —— PyPI 版本永远滞后于仓库，
-    且自研修复根本不会发布到 PyPI（历史教训：打包出来是 1.6.7 而仓库已是 1.6.8）。
+    注意：刻意安装本地源路径而非 PyPI 包名——PyPI 版本滞后且不含自研修复。
     本地源需先构建前端（web/.next/standalone），否则 wheel 里没有 deeptutor_web 数据。
+
+    with_deps=False（快速路径）：依赖声明未变时只装我们自己的包，跳过 ~500MB
+    第三方依赖树的重新解析/下载/复制。
     """
     if BUILD_PY is None or not BUILD_PY.exists():
         raise SystemExit("no cp312 build interpreter found (set BUILD_PY=...py)")
@@ -231,20 +232,33 @@ def install_deeptutor(target: Path, source_root: Path) -> None:
         )
     dest = _py_site_packages(target)
     dest.mkdir(parents=True, exist_ok=True)
-    log(f"pip installing deeptutor from LOCAL SOURCE {source_root} ...")
+    desc = "deeptutor + full deps" if with_deps else "deeptutor only (--no-deps fast path)"
+    log(f"pip installing {desc} from LOCAL SOURCE {source_root} ...")
     env = dict(os.environ)
     # setdefault：用户已设置镜像/代理时尊重用户，没有才落默认国内镜像。
-    # build isolation（"Installing build dependencies" 阶段）继承本环境，
-    # 所以一个 env 同时覆盖依赖解析与构建隔离两层。
     env.setdefault("PIP_INDEX_URL", DEFAULT_PIP_INDEX_URL)
     env.setdefault("PIP_DISABLE_PIP_VERSION_CHECK", "1")
     env.setdefault("PIP_DEFAULT_TIMEOUT", "60")
     log(f"pip index: {env['PIP_INDEX_URL']}")
-    res = subprocess.run(
-        [str(BUILD_PY), "-m", "pip", "install", "--upgrade", "--no-compile",
-         "--target", str(dest), str(source_root)],
-        capture_output=True, text=True, env=env,
-    )
+
+    def _pip(extra: list[str]) -> subprocess.CompletedProcess:
+        cmd = [str(BUILD_PY), "-m", "pip", "install", "--upgrade", "--no-compile",
+               "--target", str(dest), *extra, str(source_root)]
+        return subprocess.run(cmd, capture_output=True, text=True, env=env)
+
+    # --no-build-isolation：BUILD_PY 里已有 setuptools 时跳过每次建临时
+    # 构建环境（省 ~30s 且不联网拉 setuptools/wheel）。失败（版本过老等）
+    # 自动回退到隔离构建，正确性不受影响。
+    if not with_deps:
+        res = _pip(["--no-deps", "--no-build-isolation"])
+        if res.returncode != 0:
+            log("--no-build-isolation failed; retrying isolated build")
+            res = _pip(["--no-deps"])
+    else:
+        res = _pip(["--no-build-isolation"])
+        if res.returncode != 0:
+            log("--no-build-isolation failed; retrying isolated build")
+            res = _pip([])
     if res.returncode != 0:
         log(res.stdout[-3000:])
         log(res.stderr[-3000:])
@@ -348,9 +362,7 @@ SOURCE_PACKAGE_DIRS = ("deeptutor", "deeptutor_cli", "deeptutor_web")
 SOURCE_STATE_FILE = STAGE / ".source-state.json"
 
 
-def source_fingerprint(source_root: Path) -> str:
-    """Hash the Python packages shipped into the offline runtime."""
-    digest = hashlib.sha256()
+def _iter_source_files(source_root: Path) -> list[Path]:
     files: list[Path] = []
     for name in SOURCE_PACKAGE_DIRS:
         root = source_root / name
@@ -362,37 +374,61 @@ def source_fingerprint(source_root: Path) -> str:
         )
     if (source_root / "pyproject.toml").is_file():
         files.append(source_root / "pyproject.toml")
+    return sorted(files, key=lambda item: item.as_posix())
 
-    for path in sorted(files, key=lambda item: item.as_posix()):
+
+def source_fingerprint(source_root: Path, *, strict: bool = False) -> str:
+    """Fingerprint the Python packages shipped into the offline runtime.
+
+    默认 size+mtime（编辑/git checkout 必更新 mtime，漏检不可达；且有版本门禁
+    + 冒烟测试兜底）。strict=True 时逐文件 sha256（--strict-fingerprint，发布前
+    人工核验）。模式不一致视为变更 → 触发重装（安全方向）。
+    """
+    digest = hashlib.sha256()
+    digest.update(b"mode=" + (b"strict" if strict else b"fast") + b"\0")
+    for path in _iter_source_files(source_root):
         digest.update(path.relative_to(source_root).as_posix().encode("utf-8"))
         digest.update(b"\0")
-        with path.open("rb") as fh:
-            while chunk := fh.read(1024 * 1024):
-                digest.update(chunk)
+        st = path.stat()
+        digest.update(str(st.st_size).encode("utf-8"))
+        digest.update(b"\0")
+        if strict:
+            with path.open("rb") as fh:
+                while chunk := fh.read(1024 * 1024):
+                    digest.update(chunk)
+        else:
+            digest.update(str(st.st_mtime_ns).encode("utf-8"))
         digest.update(b"\0")
     return digest.hexdigest()
 
 
-def source_state_changed(source_root: Path) -> bool:
-    """Return True when the source package content differs from the last build."""
-    current = source_fingerprint(source_root)
+def dependencies_signature(source_root: Path) -> str:
+    """pyproject.toml 内容哈希——区分「只改了代码」（--no-deps 快速路径）与「依赖声明变了」（全量安装）。"""
+    pyproject = source_root / "pyproject.toml"
+    if not pyproject.is_file():
+        return ""
+    return hashlib.sha256(pyproject.read_bytes()).hexdigest()
+
+
+def _load_source_state() -> dict:
     try:
-        state = json.loads(SOURCE_STATE_FILE.read_text(encoding="utf-8"))
+        return json.loads(SOURCE_STATE_FILE.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001 - first build or damaged state file
-        return True
-    return state.get("fingerprint") != current
+        return {}
 
 
-def save_source_state(source_root: Path) -> None:
+def save_source_state(source_root: Path, fingerprint: str, deps_sig: str,
+                      mode: str) -> None:
     SOURCE_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     SOURCE_STATE_FILE.write_text(
-        json.dumps({"fingerprint": source_fingerprint(source_root)}),
+        json.dumps({"mode": mode, "fingerprint": fingerprint,
+                    "deps_sig": deps_sig}),
         encoding="utf-8",
     )
 
 
 def build(make_zip: bool = False, source_root: Path | None = None,
-          force_deeptutor: bool = False) -> None:
+          force_deeptutor: bool = False, strict_fingerprint: bool = False) -> None:
     source_root = source_root or MONOREPO_SOURCE
     expected = _read_source_version(source_root)
     log(f"deeptutor source: {source_root} (version {expected})")
@@ -409,13 +445,22 @@ def build(make_zip: bool = False, source_root: Path | None = None,
         if IS_MAC:
             (STAGE / ".staging-arch").write_text(_arch, encoding="utf-8")
 
-    # pip install：本地源不存在、版本不一致、或 --force-deeptutor 时重装。
-    # pip --target 不会卸旧版本（会叠加 dist-info），所以先清掉旧的 deeptutor*。
-    sp = _py_site_packages(STAGING_PY)
-    state_changed = source_state_changed(source_root)
+    # pip install 决策：源码指纹变 → 重装（deps 未变走 --no-deps 快速路径）；
+    # 依赖签名变 → 全量重装。指纹模式（fast/strict）变化也算变更（安全方向）。
+    fp = source_fingerprint(source_root, strict=strict_fingerprint)
+    deps_sig = dependencies_signature(source_root)
+    mode = "strict" if strict_fingerprint else "fast"
+    state = _load_source_state()
+    state_changed = (state.get("mode") != mode
+                     or state.get("fingerprint") != fp)
+    deps_changed = state.get("deps_sig") != deps_sig
     if state_changed:
         log("source package fingerprint changed; reinstalling deeptutor")
-    installed_ok = False
+    if deps_changed:
+        log("dependency signature changed (or first build); full install")
+
+    sp = _py_site_packages(STAGING_PY)
+    did_install = False
     if (sp / "deeptutor").exists():
         py_exe = _staging_py_exe(STAGING_PY)
         res = subprocess.run([str(py_exe), "-c",
@@ -423,21 +468,20 @@ def build(make_zip: bool = False, source_root: Path | None = None,
                              capture_output=True, text=True, timeout=120)
         current = (res.stdout or "").strip()
         installed_ok = (
-            res.returncode == 0 and current == expected and not state_changed
+            res.returncode == 0 and current == expected
+            and not state_changed and not deps_changed
         )
         if installed_ok and not force_deeptutor:
             log(f"deeptutor {current} already installed & matches source; skipping pip")
         else:
             log(f"reinstalling deeptutor: staging={current!r} source={expected!r} "
-                f"force={force_deeptutor}")
+                f"force={force_deeptutor} deps_changed={deps_changed}")
             for pat in ("deeptutor", "deeptutor-*.dist-info", "deeptutor_cli",
                         "deeptutor_cli-*.dist-info", "deeptutor_web",
                         "deeptutor_web-*.dist-info"):
                 for entry in sp.glob(pat):
-                    # 清理失败必须响：ignore_errors 曾在文件被占用（应用未关/
-                    # 杀毒扫描）时静默残留旧文件，产出「1.6.10 版本 + 1.6.9
-                    # 前端 chunk」的混合运行时且能通过版本门禁（门禁只查
-                    # deeptutor.__version__）。宁可构建失败，不可静默混合。
+                    # 清理失败必须响：ignore_errors 会静默残留旧文件，产出混合运行时
+                    # 且能通过版本门禁。宁可构建失败，不可静默混合。
                     try:
                         if entry.is_dir():
                             shutil.rmtree(entry)
@@ -449,20 +493,27 @@ def build(make_zip: bool = False, source_root: Path | None = None,
                             f"likely held by a running ThinkBuddy/deeptutor "
                             f"process or antivirus — close the app and retry."
                         ) from exc
-            install_deeptutor(STAGING_PY, source_root)
+            # deps_changed=True → 依赖声明变了，全量安装；False → --no-deps 快速路径
+            install_deeptutor(STAGING_PY, source_root, with_deps=deps_changed)
+            did_install = True
     else:
-        install_deeptutor(STAGING_PY, source_root)
+        install_deeptutor(STAGING_PY, source_root, with_deps=True)
+        did_install = True
 
-    smoke_test(_staging_py_exe(STAGING_PY))
+    # 冒烟测试（重量级 import，embeddable 下 ~10-40s）只在真装过东西后跑；
+    # 版本门禁（轻量，只 import __version__）每次都跑，作为 staging 存活证明。
+    if did_install:
+        smoke_test(_staging_py_exe(STAGING_PY))
     version_gate(STAGING_PY, expected)   # 版本门禁：不过这里直接构建失败
-    save_source_state(source_root)
+    save_source_state(source_root, fp, deps_sig, mode)
 
-    sp = _py_site_packages(STAGING_PY)
-    if (sp / "litellm").exists() or (sp / "boto3").exists():
-        prune_runtime(sp)
-    else:
-        log("runtime already pruned; skipping")
-    smoke_test(_staging_py_exe(STAGING_PY))  # re-verify after pruning
+    if did_install:
+        sp = _py_site_packages(STAGING_PY)
+        if (sp / "litellm").exists() or (sp / "boto3").exists():
+            prune_runtime(sp)
+            smoke_test(_staging_py_exe(STAGING_PY))  # re-verify after pruning
+        else:
+            log("runtime already pruned; skipping")
 
     # The portable flow (make_portable.py) packs `runtime-build/staging` as-is,
     # so the zip below is OPT-IN. Deflating thousands of tiny files is slow, so
@@ -478,7 +529,8 @@ def build(make_zip: bool = False, source_root: Path | None = None,
             json.dumps({
                 "layout_version": 5,
                 "deeptutor_version": expected,
-                "source_fingerprint": source_fingerprint(source_root),
+                "source_fingerprint": fp,
+                "source_fingerprint_mode": mode,
             }),
         )
         for root_ in (STAGING_PY, STAGING_NODE):
@@ -591,6 +643,9 @@ def main() -> None:
                          "(default: monorepo parent of desktop-shell/)")
     ap.add_argument("--force-deeptutor", action="store_true",
                     help="reinstall deeptutor from source even if version matches")
+    ap.add_argument("--strict-fingerprint", action="store_true",
+                    help="content-hash source files instead of mtime+size "
+                         "(slower; use before a release for extra assurance)")
     if IS_MAC:
         ap.add_argument("--arch", choices=["arm64", "x86_64", "native"], default="native",
                         help="macOS 目标架构：下载对应架构的 python-build-standalone + "
@@ -598,7 +653,8 @@ def main() -> None:
     args = ap.parse_args()
     src = Path(args.deeptutor_source).resolve() if args.deeptutor_source else None
     build(make_zip=not args.no_zip, source_root=src,
-          force_deeptutor=args.force_deeptutor)
+          force_deeptutor=args.force_deeptutor,
+          strict_fingerprint=args.strict_fingerprint)
 
 
 if __name__ == "__main__":

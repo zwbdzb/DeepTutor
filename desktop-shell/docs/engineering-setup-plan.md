@@ -1,4 +1,4 @@
-# EduBuddy 桌面客户端工程方案（基于本地 DeepTutor 源）
+# ThinkBuddy 桌面客户端工程方案（基于本地 DeepTutor 源）
 
 > 版本：2026-09-16 · 针对 `D:\studio\DeepTutor`（v1.6.8+3）继续开发桌面客户端的工程梳理
 
@@ -41,7 +41,7 @@ D:\studio\DeepTutor\
 ### 方案 B：两仓库 + 源路径配置
 
 壳留在独立仓库，`build_runtime.py` 增加 `--deeptutor-source <path>` 参数指向本地源
-（默认值可放 `.edubuddy-source.json` 或环境变量）。耦合更低，但每次换人/换机都要配。
+（默认值可放 `.thinkbuddy-source.json` 或环境变量）。耦合更低，但每次换人/换机都要配。
 
 > 建议选 **A**。你们的自研修复与壳是同一发布节奏，放一起最不容易出错。
 
@@ -96,14 +96,14 @@ D:\studio\DeepTutor\
 | 项 | 行为 |
 |---|---|
 | `138****8602 · 余额 ¥x · N 个模型` | 只读头行（或点击展开明细弹层） |
-| 刷新可用模型 | 重拉 `userinfo`+`/api/status` → 重写 `model_catalog.json` → 页面 reload |
+| 刷新可用模型 | 重拉 `userinfo`（账号信息）+ 中继 `/v1/models`（名单唯一来源）→ 重写 `model_catalog.json` → 页面 reload |
 | 打开 Tokengine 平台 | 系统浏览器打开平台域名 |
 | 复制 API 地址 | 把 `relay_base` 写入剪贴板（**不提供复制业务 token**，避免泄露；要的话做成二次确认） |
 | 切换账号 | 重新走登录流程（新 PKCE/端口） |
 | 退出登录 | 吊销 refresh + device token → 清本地 DPAPI 凭证 → 移除 catalog 连接 → 按钮回到「登录」 |
-| 关于 EduBuddy | 壳版本 + deeptutor 版本 + 中继域名 |
+| 关于 ThinkBuddy | 壳版本 + deeptutor 版本 + 中继域名 |
 
-**未登录**：登录 Tokengine / 打开 Tokengine 平台 / 关于 EduBuddy。
+**未登录**：登录 Tokengine / 打开 Tokengine 平台 / 关于 ThinkBuddy。
 
 ### 3.3 Python 侧需要的能力
 
@@ -156,4 +156,4 @@ git fetch upstream && git merge upstream/master   # merge 优于 rebase（保留
 - 上游源版本只看 `deeptutor/__version__.py`；壳构建后**必须**通过版本门禁。
 - 壳自己的版本（`desktop/__init__.py` 的 `__version__`）与 deeptutor 版本分开：
   安装包版本号建议形如 `0.2.0+dt1.6.8`（壳版本 + 打包的 deeptutor 版本），排查问题时一眼定位。
-- 出包只认 **2 个**：`EduBuddyDesktop.exe` + `EduBuddySetup.exe`（便携 zip 按需 `-MakePortable`）。
+- 出包只认 **2 个**：`ThinkBuddyDesktop.exe` + `ThinkBuddySetup.exe`（便携 zip 按需 `-MakePortable`）。

@@ -1,10 +1,10 @@
 # Tokengine OAuth 集成接口规范
 
-> 面向：Tokengine 平台后端 / EduBuddy 桌面端联调
+> 面向：Tokengine 平台后端 / ThinkBuddy 桌面端联调
 > 版本：v0.1（草案，随联调修订）
 > 相关实现：`DeepTutorDesktop/desktop/auth/`（桌面端，已落地）
 
-本规范描述 **EduBuddy 桌面端**（Native 客户端）如何通过 OAuth 授权码 + PKCE 从
+本规范描述 **ThinkBuddy 桌面端**（Native 客户端）如何通过 OAuth 授权码 + PKCE 从
 **Tokengine 平台**换取**业务令牌**（token 中转站的 API 令牌，形如 `sk-...`），
 并注入本地 DeepTutor，实现"登录后立即可对话"。
 
@@ -20,8 +20,8 @@
 
 | 凭证 | 名称 | 产生方 | 使用方 | 用途 | 生命周期 |
 |---|---|---|---|---|---|
-| 登录会话凭证 | `access_token` / `refresh_token` | Tokengine | EduBuddy 桌面端 | 登录态管理、取回/吊销业务令牌 | 短时，可刷新 |
-| **业务令牌** | `token`（`sk-...`） | Tokengine | EduBuddy 写入 DeepTutor model catalog | **调用 `/v1/*` 中继、计费/限额** | 长期，可单设备吊销 |
+| 登录会话凭证 | `access_token` / `refresh_token` | Tokengine | ThinkBuddy 桌面端 | 登录态管理、取回/吊销业务令牌 | 短时，可刷新 |
+| **业务令牌** | `token`（`sk-...`） | Tokengine | ThinkBuddy 写入 DeepTutor model catalog | **调用 `/v1/*` 中继、计费/限额** | 长期，可单设备吊销 |
 
 桌面端只把 `token` 写进 DeepTutor；`access_token` 绝不进入对话请求，也不会落盘明文。
 
@@ -33,9 +33,10 @@
 |---|---|---|---|
 | 1 | GET | `/oauth/authorize` | 授权页（手机号+短信验证码登录），校验 PKCE，签发一次性 `code` |
 | 2 | POST | `/oauth/token` | `authorization_code` 或 `refresh_token` 换凭证，返回业务令牌 |
-| 3 | GET | `/oauth/userinfo` | 校验 `access_token`，返回手机号/余额/可用模型列表（可选但推荐） |
+| 3 | GET | `/oauth/userinfo` | 校验 `access_token`，返回手机号/余额/业务令牌（`ai_token`）；**不下发模型名单**（可选但推荐） |
 | 4 | POST | `/oauth/revoke` | 吊销业务令牌/会话（退出登录用，可选） |
-| 5 | — | `/v1/*` | OpenAI 兼容中继：校验 `Authorization: Bearer <token>`，计费/限额 |
+| 5 | GET | `/v1/models` | **模型名单唯一来源**：OpenAI 兼容名单，每项自带 `model_type`（见 §7.1） |
+| 6 | — | `/v1/*` | OpenAI 兼容中继：校验 `Authorization: Bearer <token>`，计费/限额 |
 
 > 平台已有 手机号验证码登录 + 余额计费，因此 1、2、5 是改造重点，3、4 为增强。
 
@@ -109,15 +110,14 @@ grant_type=authorization_code
     "id": "u_12345",
     "phone": "138****0000",
     "balance": 12.5,
-    "plan": "pro",
-    "models": ["deepseek-ai/DeepSeek-V4-Flash-0731", "qwen-vl-max"]
+    "plan": "pro"
   }
 }
 ```
 
 > `token` 即**业务令牌**：桌面端调用 `/v1/*`、写入 DeepTutor 都只用它。
-> `user.models` 可选；桌面端拿到后用其覆盖 DeepTutor 的 LLM 模型列表，
-> 未返回时回退到配置的默认模型。
+> 本响应**不含模型名单**——2026-09-24 起唯一来源是中继 `GET /v1/models`（见 §7.1），
+> 桌面端拉取失败时保持现有模型列表不变（登录不阻断）。
 
 #### 失败响应（×），统一错误结构
 
@@ -158,10 +158,13 @@ grant_type=refresh_token
   "sub": "u_12345",
   "phone": "138****0000",
   "balance": 12.5,
-  "plan": "pro",
-  "models": ["deepseek-ai/DeepSeek-V4-Flash-0731"]
+  "ai_token": "sk-Tokxxxxxxxxxxxxxxxxxxxxxxxx"
 }
 ```
+
+> **模型名单不在 userinfo 下发**（2026-09-24 起）：唯一来源是中继 `GET /v1/models`，
+> 每项自带 `model_type`，桌面端据此分流写入 DeepTutor（见 §7.1）。
+> 平台若仍返回 `models[]` 字段，桌面端会忽略之。
 
 ## 6. POST /oauth/revoke（可选实现）
 
@@ -182,6 +185,28 @@ machine_id=...
 - 按 `token → user` 维度实时计费、限额；
 - 令牌无效/过期 → `401`；余额不足/超限 → `402` 或 `429`（建议给可读 message）；
 - 支持按 `machine_id` 单设备吊销后立即 401。
+
+### 7.1 GET /v1/models（模型名单唯一来源）
+
+`Authorization: Bearer <业务令牌>`
+
+OpenAI 兼容响应；每个条目自带 `model_type`，桌面端据此把模型分流写入 DeepTutor
+各服务（2026-09-24 起为**唯一名单来源**，userinfo/token 均不下发名单）：
+
+```json
+{
+  "object": "list",
+  "data": [
+    { "id": "deepseek-chat", "object": "model", "model_type": 1 },
+    { "id": "text-embedding-x", "object": "model", "model_type": 5 }
+  ]
+}
+```
+
+`model_type` 枚举（与平台模型管理后台「模型类型」下拉一致）：
+1=文生文 2=文生图 3=文生视频 4=重排序 5=向量 6=语音识别 7=语音合成。
+0/缺失/未知按文生文（对话）处理；4=重排序桌面端确定性丢弃（DeepTutor 无重排服务）。
+名单为空视为异常：登录保持现有列表、刷新报错不写盘。
 
 ---
 
@@ -214,7 +239,7 @@ machine_id=...
 
 1. 平台本地起 mock `/oauth/authorize` + `/oauth/token`。
 2. `curl` 走通 code→token（手动 PKCE 生成）验证服务端校验。
-3. EduBuddy 设 `TOKENGINE_API_BASE=http://127.0.0.1:8000` 启动 → 点登录 → 浏览器 mock 页回调 → 桌面端注入成功 → 首条消息调 `/v1`。
+3. ThinkBuddy 设 `TOKENGINE_API_BASE=http://127.0.0.1:8000` 启动 → 点登录 → 浏览器 mock 页回调 → 桌面端注入成功 → 首条消息调 `/v1`。
 4. 验证：启动页登录态、`auth.json` 加密、model_catalog api_key 更新、退出登录吊销。
 
 ---
@@ -223,5 +248,5 @@ machine_id=...
 
 - [ ] `client_id=edubuddy-desktop` 注册与 `redirect_uri` 回环通配策略（建议允许 `http://127.0.0.1:*`）
 - [ ] 业务令牌命名/前缀（示例 `sk-Tok...`）
-- [ ] `userinfo` 的模型字段名（默认 `models`）
+- [ ] `/v1/models` 每项的 `model_type` 标注完整（1=文生文 2=文生图 3=文生视频 4=重排序 5=向量 6=语音识别 7=语音合成）
 - [ ] 计费口径：按 token 实时计费还是按额度预扣

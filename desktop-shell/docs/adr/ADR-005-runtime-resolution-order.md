@@ -4,7 +4,7 @@
 
 **Accepted** — 2026-09-23（事故驱动）。
 
-- 决策者：EduBuddy 桌面端
+- 决策者：ThinkBuddy 桌面端
 - 相关：`desktop/runtime.py`（`select_runtime_base`）、`build/installer.iss`、
   `tools/build_runtime.py`、`docs/adr/ADR-003-login-gate.md`（登录门控）
 
@@ -60,7 +60,7 @@ v1.6.9。版本门禁防的是「staging ≠ 源码」，防不了「装机后�
 - 便携/onefile 场景（exe 旁没有 runtime 树）行为不变，仍走托管缓存或 PATH；
 - 若未来安装器不再内置 runtime 树（改回 runtime.zip 自解压），本 ADR 的
   `[InstallDelete]` 需要同步撤销，否则会把刚装的缓存删掉；
-- `build_runtime.py` 的显式失败意味着：打包时必须先关掉正在运行的 EduBuddy
+- `build_runtime.py` 的显式失败意味着：打包时必须先关掉正在运行的 ThinkBuddy
   （此前静默跳过，看似成功实则产出混合运行时——宁可失败）。
 
 ## Verification

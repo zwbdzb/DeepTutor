@@ -10,7 +10,7 @@ ContextMenuStrip**，页面注入通道（隐藏 input 事件槽 + evaluate_js �
 **Accepted** — v2（2026-09-16 修订）：由 v1 的**全窗口右键弹出**改为
 **左下角账号按钮点击切换的下拉菜单**，**不再劫持右键**（页面原生右键原样保留）。
 
-- 决策者：EduBuddy 桌面端
+- 决策者：ThinkBuddy 桌面端
 - 相关：`docs/engineering-setup-plan.md` §3、`desktop/inject.py`
 
 ---
