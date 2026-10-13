@@ -23,6 +23,31 @@ from deeptutor.services.rag.index_versioning import (
 )
 
 
+def test_unicode_indexing_and_cancellation_ignore_windows_default_encoding(tmp_path, monkeypatch):
+    original_read_text = Path.read_text
+
+    def windows_read_text(path, *args, **kwargs):
+        if not args and kwargs.get("encoding") is None:
+            kwargs["encoding"] = "cp936"
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", windows_read_text)
+    source = tmp_path / "raw" / "产品方案.txt"
+    source.parent.mkdir()
+    source.write_bytes(b"sample document")
+    with IndexingRun(tmp_path, [str(source)], task_id="任务-🚀") as run:
+        run.document(source, "parsed", parse_reused=True)
+        journal = tmp_path / ".indexing-run.json"
+        original = journal.read_bytes()
+        assert load_run(tmp_path)["documents"][source.name]["status"] == "parsed"
+        assert journal.read_bytes() == original
+        assert request_cancel(tmp_path, "任务-🚀")
+        with pytest.raises(IndexingCancelled):
+            run.check()
+        run.finish("cancelled")
+    assert load_run(tmp_path)["state"] == "cancelled"
+
+
 def test_retry_retains_source_identity_and_verified_parse_receipt(tmp_path):
     source = tmp_path / "raw" / "book.pdf"
     source.parent.mkdir()
