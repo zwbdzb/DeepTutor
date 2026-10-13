@@ -235,8 +235,9 @@ def run_installer(setup_path: str | os.PathLike) -> None:
 
     参数：/VERYSILENT /SUPPRESSMSGBOXES /NORESTART。
     安装器带 `CloseApplications=yes`，会自动关闭正在运行的 ThinkBuddy 实例
-    并复写文件；[Run] 段会在装完后自动拉起新版本实例。因此本函数只是
-    把安装器进程放出去，不等它完成（等不及——本进程马上会被关掉）。
+    并复写文件；[Run] 段（nowait postinstall，无 skipifsilent）会在装完
+    后自动拉起新版本实例。因此本函数只是把安装器进程放出去，不等它完成
+    （等不及——本进程马上会被关掉）。
     """
     setup = str(setup_path)
     if not os.path.exists(setup):
