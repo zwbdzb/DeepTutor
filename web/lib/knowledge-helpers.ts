@@ -354,6 +354,8 @@ export const kbDetailSections = (kb: KnowledgeBase): KbDetailSection[] =>
     ? ["devices", "settings"]
     : kb.metadata?.type === "kiwix"
       ? ["kiwix", "settings"]
+    : kb.metadata?.type === "weknora"
+      ? ["files", "settings"]
     : KB_DETAIL_SECTIONS.filter(
         (section) => section !== "devices" && section !== "kiwix" && (section !== "folders" || !kb.metadata?.type),
       );

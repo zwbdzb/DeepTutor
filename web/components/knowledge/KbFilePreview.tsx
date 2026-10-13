@@ -144,6 +144,7 @@ export default function KbFilePreview({
     () => (source ? previewKindFor(source) : null),
     [source],
   );
+  const officePdfUrl = source?.officePdfUrl ? apiUrl(source.officePdfUrl) : undefined;
 
   if (!source) {
     return (
@@ -312,6 +313,7 @@ export default function KbFilePreview({
         ) : kind === "office-text" ? (
           <OfficePdfPreview
             url={previewUrl}
+            conversionUrl={officePdfUrl}
             filename={source.filename}
             fallback={
               <OfficeTextPreview
@@ -327,12 +329,14 @@ export default function KbFilePreview({
         ) : kind === "docx" ? (
           <OfficePdfPreview
             url={previewUrl}
+            conversionUrl={officePdfUrl}
             filename={source.filename}
             fallback={<DocxPreview url={previewUrl} />}
           />
         ) : kind === "xlsx" ? (
           <OfficePdfPreview
             url={previewUrl}
+            conversionUrl={officePdfUrl}
             filename={source.filename}
             fallback={<XlsxPreview url={previewUrl} />}
           />

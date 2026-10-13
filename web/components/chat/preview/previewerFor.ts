@@ -33,6 +33,8 @@ export interface FilePreviewSource {
   type?: string;
   /** Public URL served by /files/attachments. Preferred over base64. */
   url?: string;
+  /** Optional same-origin conversion endpoint for remote Office documents. */
+  officePdfUrl?: string;
   /** Inline base64 payload — only present for pending (un-sent) attachments
    *  or messages that pre-date the storage rollout. */
   base64?: string;
