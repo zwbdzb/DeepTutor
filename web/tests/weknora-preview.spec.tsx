@@ -1,5 +1,6 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
+import KbDocumentList from "@/components/knowledge/KbDocumentList";
 import KbFilesTab from "@/components/knowledge/KbFilesTab";
 import { kbDetailSections, type KnowledgeBase } from "@/lib/knowledge-helpers";
 import { previewKindFor, type FilePreviewSource } from "@/components/chat/preview/previewerFor";
@@ -23,9 +24,30 @@ const kb: KnowledgeBase = { id: "workspace:team:kb:remote", name: "remote", stat
 
 beforeEach(() => fixture.list.mockReset().mockResolvedValue([]));
 
+it.each(["resolve", "reject"])("keeps the new knowledge base when the previous request later %s", async (outcome) => {
+  let resolveOld!: (files: { id: string; name: string }[]) => void;
+  let rejectOld!: (error: Error) => void;
+  fixture.list.mockImplementationOnce(() => new Promise((resolve, reject) => {
+    resolveOld = resolve;
+    rejectOld = reject;
+  }));
+  const props = { kbName: "old-kb", readOnly: true, selectedFile: null, onSelect: vi.fn(), collapsed: false, onToggleCollapsed: vi.fn() };
+  const view = render(<KbDocumentList {...props} refreshKey={0} />);
+  fixture.list.mockResolvedValue([{ id: "fresh", name: "fresh.pdf" }]);
+  view.rerender(<KbDocumentList {...props} kbName="new-kb" />);
+  expect(await screen.findByRole("button", { name: "fresh.pdf" })).toBeInTheDocument();
+  await act(async () => {
+    if (outcome === "resolve") resolveOld([{ id: "stale", name: "stale.pdf" }]);
+    else rejectOld(new Error("old request failed"));
+  });
+  expect(screen.getByRole("button", { name: "fresh.pdf" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "stale.pdf" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
+
 it.each([
   ["guide.pdf", "pdf"], ["guide.docx", "docx"], ["guide.xlsx", "xlsx"],
-  ["guide.pptx", "office-text"], ["guide.md", "markdown"], ["guide.txt", "text"], ["photo.png", "image"],
+  ["guide.pptx", "pptx"], ["guide.md", "markdown"], ["guide.txt", "text"], ["photo.png", "image"],
 ])("passes %s to the existing %s renderer through the authenticated proxy", async (name, kind) => {
   fixture.list.mockResolvedValue([{ id: "doc-1", name, type: "file" }]);
   render(<KbFilesTab kb={kb} />);

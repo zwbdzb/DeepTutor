@@ -1,7 +1,6 @@
 "use client";
 
 import Tooltip from "@/shared/ui/Tooltip";
-import dynamic from "next/dynamic";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -9,7 +8,6 @@ import {
   Copy,
   Download,
   FileText,
-  Loader2,
   Maximize2,
   Minimize2,
   PanelLeftClose,
@@ -18,70 +16,11 @@ import {
 import { apiUrl } from "@/lib/api";
 import { docIconFor, formatBytes } from "@/lib/doc-attachments";
 import {
-  previewKindFor,
   resolveSourceUrl,
   type FilePreviewSource,
 } from "@/components/chat/preview/previewerFor";
 
-// Full-size loading placeholder. Crucially, giving each dynamic() its own
-// `loading` keeps chunk-load suspension *inside* the preview pane. Without it,
-// the suspension bubbles up to the route-level <Suspense> wrapping the whole
-// page, so first-preview / file-type-switch flashed the entire page to a
-// spinner.
-const PreviewLoading = () => (
-  <div className="flex h-full w-full items-center justify-center bg-[var(--background)]">
-    <Loader2 className="h-4 w-4 animate-spin text-[var(--muted-foreground)]" />
-  </div>
-);
-
-// Reuse the chat renderers — they're pure presentation given (url, filename)
-// and don't carry chat-specific state. next/dynamic's compiler requires the
-// options to be an inline object literal (not a shared const), so each call
-// repeats `{ loading, ssr }`.
-const PdfPreview = dynamic(
-  () => import("@/components/chat/preview/previewers/PdfPreview"),
-  { loading: PreviewLoading, ssr: false },
-);
-const ImagePreview = dynamic(
-  () => import("@/components/chat/preview/previewers/ImagePreview"),
-  { loading: PreviewLoading, ssr: false },
-);
-const VideoPreview = dynamic(
-  () => import("@/components/chat/preview/previewers/VideoPreview"),
-  { loading: PreviewLoading, ssr: false },
-);
-const SvgPreview = dynamic(
-  () => import("@/components/chat/preview/previewers/SvgPreview"),
-  { loading: PreviewLoading, ssr: false },
-);
-const MarkdownPreview = dynamic(
-  () => import("@/components/chat/preview/previewers/MarkdownPreview"),
-  { loading: PreviewLoading, ssr: false },
-);
-const TextPreview = dynamic(
-  () => import("@/components/chat/preview/previewers/TextPreview"),
-  { loading: PreviewLoading, ssr: false },
-);
-const DocxPreview = dynamic(
-  () => import("@/components/chat/preview/previewers/DocxPreview"),
-  { loading: PreviewLoading, ssr: false },
-);
-const XlsxPreview = dynamic(
-  () => import("@/components/chat/preview/previewers/XlsxPreview"),
-  { loading: PreviewLoading, ssr: false },
-);
-const OfficePdfPreview = dynamic(
-  () => import("@/components/chat/preview/previewers/OfficePdfPreview"),
-  { loading: PreviewLoading, ssr: false },
-);
-const OfficeTextPreview = dynamic(
-  () => import("@/components/chat/preview/previewers/OfficeTextPreview"),
-  { loading: PreviewLoading, ssr: false },
-);
-const FallbackPreview = dynamic(
-  () => import("@/components/chat/preview/previewers/FallbackPreview"),
-  { loading: PreviewLoading, ssr: false },
-);
+import FilePreviewContent from "@/components/chat/preview/FilePreviewContent";
 
 interface KbFilePreviewProps {
   source: FilePreviewSource | null;
@@ -134,18 +73,6 @@ export default function KbFilePreview({
     () => (source ? resolveSourceUrl(source, apiUrl) : null),
     [source],
   );
-  const extractedTextUrl = useMemo(() => {
-    if (!source?.extractedTextUrl) return null;
-    return source.extractedTextUrl.startsWith("http")
-      ? source.extractedTextUrl
-      : apiUrl(source.extractedTextUrl);
-  }, [source]);
-  const kind = useMemo(
-    () => (source ? previewKindFor(source) : null),
-    [source],
-  );
-  const officePdfUrl = source?.officePdfUrl ? apiUrl(source.officePdfUrl) : undefined;
-
   if (!source) {
     return (
       <div className="flex h-full flex-col">
@@ -304,59 +231,7 @@ export default function KbFilePreview({
 
       {/* Body */}
       <div className="relative min-h-0 flex-1 overflow-hidden">
-        {!previewUrl ? (
-          <FallbackPreview
-            filename={source.filename}
-            url={null}
-            reason="legacy"
-          />
-        ) : kind === "office-text" ? (
-          <OfficePdfPreview
-            url={previewUrl}
-            conversionUrl={officePdfUrl}
-            filename={source.filename}
-            fallback={
-              <OfficeTextPreview
-                filename={source.filename}
-                extractedText={source.extractedText}
-                extractedTextUrl={extractedTextUrl}
-                url={previewUrl}
-              />
-            }
-          />
-        ) : kind === "pdf" ? (
-          <PdfPreview url={previewUrl} filename={source.filename} />
-        ) : kind === "docx" ? (
-          <OfficePdfPreview
-            url={previewUrl}
-            conversionUrl={officePdfUrl}
-            filename={source.filename}
-            fallback={<DocxPreview url={previewUrl} />}
-          />
-        ) : kind === "xlsx" ? (
-          <OfficePdfPreview
-            url={previewUrl}
-            conversionUrl={officePdfUrl}
-            filename={source.filename}
-            fallback={<XlsxPreview url={previewUrl} />}
-          />
-        ) : kind === "image" ? (
-          <ImagePreview url={previewUrl} filename={source.filename} />
-        ) : kind === "video" ? (
-          <VideoPreview url={previewUrl} filename={source.filename} />
-        ) : kind === "svg" ? (
-          <SvgPreview url={previewUrl} filename={source.filename} />
-        ) : kind === "markdown" ? (
-          <div className="h-full overflow-y-auto">
-            <MarkdownPreview url={previewUrl} />
-          </div>
-        ) : kind === "code" || kind === "text" ? (
-          <div className="h-full overflow-y-auto">
-            <TextPreview url={previewUrl} filename={source.filename} />
-          </div>
-        ) : (
-          <FallbackPreview filename={source.filename} url={previewUrl} />
-        )}
+        <FilePreviewContent source={source} />
       </div>
     </div>
   );

@@ -11,15 +11,21 @@ import Tooltip from "@/shared/ui/Tooltip";
 const MAX_ROWS = 1000;
 const MAX_COLS = 60;
 
+interface PreviewCell {
+  text: string;
+  rowSpan: number;
+  colSpan: number;
+}
+
 interface SheetModel {
   name: string;
-  rows: string[][];
+  rows: (PreviewCell | null)[][];
   truncated: boolean;
 }
 
 /**
- * Browser fallback when server-side PDF conversion is unavailable. Each
- * worksheet is rendered via exceljs as a lightweight table with a sheet tab
+ * Preview original workbooks in the browser. Each worksheet is rendered
+ * via exceljs as a lightweight table with a sheet tab
  * strip. It shows cached cell text but not the workbook's visual formatting.
  */
 export default function XlsxPreview({ url }: { url: string }) {
@@ -51,20 +57,40 @@ export default function XlsxPreview({ url }: { url: string }) {
 
         const parsed: SheetModel[] = wb.worksheets.map((ws) => {
           const colCount = Math.min(ws.columnCount || 0, MAX_COLS);
-          const rows: string[][] = [];
-          let truncated = ws.columnCount > MAX_COLS;
-          ws.eachRow({ includeEmpty: true }, (row, rowNumber) => {
-            if (rowNumber > MAX_ROWS) {
-              truncated = true;
-              return;
-            }
-            const cells: string[] = [];
+          const rowCount = Math.min(ws.rowCount || 0, MAX_ROWS);
+          const rows: SheetModel["rows"] = [];
+          const truncated = ws.columnCount > MAX_COLS || ws.rowCount > MAX_ROWS;
+          const spans = new Map<string, Pick<PreviewCell, "rowSpan" | "colSpan">>();
+          for (const range of ws.model.merges) {
+            const [start, end] = range.split(":");
+            const first = ws.getCell(start);
+            const last = ws.getCell(end ?? start);
+            const firstRow = Number(first.row);
+            const firstCol = Number(first.col);
+            if (firstRow > rowCount || firstCol > colCount) continue;
+            spans.set(first.address, {
+              rowSpan: Math.min(Number(last.row), rowCount) - firstRow + 1,
+              colSpan: Math.min(Number(last.col), colCount) - firstCol + 1,
+            });
+          }
+          for (let rowNumber = 1; rowNumber <= rowCount; rowNumber += 1) {
+            const row = ws.getRow(rowNumber);
+            const cells: (PreviewCell | null)[] = [];
             for (let c = 1; c <= colCount; c += 1) {
-              const text = row.getCell(c).text;
-              cells.push(typeof text === "string" ? text : String(text ?? ""));
+              const cell = row.getCell(c);
+              // Only render the master; HTML spans cover the other merged cells.
+              if (cell.address !== cell.master.address) {
+                cells.push(null);
+                continue;
+              }
+              const text = cell.text;
+              cells.push({
+                text: typeof text === "string" ? text : String(text ?? ""),
+                ...(spans.get(cell.address) ?? { rowSpan: 1, colSpan: 1 }),
+              });
             }
             rows.push(cells);
-          });
+          }
           return { name: ws.name, rows, truncated };
         });
         if (cancelled) return;
@@ -113,26 +139,31 @@ export default function XlsxPreview({ url }: { url: string }) {
   return (
     <div className="flex h-full flex-col bg-[var(--card)]">
       <div className="min-h-0 flex-1 overflow-auto">
-        <table className="border-collapse text-[12px] text-[var(--foreground)]">
+        <table className="w-full border-collapse text-[12px] text-[var(--foreground)]">
           <tbody>
             {sheet.rows.map((cells, r) => (
               <tr key={r}>
                 <td className="sticky left-0 z-10 border border-[var(--border)]/50 bg-[var(--muted)]/55 px-2 py-1 text-right text-[10px] tabular-nums text-[var(--muted-foreground)]/70">
                   {r + 1}
                 </td>
-                {cells.map((cell, c) => (
-                  <td
-                    key={c}
-                    className={`max-w-[280px] truncate border border-[var(--border)]/40 px-2 py-1 ${
-                      r === 0
-                        ? "bg-[var(--muted)]/35 font-medium"
-                        : "bg-[var(--card)]"
-                    }`}
-                    title={cell}
-                  >
-                    {cell}
-                  </td>
-                ))}
+                {cells.map((cell, c) => {
+                  if (!cell) return null;
+                  return (
+                    <td
+                      key={c}
+                      rowSpan={cell.rowSpan}
+                      colSpan={cell.colSpan}
+                      className={`max-w-[280px] whitespace-pre-wrap [overflow-wrap:anywhere] align-top border border-[var(--border)]/40 px-2 py-1 ${
+                        r === 0
+                          ? "bg-[var(--muted)]/35 font-medium"
+                          : "bg-[var(--card)]"
+                      }`}
+                      title={cell.text}
+                    >
+                      {cell.text}
+                    </td>
+                  );
+                })}
               </tr>
             ))}
           </tbody>

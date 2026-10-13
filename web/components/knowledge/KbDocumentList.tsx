@@ -1,7 +1,7 @@
 "use client";
 
 import Tooltip from "@/shared/ui/Tooltip";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Check,
@@ -129,23 +129,29 @@ export default function KbDocumentList({
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  const loadGeneration = useRef(0);
+
   const load = useCallback(
     async (force = false) => {
+      const generation = ++loadGeneration.current;
       setLoading(true);
       setError(null);
       if (readOnly) onSelect(null);
       try {
         if (force) invalidateClientCache(`knowledge:files:${kbName}`);
         const next = await listKnowledgeBaseFiles(kbName, { force });
+        if (generation !== loadGeneration.current) return;
         setFiles(next);
         // Default-expand every folder so files are visible without digging.
         setExpanded(
           new Set(next.filter((e) => e.type === "folder").map((e) => e.name)),
         );
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        if (generation === loadGeneration.current) {
+          setError(err instanceof Error ? err.message : String(err));
+        }
       } finally {
-        setLoading(false);
+        if (generation === loadGeneration.current) setLoading(false);
       }
     },
     [kbName, readOnly, onSelect],
@@ -153,6 +159,8 @@ export default function KbDocumentList({
 
   useEffect(() => {
     void load(refreshKey > 0);
+    const generation = loadGeneration;
+    return () => { ++generation.current; };
   }, [load, refreshKey]);
 
   const { root, folderPaths } = useMemo(() => buildTree(files, readOnly), [files, readOnly]);

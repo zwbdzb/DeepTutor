@@ -27,7 +27,9 @@ test("Office attachments retain their format-specific fallback renderers", () =>
     "docx",
   );
 
-  assert.equal(previewKindFor({ filename: "slides.pptx" }), "office-text");
+  assert.equal(previewKindFor({ filename: "slides.PPTX" }), "pptx");
+  assert.equal(previewKindFor({ filename: "attachment", mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation" }), "pptx");
+  assert.equal(previewKindFor({ filename: "slides.pptm" }), "office-text");
   assert.equal(previewKindFor({ filename: "slides.ppt" }), "office-text");
   assert.equal(previewKindFor({ filename: "legacy.doc" }), "office-text");
 
