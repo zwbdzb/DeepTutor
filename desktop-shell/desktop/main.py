@@ -552,6 +552,9 @@ def main() -> int:
         log.error("pywebview missing: %s", exc)
         return 2
 
+    # Keep downloads in the authenticated WebView and use its native save dialog.
+    webview.settings["ALLOW_DOWNLOADS"] = True
+
     frontend_url = f"http://127.0.0.1:{DEFAULT_FRONTEND_PORT}"
     auth = AuthManager()
     api = Api(
