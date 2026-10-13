@@ -608,6 +608,8 @@ _LEARNER_KB_READ_ROUTES = frozenset(
         "/api/knowledge-bases/{kb_name}/files",
         "/api/knowledge-bases/{kb_name}/files/{filename:path}",
         "/api/knowledge-bases/{kb_name}/file-preview-text/{filename:path}",
+        "/api/knowledge-bases/{kb_name}/remote-file-preview/{document_id}",
+        "/api/knowledge-bases/{kb_name}/remote-file-preview-text/{document_id}",
         "/api/knowledge-bases/{kb_name}/visual-assets/{asset_id}",
         "/api/knowledge-bases/{kb_name}/indexing-run",
         "/api/knowledge-bases/{kb_name}/indexing-readiness",
@@ -665,7 +667,7 @@ def _learning_surface_for_path(
     # Match the resolved route template, not just the URL prefix: this keeps
     # admin diagnostics and engine configuration GETs out of the learner shell.
     if (
-        method.upper() == "GET"
+        method.upper() in {"GET", "HEAD"}
         and (normalized == "/api/knowledge-bases" or normalized.startswith("/api/knowledge-bases/"))
         and route_path in _LEARNER_KB_READ_ROUTES
     ):

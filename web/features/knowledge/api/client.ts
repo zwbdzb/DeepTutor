@@ -217,6 +217,8 @@ export interface KnowledgeUploadPolicy {
 }
 
 export interface KnowledgeBaseFile {
+  /** Remote document ID; local files omit this field. */
+  id?: string;
   /** POSIX path relative to the KB's raw/ root (may include folders). */
   name: string;
   /** "folder" entries are organizational only; default "file". */
@@ -735,6 +737,26 @@ export function knowledgeBaseFilePreviewTextPath(
     .split("/")
     .map(encodeURIComponent)
     .join("/")}${inKnowledgeLibrary() ? "?resource_library=true" : ""}`;
+}
+
+/** Same-origin URLs keep the remote API key on the server. */
+export function knowledgeBaseRemoteFilePreviewPath(
+  kbName: string,
+  documentId: string,
+  format?: "pdf",
+): string {
+  const query = new URLSearchParams();
+  if (inKnowledgeLibrary()) query.set("resource_library", "true");
+  if (format) query.set("format", format);
+  const suffix = query.size ? `?${query}` : "";
+  return `/api/knowledge-bases/${encodeURIComponent(kbName)}/remote-file-preview/${encodeURIComponent(documentId)}${suffix}`;
+}
+
+export function knowledgeBaseRemoteFilePreviewTextPath(
+  kbName: string,
+  documentId: string,
+): string {
+  return `/api/knowledge-bases/${encodeURIComponent(kbName)}/remote-file-preview-text/${encodeURIComponent(documentId)}${inKnowledgeLibrary() ? "?resource_library=true" : ""}`;
 }
 
 export interface KnowledgeTaskResponse {

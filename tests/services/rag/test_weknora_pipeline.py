@@ -104,6 +104,27 @@ def test_client_search_uses_official_endpoint() -> None:
     assert [item["id"] for item in result] == ["chunk-1", "chunk-2"]
 
 
+@pytest.mark.parametrize("total", [0, 123, -1, None, True, "3"])
+def test_client_document_count_uses_scoped_remote_total(total):
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        assert request.url.path == "/api/v1/knowledge-bases/kb-1/knowledge"
+        assert request.url.params["page"] == "1"
+        assert request.url.params["page_size"] == "1"
+        assert request.headers["X-API-Key"] == "secret"
+        return httpx.Response(200, json={"total": total, "data": []})
+
+    client = WeKnoraClient(_config(), transport=httpx.MockTransport(handler))
+    if type(total) is int and total >= 0:
+        assert asyncio.run(client.document_count()) == total
+    else:
+        with pytest.raises(WeKnoraAPIError, match="invalid document count"):
+            asyncio.run(client.document_count())
+    assert len(calls) == 1
+
+
 def test_client_bounds_external_response_bodies() -> None:
     transport = httpx.MockTransport(
         lambda _request: httpx.Response(

@@ -101,6 +101,15 @@ it("requests a served Office file by local URL in its source workspace and shows
   expect(revokeObjectURL).toHaveBeenCalledWith("blob:http://localhost/converted.pdf");
 });
 
+it("uses the supplied remote conversion endpoint without resolving a local raw file", async () => {
+  fixture.apiFetch.mockResolvedValue(conversionResponse());
+  const conversionUrl = "/api/knowledge-bases/remote/remote-file-preview/doc-1?format=pdf";
+  render(<OfficePdfPreview url="/api/knowledge-bases/remote/remote-file-preview/doc-1" filename="slides.pptx" conversionUrl={conversionUrl} fallback={<div>Parsed text</div>} />);
+  expect(await screen.findByTestId("pdf-preview")).toBeInTheDocument();
+  expect(fixture.apiFetch).toHaveBeenCalledWith(conversionUrl, expect.objectContaining({ cache: "no-store" }));
+  expect(fixture.apiFetch).toHaveBeenCalledTimes(1);
+});
+
 it.each([
   [
     "data URL",

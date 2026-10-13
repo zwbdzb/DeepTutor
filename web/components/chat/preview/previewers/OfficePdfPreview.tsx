@@ -24,10 +24,12 @@ export default function OfficePdfPreview({
   url,
   filename,
   fallback,
+  conversionUrl,
 }: {
   url: string;
   filename: string;
   fallback: ReactNode;
+  conversionUrl?: string;
 }) {
   const { t } = useTranslation();
   const [state, setState] = useState<PreviewState>({
@@ -43,7 +45,12 @@ export default function OfficePdfPreview({
     (async () => {
       try {
         let response: Response;
-        if (url.startsWith("blob:") || url.startsWith("data:")) {
+        if (conversionUrl) {
+          response = await apiFetch(conversionUrl, {
+            signal: controller.signal,
+            cache: "no-store",
+          });
+        } else if (url.startsWith("blob:") || url.startsWith("data:")) {
           const sourceResponse = await apiFetch(url, { signal: controller.signal });
           if (!sourceResponse.ok) throw new Error("Office source unavailable");
           const sourceBlob = await sourceResponse.blob();
@@ -95,7 +102,7 @@ export default function OfficePdfPreview({
       controller.abort();
       if (pdfUrl) URL.revokeObjectURL(pdfUrl);
     };
-  }, [filename, url]);
+  }, [filename, url, conversionUrl]);
 
   const current = state.sourceUrl === url ? state : { kind: "loading" as const };
   if (current.kind === "ready") {

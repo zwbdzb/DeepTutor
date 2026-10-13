@@ -16,7 +16,7 @@ from pathlib import Path
 import re
 import shutil
 import traceback
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 from uuid import uuid4
 
 if TYPE_CHECKING:
@@ -30,6 +30,7 @@ from fastapi import (
     Form,
     HTTPException,
     Query,
+    Request,
     UploadFile,
     WebSocket,
     WebSocketDisconnect,
@@ -912,6 +913,48 @@ def _load_kb_entry_or_404(manager: KnowledgeBaseManager, kb_name: str) -> dict:
     if kb_entry is None:
         raise HTTPException(status_code=404, detail=f"Knowledge base '{kb_name}' not found")
     return kb_entry
+
+
+def _readable_kb_entry(kb_name: str) -> tuple[KnowledgeBaseManager, str, dict]:
+    """Resolve a readable KB through the normal multi-user access boundary."""
+    manager = _overridden_kb_manager()
+    if manager is not None:
+        resolved_name = _resolve_registered_kb_name(manager, kb_name)
+    else:
+        resource = resolve_kb(kb_name)
+        manager = manager_for_resource(resource)
+        resolved_name = resource.name
+    return manager, resolved_name, _load_kb_entry_or_404(manager, resolved_name)
+
+
+def _weknora_error(exc: Exception) -> HTTPException:
+    from deeptutor.services.rag.pipelines.weknora.client import WeKnoraAPIError
+
+    if isinstance(exc, WeKnoraAPIError) and exc.status_code == 404:
+        return HTTPException(status_code=404, detail="Document not found")
+    if isinstance(exc, WeKnoraAPIError) and exc.status_code == 413:
+        return HTTPException(status_code=413, detail="Document is too large to preview")
+    if isinstance(exc, WeKnoraAPIError) and exc.status_code == 416:
+        return HTTPException(status_code=416, detail="Requested document range is not available")
+    return HTTPException(
+        status_code=502,
+        detail="Could not preview the WeKnora document. Check the connection and API key permissions.",
+    )
+
+
+async def _weknora_statistics(kb_name: str, statistics: dict) -> dict:
+    """Remote counts replace local disk counts; failed reads stay unknown."""
+    from deeptutor.services.rag.pipelines.weknora.client import WeKnoraClient
+    from deeptutor.services.rag.pipelines.weknora.config import config_from_entry
+
+    statistics = {key: value for key, value in statistics.items() if key != "raw_documents"}
+    try:
+        _, _, entry = await asyncio.to_thread(_readable_kb_entry, kb_name)
+        client = WeKnoraClient(config_from_entry(entry), timeout=5.0)
+        statistics["raw_documents"] = await client.document_count()
+    except Exception as exc:
+        logger.warning("Could not read WeKnora document count (%s)", type(exc).__name__)
+    return statistics
 
 
 def _assert_not_connected_kb(kb_name: str, kb_entry: dict) -> None:
@@ -2797,7 +2840,14 @@ def _resource_knowledge_bases() -> list[KnowledgeBaseInfo]:
 @router.get("/knowledge-bases", response_model=list[KnowledgeBaseInfo])
 async def list_knowledge_bases():
     """Disk probes must not block the async worker or its other requests (#1711)."""
-    return await asyncio.to_thread(_list_knowledge_bases)
+    result = await asyncio.to_thread(_list_knowledge_bases)
+
+    async def refresh_count(info: KnowledgeBaseInfo) -> None:
+        if info.available and (info.metadata or {}).get("type") == "weknora":
+            info.statistics = await _weknora_statistics(info.id or info.name, info.statistics)
+
+    await asyncio.gather(*(refresh_count(info) for info in result))
+    return result
 
 
 def _list_knowledge_bases():
@@ -3013,6 +3063,8 @@ async def get_knowledge_base_details(kb_name: str):
         )
         if resource.assigned:
             info.pop("path", None)
+        if (info.get("metadata") or {}).get("type") == "weknora":
+            info["statistics"] = await _weknora_statistics(kb_name, info.get("statistics", {}))
         return info
     except HTTPException:
         raise
@@ -3024,26 +3076,15 @@ async def get_knowledge_base_details(kb_name: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-def _resolve_kb_raw_dir(kb_name: str, *, allow_unsupported: bool = False) -> Path | None:
+def _resolve_kb_raw_dir(kb_name: str) -> Path:
     """Resolve a KB's managed ``raw/`` directory without inventing one.
 
     Connected KBs are external-resource pointers and intentionally have no
-    DeepTutor-managed raw directory.  File listing treats that as an empty
-    collection for backwards compatibility; endpoints that require a local
-    file receive an explicit conflict response.
+    DeepTutor-managed raw directory. Endpoints requiring a local file receive
+    an explicit conflict response.
     """
-    manager = _overridden_kb_manager()
-    if manager is not None:
-        resolved_name = _resolve_registered_kb_name(manager, kb_name)
-    else:
-        resource = resolve_kb(kb_name)
-        manager = manager_for_resource(resource)
-        resolved_name = resource.name
-
-    kb_entry = _load_kb_entry_or_404(manager, resolved_name)
+    manager, resolved_name, kb_entry = _readable_kb_entry(kb_name)
     if not supports_local_raw_files(kb_entry):
-        if allow_unsupported:
-            return None
         raise HTTPException(
             status_code=409,
             detail=(
@@ -3059,7 +3100,6 @@ def _resolve_kb_raw_dir(kb_name: str, *, allow_unsupported: bool = False) -> Pat
 def _resolve_kb_raw_file_or_404(kb_name: str, filename: str) -> Path:
     """Resolve a raw KB file while preventing traversal outside raw/."""
     raw_dir = _resolve_kb_raw_dir(kb_name)
-    assert raw_dir is not None  # allow_unsupported=False guarantees a path
     if not raw_dir.exists():
         raise HTTPException(status_code=404, detail="File not found")
 
@@ -3086,9 +3126,33 @@ async def list_kb_raw_files(kb_name: str):
     before it holds any files. Folders are purely organizational and have no
     effect on indexing or retrieval.
     """
-    raw_dir = _resolve_kb_raw_dir(kb_name, allow_unsupported=True)
-    if raw_dir is None:
+    manager, resolved_name, kb_entry = _readable_kb_entry(kb_name)
+    if kb_entry.get("type") == "weknora":
+        from deeptutor.services.rag.pipelines.weknora.client import WeKnoraClient
+        from deeptutor.services.rag.pipelines.weknora.config import config_from_entry
+
+        try:
+            documents = await WeKnoraClient(config_from_entry(kb_entry)).list_documents()
+        except Exception as exc:
+            raise _weknora_error(exc) from exc
+        return {
+            "files": [
+                {
+                    "id": document["id"],
+                    "name": document.get("file_name") or document.get("title") or document["id"],
+                    "type": "file",
+                    "size": document.get("file_size"),
+                    "mime_type": mimetypes.guess_type(
+                        document.get("file_name") or document.get("title") or ""
+                    )[0],
+                }
+                for document in documents
+            ]
+        }
+
+    if not supports_local_raw_files(kb_entry):
         return {"files": []}
+    raw_dir = manager.get_knowledge_base_path(resolved_name) / "raw"
     if not raw_dir.exists() or not raw_dir.is_dir():
         return {"files": []}
 
@@ -3115,6 +3179,126 @@ async def list_kb_raw_files(kb_name: str):
             }
         )
     return {"files": files}
+
+
+@router.api_route(
+    "/knowledge-bases/{kb_name}/remote-file-preview/{document_id}", methods=["GET", "HEAD"]
+)
+async def preview_weknora_file(
+    kb_name: str,
+    document_id: str,
+    request: Request,
+    format: Literal["pdf"] | None = None,
+):
+    """Proxy a scoped WeKnora original file without exposing its API key."""
+    _, _, kb_entry = _readable_kb_entry(kb_name)
+    if kb_entry.get("type") != "weknora":
+        raise HTTPException(status_code=404, detail="Remote document not found")
+
+    import anyio
+    from starlette.background import BackgroundTask
+
+    from deeptutor.api.utils.http_headers import content_disposition
+    from deeptutor.services.rag.pipelines.weknora.client import (
+        MAX_PREVIEW_BYTES,
+        WeKnoraAPIError,
+        WeKnoraClient,
+    )
+    from deeptutor.services.rag.pipelines.weknora.config import config_from_entry
+
+    byte_range = request.headers.get("range") if format is None else None
+    if byte_range and not re.fullmatch(r"bytes=(?:\d+-\d*|-\d+)", byte_range):
+        raise HTTPException(status_code=416, detail="Invalid document range")
+    from deeptutor.services.office_preview import MAX_OFFICE_BYTES
+
+    limit = MAX_OFFICE_BYTES if format == "pdf" else MAX_PREVIEW_BYTES
+    try:
+        stream = WeKnoraClient(config_from_entry(kb_entry)).preview_file(
+            document_id,
+            byte_range=byte_range,
+            max_bytes=limit,
+        )
+        preview = await stream.__aenter__()
+    except Exception as exc:
+        raise _weknora_error(exc) from exc
+
+    closed = False
+
+    async def close_stream():
+        nonlocal closed
+        if not closed:
+            closed = True
+            with anyio.CancelScope(shield=True):
+                await stream.__aexit__(None, None, None)
+
+    async def content():
+        size = 0
+        try:
+            async for chunk in preview.response.aiter_bytes():
+                size += len(chunk)
+                if size > limit:
+                    raise _weknora_error(WeKnoraAPIError("Preview limit exceeded", status_code=413))
+                yield chunk
+        finally:
+            await close_stream()
+
+    if format == "pdf":
+        from deeptutor.api.routers.file_preview import _cache_dir, _pdf_response
+
+        try:
+            body = bytearray()
+            async for chunk in content():
+                body.extend(chunk)
+            return await _pdf_response(bytes(body), preview.filename, _cache_dir())
+        finally:
+            await close_stream()
+
+    filename = "".join(char if char.isprintable() else "_" for char in preview.filename)
+    media_type = (
+        preview.response.headers.get("content-type")
+        or mimetypes.guess_type(filename)[0]
+        or "application/octet-stream"
+    )
+    headers = {
+        "Content-Disposition": content_disposition(filename),
+        "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "sandbox; default-src 'none'",
+    }
+    for name in ("content-length", "content-range", "accept-ranges"):
+        if name in preview.response.headers:
+            headers[name] = preview.response.headers[name]
+    if request.method == "HEAD":
+        await close_stream()
+        return Response(
+            status_code=preview.response.status_code, media_type=media_type, headers=headers
+        )
+    return StreamingResponse(
+        content(),
+        status_code=preview.response.status_code,
+        media_type=media_type,
+        headers=headers,
+        background=BackgroundTask(close_stream),
+    )
+
+
+@router.get("/knowledge-bases/{kb_name}/remote-file-preview-text/{document_id}")
+async def preview_weknora_file_text(kb_name: str, document_id: str):
+    """Return parsed text when the browser cannot render the original format."""
+    _, _, kb_entry = _readable_kb_entry(kb_name)
+    if kb_entry.get("type") != "weknora":
+        raise HTTPException(status_code=404, detail="Remote document not found")
+
+    from deeptutor.services.rag.pipelines.weknora.client import WeKnoraClient
+    from deeptutor.services.rag.pipelines.weknora.config import config_from_entry
+
+    try:
+        text = await WeKnoraClient(config_from_entry(kb_entry)).document_text(document_id)
+    except Exception as exc:
+        raise _weknora_error(exc) from exc
+    return PlainTextResponse(
+        text, media_type="text/plain; charset=utf-8", headers={"Cache-Control": "private, no-store"}
+    )
 
 
 class CreateFolderPayload(BaseModel):

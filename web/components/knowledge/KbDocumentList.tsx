@@ -29,6 +29,8 @@ import { docIconFor, formatBytes } from "@/lib/doc-attachments";
 
 interface KbDocumentListProps {
   kbName: string;
+  /** Remote collections use document IDs and expose only read actions. */
+  readOnly?: boolean;
   /** Refresh trigger: bumping this prop forces a re-fetch (e.g. after upload). */
   refreshKey?: number;
   selectedFile: string | null;
@@ -50,7 +52,7 @@ function parentOf(path: string): string {
   return idx === -1 ? "" : path.slice(0, idx);
 }
 
-function buildTree(entries: KnowledgeBaseFile[]): {
+function buildTree(entries: KnowledgeBaseFile[], readOnly: boolean): {
   root: TreeNode[];
   folderPaths: string[];
 } {
@@ -77,18 +79,18 @@ function buildTree(entries: KnowledgeBaseFile[]): {
 
   // Folders first so a file's parent always exists, and empty folders show.
   for (const entry of entries) {
-    if (entry.type === "folder") ensureFolder(entry.name);
+    if (!readOnly && entry.type === "folder") ensureFolder(entry.name);
   }
   for (const entry of entries) {
     if (entry.type === "folder") continue;
     const node: TreeNode = {
-      name: entry.name.slice(entry.name.lastIndexOf("/") + 1),
-      path: entry.name,
+      name: readOnly ? entry.name : entry.name.slice(entry.name.lastIndexOf("/") + 1),
+      path: entry.id ?? entry.name,
       type: "file",
       file: entry,
       children: [],
     };
-    const parent = parentOf(entry.name);
+    const parent = readOnly ? "" : parentOf(entry.name);
     if (parent) ensureFolder(parent).children.push(node);
     else root.push(node);
   }
@@ -107,6 +109,7 @@ function buildTree(entries: KnowledgeBaseFile[]): {
 
 export default function KbDocumentList({
   kbName,
+  readOnly = false,
   refreshKey = 0,
   selectedFile,
   onSelect,
@@ -130,6 +133,7 @@ export default function KbDocumentList({
     async (force = false) => {
       setLoading(true);
       setError(null);
+      if (readOnly) onSelect(null);
       try {
         if (force) invalidateClientCache(`knowledge:files:${kbName}`);
         const next = await listKnowledgeBaseFiles(kbName, { force });
@@ -144,14 +148,14 @@ export default function KbDocumentList({
         setLoading(false);
       }
     },
-    [kbName],
+    [kbName, readOnly, onSelect],
   );
 
   useEffect(() => {
     void load(refreshKey > 0);
   }, [load, refreshKey]);
 
-  const { root, folderPaths } = useMemo(() => buildTree(files), [files]);
+  const { root, folderPaths } = useMemo(() => buildTree(files, readOnly), [files, readOnly]);
   const fileEntries = useMemo(
     () => files.filter((e) => e.type !== "folder"),
     [files],
@@ -241,14 +245,15 @@ export default function KbDocumentList({
           {fileEntries.map((file) => {
             const spec = docIconFor(file.name);
             const Icon = spec.Icon;
-            const active = selectedFile === file.name;
+            const active = selectedFile === (file.id ?? file.name);
             return (
               <button
-                key={file.name}
+                key={file.id ?? file.name}
                 type="button"
                 onClick={() => onSelect(file)}
 
                 aria-label={file.name}
+                aria-pressed={active}
                 className={`relative flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors ${
                   active
                     ? "bg-[var(--primary)]/12 ring-1 ring-[var(--primary)]/40"
@@ -323,7 +328,7 @@ export default function KbDocumentList({
     return (
       <li key={`f:${node.path}`} className="group/row relative">
         <div
-          draggable
+          draggable={!readOnly}
           onDragStart={(e) => {
             e.dataTransfer.setData("text/plain", node.path);
             e.dataTransfer.effectAllowed = "move";
@@ -340,7 +345,8 @@ export default function KbDocumentList({
           <button
             type="button"
             onClick={() => onSelect(file)}
-            aria-label={node.path}
+            aria-label={readOnly ? file.name : node.path}
+            aria-pressed={active}
             className="flex min-w-0 flex-1 items-center gap-2 text-left"
           >
             <Icon
@@ -358,7 +364,7 @@ export default function KbDocumentList({
               </div>
             </div>
           </button>
-          {confirmDeleteFor === node.path ? (
+          {!readOnly && (confirmDeleteFor === node.path ? (
             <div className="flex shrink-0 items-center gap-0.5 pr-0.5">
               <span className="px-0.5 text-[10px] font-medium text-red-600 dark:text-red-400">
                 {t("Delete?")}
@@ -416,7 +422,7 @@ export default function KbDocumentList({
                 </button>
               </Tooltip>
             </div>
-          )}
+          ))}
         </div>
 
         {moveMenuFor === node.path && (
@@ -474,7 +480,7 @@ export default function KbDocumentList({
           </span>
         </div>
         <div className="flex shrink-0 items-center gap-0.5">
-          <Tooltip label={t("New folder")} side="top">
+          {!readOnly && <Tooltip label={t("New folder")} side="top">
             <button
               type="button"
               onClick={() => {
@@ -486,7 +492,7 @@ export default function KbDocumentList({
             >
               <FolderPlus size={13} strokeWidth={1.7} />
             </button>
-          </Tooltip>
+          </Tooltip>}
           <Tooltip label={t("Refresh")} side="top">
             <button
               type="button"
@@ -542,17 +548,19 @@ export default function KbDocumentList({
       <div
         className="flex-1 overflow-y-auto px-1.5 pb-2.5"
         onDragOver={(e) => {
+          if (readOnly) return;
           e.preventDefault();
           setDropTarget("");
         }}
         onDrop={(e) => {
+          if (readOnly) return;
           e.preventDefault();
           const src = e.dataTransfer.getData("text/plain");
           if (src) void handleMove(src, "");
         }}
       >
         {error ? (
-          <div className="rounded-md border border-red-200 bg-red-50 px-2.5 py-2 text-[11px] text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300">
+          <div role="alert" className="rounded-md border border-red-200 bg-red-50 px-2.5 py-2 text-[11px] text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300">
             {error}
             <button
               type="button"
@@ -574,7 +582,7 @@ export default function KbDocumentList({
         ) : fileEntries.length === 0 && folderPaths.length === 0 ? (
           <div className="px-2 py-6 text-center text-[11px] text-[var(--muted-foreground)]">
             <Folder className="mx-auto mb-1.5 h-3.5 w-3.5 opacity-50" />
-            {t("No files yet. Add one using the Add Documents tab.")}
+            {t(readOnly ? "No documents in this knowledge base." : "No files yet. Add one using the Add Documents tab.")}
           </div>
         ) : (
           <ul className="space-y-px">{root.map((n) => renderNode(n, 0))}</ul>

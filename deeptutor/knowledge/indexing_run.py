@@ -85,7 +85,7 @@ def failure_code(exc: BaseException) -> str:
 def load_run(kb_dir: Path) -> dict[str, Any] | None:
     path = Path(kb_dir) / ".indexing-run.json"
     try:
-        value = json.loads(path.read_text())
+        value = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return None
     except (OSError, ValueError) as exc:
@@ -97,7 +97,7 @@ def load_run(kb_dir: Path) -> dict[str, Any] | None:
     ):
         raise OSError("Indexing journal is invalid; original file preserved.")
     try:
-        cancelled = json.loads((Path(kb_dir) / ".indexing-cancel.json").read_text())
+        cancelled = json.loads((Path(kb_dir) / ".indexing-cancel.json").read_text(encoding="utf-8"))
     except FileNotFoundError:
         cancelled = {}
     except (OSError, ValueError) as exc:
