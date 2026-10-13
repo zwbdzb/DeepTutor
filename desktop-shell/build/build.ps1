@@ -118,8 +118,12 @@ try {
     $m = Select-String -Path $verPy -Pattern '__version__\s*=\s*"([^"]+)"'
     if (-not $m) { throw "cannot parse __version__ from $verPy" }
     $dtVer = $m.Matches[0].Groups[1].Value
-    $timestamp = (Get-Date).ToString("MMddHHmm")
-    $shellVer = "$dtVer+$timestamp"
+    $beijing = [System.TimeZoneInfo]::ConvertTimeFromUtc(
+        [System.DateTime]::UtcNow,
+        [System.TimeZoneInfo]::FindSystemTimeZoneById("China Standard Time")
+    )
+    $timestamp = $beijing.ToString("MMddHHmm")
+    $shellVer = "$dtVer.$timestamp"
 
     # 把 desktop/__init__.py 的 __version__ 行替换为打包版本号字面量。
     $initPy = Join-Path $Root "desktop\__init__.py"
@@ -190,7 +194,7 @@ try {
                     url          = ("{0}/ThinkBuddySetup-{1}.exe" -f $UpdateBase.TrimEnd('/'), $safeVer)
                     sha256       = $fileHash
                     size         = $size
-                    published_at = (Get-Date).ToString("o")
+                    published_at = $beijing.ToString("yyyy-MM-ddTHH:mm:ss+08:00")
                     changelog    = $Changelog
                 } | ConvertTo-Json
                 $manifestPath = Join-Path $Root "dist\latest.json"
