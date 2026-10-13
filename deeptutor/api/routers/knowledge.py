@@ -6,6 +6,7 @@ Handles knowledge base CRUD operations, file uploads, and initialization.
 """
 
 import asyncio
+from collections.abc import AsyncIterator
 from contextlib import contextmanager
 from datetime import datetime
 import json
@@ -3068,8 +3069,6 @@ async def get_knowledge_base_details(kb_name: str):
         return info
     except HTTPException:
         raise
-    except HTTPException:
-        raise
     except ValueError:
         raise HTTPException(status_code=404, detail=f"Knowledge base '{kb_name}' not found")
     except Exception as e:
@@ -3189,7 +3188,7 @@ async def preview_weknora_file(
     document_id: str,
     request: Request,
     format: Literal["pdf"] | None = None,
-):
+) -> Response:
     """Proxy a scoped WeKnora original file without exposing its API key."""
     _, _, kb_entry = _readable_kb_entry(kb_name)
     if kb_entry.get("type") != "weknora":
@@ -3224,14 +3223,14 @@ async def preview_weknora_file(
 
     closed = False
 
-    async def close_stream():
+    async def close_stream() -> None:
         nonlocal closed
         if not closed:
             closed = True
             with anyio.CancelScope(shield=True):
                 await stream.__aexit__(None, None, None)
 
-    async def content():
+    async def content() -> AsyncIterator[bytes]:
         size = 0
         try:
             async for chunk in preview.response.aiter_bytes():
@@ -3283,7 +3282,7 @@ async def preview_weknora_file(
 
 
 @router.get("/knowledge-bases/{kb_name}/remote-file-preview-text/{document_id}")
-async def preview_weknora_file_text(kb_name: str, document_id: str):
+async def preview_weknora_file_text(kb_name: str, document_id: str) -> PlainTextResponse:
     """Return parsed text when the browser cannot render the original format."""
     _, _, kb_entry = _readable_kb_entry(kb_name)
     if kb_entry.get("type") != "weknora":

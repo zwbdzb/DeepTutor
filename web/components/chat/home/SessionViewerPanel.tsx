@@ -29,6 +29,7 @@ import {
   type ReactNode,
 } from "react";
 import dynamic from "next/dynamic";
+import FilePreviewContent from "../preview/FilePreviewContent";
 import {
   Activity,
   AlertCircle,
@@ -49,7 +50,6 @@ import {
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import {
-  previewKindFor,
   resolveSourceUrl,
   type FilePreviewSource,
 } from "@/components/chat/preview/previewerFor";
@@ -74,39 +74,6 @@ import {
   type SelectionTutorContext,
 } from "@/lib/selection-tutor";
 
-const PdfPreview = dynamic(
-  () => import("@/components/chat/preview/previewers/PdfPreview"),
-);
-const ImagePreview = dynamic(
-  () => import("@/components/chat/preview/previewers/ImagePreview"),
-);
-const VideoPreview = dynamic(
-  () => import("@/components/chat/preview/previewers/VideoPreview"),
-);
-const SvgPreview = dynamic(
-  () => import("@/components/chat/preview/previewers/SvgPreview"),
-);
-const MarkdownPreview = dynamic(
-  () => import("@/components/chat/preview/previewers/MarkdownPreview"),
-);
-const TextPreview = dynamic(
-  () => import("@/components/chat/preview/previewers/TextPreview"),
-);
-const DocxPreview = dynamic(
-  () => import("@/components/chat/preview/previewers/DocxPreview"),
-);
-const XlsxPreview = dynamic(
-  () => import("@/components/chat/preview/previewers/XlsxPreview"),
-);
-const OfficePdfPreview = dynamic(
-  () => import("@/components/chat/preview/previewers/OfficePdfPreview"),
-);
-const OfficeTextPreview = dynamic(
-  () => import("@/components/chat/preview/previewers/OfficeTextPreview"),
-);
-const FallbackPreview = dynamic(
-  () => import("@/components/chat/preview/previewers/FallbackPreview"),
-);
 const ChatMarkdownNoteTabBody = dynamic(
   () => import("@/components/chat/home/ChatMarkdownNoteTab"),
   { ssr: false },
@@ -1153,89 +1120,12 @@ function FileTabActions({ source }: { source: FilePreviewSource }) {
 }
 
 function FileTabBody({ source }: { source: FilePreviewSource }) {
-  const previewUrl = useMemo(() => resolveSourceUrl(source, apiUrl), [source]);
-  const kind = previewKindFor(source);
   return (
     <div className="relative h-full overflow-hidden">
-      <PreviewBody source={source} previewUrl={previewUrl} kind={kind} />
+      <FilePreviewContent source={source} />
     </div>
   );
 }
-
-const PreviewBody = memo(function PreviewBody({
-  source,
-  previewUrl,
-  kind,
-}: {
-  source: FilePreviewSource;
-  previewUrl: string | null;
-  kind: ReturnType<typeof previewKindFor> | null;
-}) {
-  const filename = source.filename;
-
-  if (kind === "office-text") {
-    const fallback = (
-      <OfficeTextPreview
-        filename={filename}
-        extractedText={source.extractedText}
-        url={previewUrl}
-      />
-    );
-    if (previewUrl) {
-      return (
-        <OfficePdfPreview url={previewUrl} filename={filename} fallback={fallback} />
-      );
-    }
-    return fallback;
-  }
-
-  if (!previewUrl) {
-    return <FallbackPreview filename={filename} url={null} reason="legacy" />;
-  }
-
-  switch (kind) {
-    case "pdf":
-      return <PdfPreview url={previewUrl} filename={filename} />;
-    case "docx":
-      return (
-        <OfficePdfPreview
-          url={previewUrl}
-          filename={filename}
-          fallback={<DocxPreview url={previewUrl} />}
-        />
-      );
-    case "xlsx":
-      return (
-        <OfficePdfPreview
-          url={previewUrl}
-          filename={filename}
-          fallback={<XlsxPreview url={previewUrl} />}
-        />
-      );
-    case "image":
-      return <ImagePreview url={previewUrl} filename={filename} />;
-    case "video":
-      return <VideoPreview url={previewUrl} filename={filename} />;
-    case "svg":
-      return <SvgPreview url={previewUrl} filename={filename} />;
-    case "markdown":
-      return (
-        <div className="h-full overflow-y-auto">
-          <MarkdownPreview url={previewUrl} />
-        </div>
-      );
-    case "code":
-    case "text":
-      return (
-        <div className="h-full overflow-y-auto">
-          <TextPreview url={previewUrl} filename={filename} />
-        </div>
-      );
-    case "fallback":
-    default:
-      return <FallbackPreview filename={filename} url={previewUrl} />;
-  }
-});
 
 /* ------------------------------------------------------------------ */
 /*  Web tab body — iframe with safety fallback                         */

@@ -2,9 +2,8 @@
  * Maps a chat attachment to the preview renderer it should use.
  *
  * The drawer uses the returned ``kind`` to dynamically import the matching
- * renderer (see ``./previewers/*.tsx``). Office files first use the server's
- * PDF conversion for a paged preview, then fall back to client rendering or
- * extracted text when conversion is unavailable.
+ * renderer (see ``./previewers/*.tsx``). PPTX uses a browser slide renderer;
+ * other Office formats can use PDF conversion or their browser/text fallback.
  */
 
 import { langForFilename } from "@/lib/code-languages";
@@ -20,6 +19,7 @@ export type PreviewKind =
   | "text"
   | "docx"
   | "xlsx"
+  | "pptx"
   | "office-text"
   | "fallback";
 
@@ -51,11 +51,10 @@ export interface FilePreviewSource {
 // OOXML formats with a browser fallback (docx-preview / exceljs).
 const DOCX_EXTS = new Set([".docx", ".docm"]);
 const XLSX_EXTS = new Set([".xlsx", ".xlsm"]);
-// PowerPoint and legacy Office formats use extracted text if PDF conversion
+// Legacy and macro-enabled Office formats use extracted text if PDF conversion
 // fails. A slide with only graphics has no extracted text to display.
-const OFFICE_BINARY_EXTS = new Set([".pptx", ".pptm", ".ppt", ".doc", ".xls"]);
+const OFFICE_BINARY_EXTS = new Set([".pptm", ".ppt", ".doc", ".xls"]);
 const OFFICE_TEXT_MIMES = new Set([
-  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
   "application/vnd.ms-powerpoint.presentation.macroEnabled.12",
   "application/vnd.ms-powerpoint",
   "application/msword",
@@ -105,6 +104,11 @@ export function previewKindFor(source: FilePreviewSource): PreviewKind {
   if (isImage(source, ext)) return "image";
   if (VIDEO_EXTS.has(ext) || mime.startsWith("video/")) return "video";
   if (MARKDOWN_EXTS.has(ext) || mime === "text/markdown") return "markdown";
+  if (
+    ext === ".pptx" ||
+    (mime === "application/vnd.openxmlformats-officedocument.presentationml.presentation" && !OFFICE_BINARY_EXTS.has(ext))
+  )
+    return "pptx";
   if (
     DOCX_EXTS.has(ext) ||
     mime ===

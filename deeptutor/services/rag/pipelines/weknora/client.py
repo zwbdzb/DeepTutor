@@ -34,6 +34,8 @@ class WeKnoraAPIError(RuntimeError):
 
 @dataclass(frozen=True)
 class WeKnoraPreview:
+    """An open original-file response and its verified document name."""
+
     response: httpx.Response
     filename: str
 

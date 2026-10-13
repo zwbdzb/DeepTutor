@@ -2,8 +2,7 @@
 
 import { readingCollectionRoute } from "@/lib/learning-routes";
 
-import { memo, useCallback, useEffect, useRef, useState } from "react";
-import dynamic from "next/dynamic";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { BookOpenText, Check, Copy, Download, Loader2, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -15,25 +14,10 @@ import { createReadingWorkspace } from "@/lib/reading-workspace-api";
 import Tooltip from "@/shared/ui/Tooltip";
 import {
   type FilePreviewSource,
-  previewKindFor,
   resolveSourceUrl,
 } from "./previewerFor";
 
-// Heavy renderers are lazy so opening the drawer with a small image doesn't
-// pay the cost of loading the markdown / code-highlight chunks.
-const PdfPreview = dynamic(() => import("./previewers/PdfPreview"));
-const ImagePreview = dynamic(() => import("./previewers/ImagePreview"));
-const VideoPreview = dynamic(() => import("./previewers/VideoPreview"));
-const SvgPreview = dynamic(() => import("./previewers/SvgPreview"));
-const MarkdownPreview = dynamic(() => import("./previewers/MarkdownPreview"));
-const TextPreview = dynamic(() => import("./previewers/TextPreview"));
-const DocxPreview = dynamic(() => import("./previewers/DocxPreview"));
-const XlsxPreview = dynamic(() => import("./previewers/XlsxPreview"));
-const OfficePdfPreview = dynamic(() => import("./previewers/OfficePdfPreview"));
-const OfficeTextPreview = dynamic(
-  () => import("./previewers/OfficeTextPreview"),
-);
-const FallbackPreview = dynamic(() => import("./previewers/FallbackPreview"));
+import FilePreviewContent from "./FilePreviewContent";
 
 // Matches `--viewer-dur` in globals.css — the chat column's squeeze runs on
 // that duration and curve, and the slide must land with it.
@@ -143,7 +127,6 @@ export default function FilePreviewDrawer({
     ? resolveSourceUrl(renderedSource, apiUrl)
     : null;
   const downloadUrl = previewUrl;
-  const previewKind = renderedSource ? previewKindFor(renderedSource) : null;
 
   const [copied, setCopied] = useState(false);
   const [openingInReader, setOpeningInReader] = useState(false);
@@ -321,11 +304,7 @@ export default function FilePreviewDrawer({
               steal main-thread frames from the chat squeeze. */}
           <div className="relative flex-1 overflow-hidden">
             {bodyMounted && (
-              <PreviewBody
-                source={renderedSource}
-                previewUrl={previewUrl}
-                kind={previewKind}
-              />
+              <FilePreviewContent source={renderedSource} />
             )}
           </div>
         </>
@@ -333,96 +312,3 @@ export default function FilePreviewDrawer({
     </div>
   );
 }
-
-// Memoised so the close-time re-render of the outer drawer does NOT reconcile
-// the heavy markdown / syntax-highlight tree underneath (which can take
-// 10–50 ms with math + code blocks and was the visible "stutter" before the
-// slide-out started). With stable source/previewUrl/kind props, memo bails
-// the entire body subtree.
-const PreviewBody = memo(function PreviewBody({
-  source,
-  previewUrl,
-  kind,
-}: {
-  source: FilePreviewSource;
-  previewUrl: string | null;
-  kind: ReturnType<typeof previewKindFor> | null;
-}) {
-  const filename = source.filename;
-  const rawExtractedTextUrl = source.extractedTextUrl;
-  let extractedTextUrl: string | null = null;
-  if (rawExtractedTextUrl) {
-    extractedTextUrl =
-      rawExtractedTextUrl.startsWith("http") ||
-      rawExtractedTextUrl.startsWith("blob:")
-        ? rawExtractedTextUrl
-        : apiUrl(rawExtractedTextUrl);
-  }
-
-  // Office docs lean on extracted_text and degrade gracefully via the
-  // OfficeTextPreview, even when previewUrl is missing (legacy messages).
-  if (kind === "office-text") {
-    const fallback = (
-      <OfficeTextPreview
-        filename={filename}
-        extractedText={source.extractedText}
-        extractedTextUrl={extractedTextUrl}
-        url={previewUrl}
-      />
-    );
-    if (previewUrl) {
-      return <OfficePdfPreview url={previewUrl} filename={filename} fallback={fallback} />;
-    }
-    return fallback;
-  }
-
-  // Everything else needs a fetchable URL. Without one we fall back.
-  if (!previewUrl) {
-    return <FallbackPreview filename={filename} url={null} reason="legacy" />;
-  }
-
-  switch (kind) {
-    case "pdf":
-      return <PdfPreview url={previewUrl} filename={filename} />;
-    case "docx":
-      return (
-        <OfficePdfPreview
-          url={previewUrl}
-          filename={filename}
-          fallback={<DocxPreview url={previewUrl} />}
-        />
-      );
-    case "xlsx":
-      return (
-        <OfficePdfPreview
-          url={previewUrl}
-          filename={filename}
-          fallback={<XlsxPreview url={previewUrl} />}
-        />
-      );
-    case "image":
-      return <ImagePreview url={previewUrl} filename={filename} />;
-    case "video":
-      return <VideoPreview url={previewUrl} filename={filename} />;
-    case "svg":
-      return <SvgPreview url={previewUrl} filename={filename} />;
-    case "markdown":
-      return (
-        <div className="h-full overflow-y-auto">
-          <MarkdownPreview url={previewUrl} />
-        </div>
-      );
-    case "code":
-    case "text":
-      return (
-        <div className="h-full overflow-y-auto">
-          <TextPreview url={previewUrl} filename={filename} />
-        </div>
-      );
-    case "fallback":
-    default:
-      return <FallbackPreview filename={filename} url={previewUrl} />;
-  }
-});
-
-PreviewBody.displayName = "PreviewBody";
