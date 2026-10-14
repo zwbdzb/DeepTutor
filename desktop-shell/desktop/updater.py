@@ -233,16 +233,28 @@ def download(
 def run_installer(setup_path: str | os.PathLike) -> None:
     """静默启动 Inno 安装器（per-user 安装无需 UAC 提权）。
 
-    参数：/VERYSILENT /SUPPRESSMSGBOXES /NORESTART。
-    安装器带 `CloseApplications=yes`，会自动关闭正在运行的 ThinkBuddy 实例
-    并复写文件；[Run] 段（nowait postinstall，无 skipifsilent）会在装完
-    后自动拉起新版本实例。因此本函数只是把安装器进程放出去，不等它完成
-    （等不及——本进程马上会被关掉）。
+    参数：/VERYSILENT /SUPPRESSMSGBOXES /NORESTART，外加 /LOG 写到安装包
+    同目录（ThinkBuddySetup-<版本>.install.log）——静默安装一旦中止没有任何
+    可见反馈，这份日志是唯一的事后取证渠道。
+    安装器带 `CloseApplications=yes`：正常情况下 [Run] 段（nowait
+    skipifnotsilent）装完会自动拉起新版本实例。调用方应随后**自行优雅退出**
+    （见 menubar._graceful_exit_for_update）——不能指望 Restart Manager 来关
+    本进程：RM 对 GUI 壳的关闭请求经常失败（事件 10006），Inno 静默模式下
+    会把被抑制的「无法关闭应用」消息框按「取消」处理，直接中止安装。
+    本函数只把安装器进程放出去，不等它完成（等不及——本进程马上退出）。
     """
     setup = str(setup_path)
     if not os.path.exists(setup):
         raise UpdateError("更新包不存在，无法安装")
-    cmd = [setup, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"]
+    setup_path_obj = Path(setup)
+    install_log = setup_path_obj.parent / (setup_path_obj.stem + ".install.log")
+    cmd = [
+        setup,
+        "/VERYSILENT",
+        "/SUPPRESSMSGBOXES",
+        "/NORESTART",
+        f"/LOG={install_log}",
+    ]
     try:
         subprocess.Popen(
             cmd,

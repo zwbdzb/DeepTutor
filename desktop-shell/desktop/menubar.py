@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import sys
+import time
 import urllib.parse
 
 import webview
@@ -222,6 +223,32 @@ def _check_updates(api) -> None:
         updater.run_installer(dest)
     except updater.UpdateError as exc:
         dialogs.message_box("更新失败", str(exc), 0x10)  # MB_ICONERROR
+        return
+    # 安装器已放出去，本进程必须立刻自行退场：壳若还活着，Restart Manager
+    # 关不掉 GUI 壳（2026-10-14 实测 RM 事件 10006「无法关闭
+    # ThinkBuddyDesktop.exe」，python/node 都能正常关闭），Inno 静默模式
+    # 会把被抑制的「无法关闭应用」提示按「取消」处理直接中止——表现为
+    # app 已被强杀、新版没装上、也不会重启。走与关窗一致的优雅退出
+    # （停后端进程树、清 app.lock），安装器到场时已无进程可关，装完由
+    # [Run] 段自动拉起新版。
+    _graceful_exit_for_update(api)
+
+
+def _graceful_exit_for_update(api) -> None:
+    """更新安装前的自退：优先等价于用户关窗的完整优雅退出，超时硬退兜底。"""
+    try:
+        api.quit()
+    except Exception:  # noqa: BLE001  跨线程销毁窗口失败则直接硬退
+        log.exception("graceful quit for update failed; hard exit")
+        os._exit(0)
+    # 优雅退出链（webview 退出 → _on_closed → proc.stop → 清锁）正常几秒内
+    # 结束进程；若 15s 后线程还在跑说明链路卡死，硬退兜底。遗留的后端进程
+    # 交给安装器的 Restart Manager 关闭（实测 python/node 均可正常关闭），
+    # 陈旧 app.lock 由下次启动的 _single_instance 自愈。
+    for _ in range(150):
+        time.sleep(0.1)
+    log.warning("graceful exit timed out; hard exit for update")
+    os._exit(0)
 
 
 # --------------------------------------------------------------------------- #
