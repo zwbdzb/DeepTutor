@@ -33,7 +33,7 @@ from desktop.auth import AuthManager
 from desktop.auth import config as auth_config
 from desktop.checkin import CheckinCoordinator, checkin_message
 from desktop.inject import ToastInjector, AccountChipInjector
-from desktop.menubar import build_native_menu
+from desktop.menubar import _auto_check_updates_on_startup, build_native_menu
 from desktop.native_menu_backend import (
     configure_account_chip,
     install_windows_shell_menu,
@@ -596,12 +596,19 @@ def main() -> int:
     try:
         # webview.start(func) runs func after the event loop is ready →
         # the bootstrap thread only starts once the window object exists.
-        webview.start(
-            lambda: threading.Thread(
+        def _on_window_ready() -> None:
+            threading.Thread(
                 target=bootstrap, args=(window, api, auth), daemon=True
-            ).start(),
-            debug=False,
-        )
+            ).start()
+            # 启动后延迟静默检查更新：有新版本才弹询问框，无更新不打扰。
+            threading.Thread(
+                target=_auto_check_updates_on_startup,
+                args=(api,),
+                daemon=True,
+                name="dt-auto-update",
+            ).start()
+
+        webview.start(_on_window_ready, debug=False)
     except Exception as exc:  # noqa: BLE001
         # mac 打包 console=False，任何窗口创建/事件循环阶段的崩溃都会被
         # 吞掉 → 表现就是“图标闪一下就没”。加兜底：写死日志 + 弹可见错误框，

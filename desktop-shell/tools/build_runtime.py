@@ -192,6 +192,65 @@ def enable_site(path: Path) -> None:
     log(f"enabled site-packages in {pth.name}")
 
 
+def _find_ucrt_dlls() -> list[Path]:
+    """Locate the Universal C Runtime DLLs on the build machine.
+
+    Returns ucrtbase.dll (implementation) + api-ms-win-crt-*.dll (API-set
+    forwarders). python312.dll / python.exe import these forwarders which
+    forward to ucrtbase.dll; neither the embeddable distro nor PyInstaller
+    ships them, so on a UCRT-less target the runtime python fails to start.
+    Returning [] (e.g. building on macOS) is harmless — UCRT is assumed
+    present there.
+    """
+    if IS_MAC:
+        return []
+    win_dir = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+    found: list[Path] = []
+    ucrtbase = win_dir / "System32" / "ucrtbase.dll"
+    if ucrtbase.is_file():
+        found.append(ucrtbase)
+    winsxs = win_dir / "WinSxS"
+    components = sorted(
+        winsxs.glob("amd64_microsoft-windows-m..namespace-downlevel_*"),
+        reverse=True,
+    )
+    seen: set[str] = set()
+    for comp in components:
+        for dll in comp.glob("api-ms-win-crt-*.dll"):
+            if dll.name in seen:
+                continue
+            seen.add(dll.name)
+            found.append(dll)
+        if seen:
+            break
+    return found
+
+
+def copy_ucrt_into_python(target: Path) -> int:
+    """Copy UCRT DLLs next to python.exe so the embeddable runtime is self-contained.
+
+    Without this, runtime/python/python.exe fails on machines lacking the
+    Universal C Runtime (same root cause as the shell's "Failed to load
+    Python DLL"). Returns the number of DLLs copied.
+    """
+    if IS_MAC:
+        return 0
+    dlls = _find_ucrt_dlls()
+    copied = 0
+    for src in dlls:
+        dst = target / src.name
+        # Only copy if missing or source is newer; embeddable re-staging is
+        # frequent and we don't want to thrash the filesystem.
+        if not dst.exists() or dst.stat().st_size != src.stat().st_size:
+            shutil.copy2(src, dst)
+            copied += 1
+    if copied:
+        log(f"copied {copied} UCRT DLL(s) into {target}")
+    else:
+        log(f"UCRT DLLs already present in {target}")
+    return copied
+
+
 def _py_site_packages(target: Path) -> Path:
     """staging python 树内 site-packages 路径。
 
@@ -440,10 +499,16 @@ def build(make_zip: bool = False, source_root: Path | None = None,
         download(PY_URL, PY_ZIP)
         download(NODE_URL, NODE_ZIP)
         extract(PY_ZIP, STAGING_PY)
-        extract(NODE_ZIP, STAGING_NODE)
+        extract(NODE_URL, STAGING_NODE)
         enable_site(STAGING_PY)
         if IS_MAC:
             (STAGE / ".staging-arch").write_text(_arch, encoding="utf-8")
+
+    # 把 UCRT（ucrtbase.dll + api-ms-win-crt-*.dll）拷进 staging/python/，
+    # 与 python.exe 同目录。embeddable Python 自带不包含 UCRT，目标机器若缺
+    # 少它（Win7/8 无 KB2999226、精简 LTSC 等），runtime/python 会无法启动。
+    # 每次构建都跑：copy_ucrt_into_python 内部按存在性+size 去重，无副作用。
+    copy_ucrt_into_python(STAGING_PY)
 
     # pip install 决策：源码指纹变 → 重装（deps 未变走 --no-deps 快速路径）；
     # 依赖签名变 → 全量重装。指纹模式（fast/strict）变化也算变更（安全方向）。

@@ -31,6 +31,7 @@ import logging
 import os
 import re
 import subprocess
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -231,36 +232,60 @@ def download(
 
 
 def run_installer(setup_path: str | os.PathLike) -> None:
-    """静默启动 Inno 安装器（per-user 安装无需 UAC 提权）。
+    """静默安装更新，并在安装完成后**延迟**拉起新版本。
 
-    参数：/VERYSILENT /SUPPRESSMSGBOXES /NORESTART，外加 /LOG 写到安装包
-    同目录（ThinkBuddySetup-<版本>.install.log）——静默安装一旦中止没有任何
-    可见反馈，这份日志是唯一的事后取证渠道。
-    安装器带 `CloseApplications=yes`：正常情况下 [Run] 段（nowait
-    skipifnotsilent）装完会自动拉起新版本实例。调用方应随后**自行优雅退出**
-    （见 menubar._graceful_exit_for_update）——不能指望 Restart Manager 来关
-    本进程：RM 对 GUI 壳的关闭请求经常失败（事件 10006），Inno 静默模式下
-    会把被抑制的「无法关闭应用」消息框按「取消」处理，直接中止安装。
-    本函数只把安装器进程放出去，不等它完成（等不及——本进程马上退出）。
+    拉起动作不能交给安装器 [Run] 段：安装器写完最后一个文件就立即 Exec
+    新壳，此时杀毒软件实时扫描还在逐个检查刚落地的 DLL，PyInstaller
+    bootloader 在 main 之前 LoadLibrary(python312.dll) 可能拿到 ERROR 126
+    （找不到指定的模块）——该报错发生在任何用户代码之前，壳内无法捕获
+    重试（2026-10-14 本机静默更新必现，手动延迟启动则 5/5 正常）。
+    因此整个时序由本函数生成的临时 bat 编排：
+
+        1) taskkill 兜底清理残留旧实例（防文件占用中止静默安装）；
+        2) 阻塞运行 /VERYSILENT 安装（bat 顺序执行天然等待完成）；
+        3) ping 延迟约 15s，给杀软扫描新 DLL 留出时间；
+        4) 从注册表 InstallLocation 读安装目录，拉起新壳。
+
+    bat 全程 CREATE_NO_WINDOW 隐藏运行，关键节点写入 <安装包名>.update.log。
+    安装器带 `CloseApplications=yes` 兜底。调用方在 bat 放出去后**自行优雅
+    退出**（见 menubar._graceful_exit_for_update）——不能指望 Restart
+    Manager 来关本进程：RM 对 GUI 壳的关闭请求经常失败（事件 10006），
+    Inno 静默模式下会把被抑制的「无法关闭应用」消息框按「取消」处理，
+    直接中止安装。
     """
     setup = str(setup_path)
     if not os.path.exists(setup):
         raise UpdateError("更新包不存在，无法安装")
     setup_path_obj = Path(setup)
     install_log = setup_path_obj.parent / (setup_path_obj.stem + ".install.log")
-    cmd = [
-        setup,
-        "/VERYSILENT",
-        "/SUPPRESSMSGBOXES",
-        "/NORESTART",
-        f"/LOG={install_log}",
+    update_log = setup_path_obj.parent / (setup_path_obj.stem + ".update.log")
+    app_exe = "ThinkBuddyDesktop.exe"
+    uninstall_key = f"HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{INSTALLER_APP_ID}_is1"
+    # bat 内容保持纯 ASCII：cmd 按 OEM 代码页解析，中文注释会乱码（同 build.ps1 的教训）。
+    bat_lines = [
+        "@echo off",
+        "setlocal",
+        f"echo [%date% %time%] update-bat started >> \"{update_log}\"",
+        f"taskkill /F /FI \"IMAGENAME eq {app_exe}\" >nul 2>&1",
+        f"echo [%date% %time%] old instances killed >> \"{update_log}\"",
+        f"\"{setup}\" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /FORCECLOSEAPPLICATIONS /LOG=\"{install_log}\"",
+        f"echo [%date% %time%] setup exit %%errorlevel%% >> \"{update_log}\"",
+        "ping -n 16 127.0.0.1 >nul",
+        f"for /f \"tokens=2*\" %%A in ('reg query \"{uninstall_key}\" /v InstallLocation 2^>nul ^| findstr InstallLocation') do set \"APPDIR=%%B\"",
+        "if not defined APPDIR (echo [%date% %time%] InstallLocation missing, abort launch >> \"{update_log}\" & exit /b 1)",
+        "if \"%APPDIR:~-1%\"==\"\\\" set \"APPDIR=%APPDIR:~0,-1%\"",
+        f"echo [%date% %time%] launching %APPDIR%\\{app_exe} >> \"{update_log}\"",
+        f"start \"\" /D \"%APPDIR%\" \"%APPDIR%\\{app_exe}\"",
     ]
+    bat_path = Path(tempfile.gettempdir()) / f"thinkbuddy_update_{os.getpid()}.bat"
+    bat_path.write_text("\r\n".join(bat_lines) + "\r\n", encoding="ascii")
     try:
         subprocess.Popen(
-            cmd,
-            creationflags=0x08000000,  # CREATE_NO_WINDOW：静默不弹黑窗
+            ["cmd", "/c", str(bat_path)],
+            creationflags=0x08000000,  # CREATE_NO_WINDOW：全程隐藏，不弹黑窗
         )
     except OSError as exc:
+        bat_path.unlink(missing_ok=True)
         raise UpdateError(f"无法启动安装程序：{exc}") from exc
 
 
