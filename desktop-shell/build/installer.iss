@@ -89,9 +89,9 @@ Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\assets\icon.ico"; Tasks: desktopicon
 
 [Run]
-; 静默更新：装完自动拉起新版（silent 下 postinstall 不执行，所以单独一条 skipifnotsilent）
-Filename: "{app}\{#MyAppExeName}"; Flags: nowait skipifnotsilent
-; 双击安装：Finish 页显示"启动 ThinkBuddy"复选框（skipifsilent 避免静默更新时重复拉起）
+; 双击安装：Finish 页显示"启动 ThinkBuddy"复选框（skipifsilent——静默更新不在此拉起，
+; updater.bat 负责：装完延迟 ~15s 等杀软扫描完新 DLL 再拉起，避免 PyInstaller
+; bootloader 在 main 前 LoadLibrary 报 126，见 desktop/updater.py run_installer）
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 
 [InstallDelete]

@@ -155,16 +155,19 @@ def _download_and_verify(manifest: dict):
     return dest
 
 
-def _check_updates(api) -> None:
+def _check_updates(api, manual: bool = True) -> None:
     """真正的更新链路：服务器检查 → 比对 → 询问 → 下载校验 → 静默安装。
 
     开发态 / 无更新源 / 服务器不可达 → 降级为本地 mtime 探测（旧行为）。
     菜单回调本身跑在独立线程，这里的网络与模态对话框不会卡 UI。
+    manual=False 为启动时自动检查：无更新 / 网络失败 / 开发态一律静默，
+    不弹任何提示（含「已是最新」「检查失败」），仅发现新版本时弹询问框。
     """
     from desktop import dialogs
 
     if not getattr(sys, "frozen", False):
-        _toast(f"{APP_NAME} 已是最新版本 ✓（v{__version__}）")
+        if manual:
+            _toast(f"{APP_NAME} 已是最新版本 ✓（v{__version__}）")
         return
 
     try:
@@ -172,20 +175,25 @@ def _check_updates(api) -> None:
     except Exception:  # noqa: BLE001
         base = ""
     if not base:
-        if not _probe_local_overwrite():
+        if manual and not _probe_local_overwrite():
             _toast(f"{APP_NAME} 已是最新版本 ✓（v{__version__}）")
         return
 
-    _toast("正在检查更新…")
+    if manual:
+        _toast("正在检查更新…")
     try:
         manifest = updater.check_latest(base)
     except updater.UpdateError as exc:
         log.warning("update check failed: %s", exc)
-        if not _probe_local_overwrite():
+        if manual and not _probe_local_overwrite():
             _toast("检查更新失败，请检查网络后重试。")
         return
 
-    installed = updater.installed_version()
+    # 当前版本优先取正在运行的 exe 版本（与「关于」页同源）：更新是为了让
+    # 运行中的程序变成最新，而注册表 DisplayVersion 只反映「最后一次通过
+    # 安装器写入的版本」——直接运行新打包的免安装 exe 时两者会错位，导致
+    # 关于页已是新版、检查更新却仍提示下载。
+    installed = __version__ or updater.installed_version()
     if not updater.is_newer(manifest["version"], installed):
         # 服务器明确说没有更高的版本 → 稳定提示「已是最新」，不再走本地 mtime 兜底。
         # 原因：旧兜底在「用户重装同版本包后首查」场景会被误触发成
@@ -196,8 +204,9 @@ def _check_updates(api) -> None:
                 _save_baseline(os.path.getmtime(sys.executable))
             except Exception:  # noqa: BLE001  刷新失败不影响本次提示
                 pass
-        shown = installed or manifest["version"]
-        _toast(f"{APP_NAME} 已是最新版本 ✓（v{shown}）")
+        if manual:
+            shown = installed or manifest["version"]
+            _toast(f"{APP_NAME} 已是最新版本 ✓（v{shown}）")
         return
 
     # ---- 发现新版本：询问 → 下载校验 → 再确认 → 静默安装 ----
@@ -249,6 +258,25 @@ def _graceful_exit_for_update(api) -> None:
         time.sleep(0.1)
     log.warning("graceful exit timed out; hard exit for update")
     os._exit(0)
+
+
+# 启动自动检查的延迟：等窗口渲染、后端 bootstrap 与登录态就绪后再查，
+# 避免弹窗抢在主窗口出现前盖住启动画面。
+_AUTO_CHECK_DELAY_SECONDS = 8.0
+
+
+def _auto_check_updates_on_startup(api) -> None:
+    """启动后延迟静默检查一次更新（供 daemon 线程调用）。
+
+    有新版本 → 与手动检查相同：弹「发现新版本」询问框，用户确认才下载。
+    无更新 / 无更新源 / 网络失败 / 开发态 → 完全静默，不打扰用户。
+    任何异常都不允许影响启动，这里整体兜底吞掉并记日志。
+    """
+    try:
+        time.sleep(_AUTO_CHECK_DELAY_SECONDS)
+        _check_updates(api, manual=False)
+    except Exception:  # noqa: BLE001
+        log.exception("startup auto update check failed")
 
 
 # --------------------------------------------------------------------------- #
