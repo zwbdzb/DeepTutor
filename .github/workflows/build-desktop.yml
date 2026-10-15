@@ -72,13 +72,39 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
 
-      # 缓存 build_runtime.py 下载的 python-3.12.7-embed + node zip（约 60MB）。
-      # build_runtime.py 里的 PY_VER / NODE_VER 变了记得同步 bump 这个 key。
-      - name: Cache runtime downloads
+      # 缓存【整个 runtime-build/】：staging 树（装好依赖的 python+node）+ 下载缓存
+      # + .source-state.json（pip 增量指纹状态——缺了它每次触发全量依赖安装）。
+      # pyproject.toml 变 → 换 key 全量重建；只改源码 → build_runtime.py 走增量
+      # 重装（--no-deps 快速路径）。PY_VER / NODE_VER 变了记得同步 bump key。
+      - name: Cache runtime tree
         uses: actions/cache@v4
         with:
-          path: desktop-shell/runtime-build/cache
-          key: edubuddy-runtime-dl-py3127-node2222
+          path: desktop-shell/runtime-build
+          key: edubuddy-runtime-win-py3127-node2222-${{ hashFiles('pyproject.toml') }}
+
+      # Next.js 增量编译缓存：冷构建 3-5 分钟 → 增量 1-2 分钟。
+      - name: Cache Next.js build cache
+        uses: actions/cache@v4
+        with:
+          path: web/.next/cache
+          key: next-win-${{ hashFiles('web/package-lock.json') }}
+          restore-keys: next-win-
+
+      # pip 下载缓存：首次冷装 / 依赖变更重建时省去跨洋下载大包。
+      - name: Cache pip downloads
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: pip-win-${{ hashFiles('pyproject.toml') }}
+          restore-keys: pip-win-
+
+      # PyInstaller 分析缓存（spec 无 workpath 覆盖，产物在 build/<spec名>/）。
+      # 壳输入几乎不变，命中省 1-3 分钟冷分析；spec 变更时自动重分析。
+      - name: Cache PyInstaller analysis
+        uses: actions/cache@v4
+        with:
+          path: desktop-shell/build/ThinkBuddyDesktop
+          key: pyinstaller-win
 
       - name: Install frontend dependencies
         working-directory: web
@@ -117,7 +143,12 @@ jobs:
         working-directory: desktop-shell
         env:
           BUILD_PY: ${{ steps.py312.outputs.python-path }}
-        run: powershell -ExecutionPolicy Bypass -File build\build.ps1
+          # runner 在海外：覆盖 build_runtime.py 默认的清华镜像，直连官方 pypi 更快。
+          PIP_INDEX_URL: https://pypi.org/simple
+        # -SkipWebBuild：workflow 已在独立步骤构建前端+打包 deeptutor_web，
+        # 跳过 build.ps1 [0/3] 避免重复 npm run build（CI 全新 checkout 指纹必 miss）。
+        # 日常 push 和 release 都用 -FastInstaller（lzma2/fast，安装包 ~220MB，1 分钟级）。
+        run: powershell -ExecutionPolicy Bypass -File build\build.ps1 -SkipWebBuild -FastInstaller
 
       - name: List outputs
         working-directory: desktop-shell
@@ -134,7 +165,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ThinkBuddySetup-windows
-          path: desktop-shell/dist/ThinkBuddySetup.exe
+          # build.ps1 产出带版本名的 ThinkBuddySetup-dt<版本>.exe（非固定名）。
+          path: desktop-shell/dist/ThinkBuddySetup-*.exe
           if-no-files-found: error
 
   mac:
@@ -169,14 +201,40 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
 
-      # 缓存 build_runtime.py 下载的 python-build-standalone tarball + node darwin tarball（约 80MB）。
-      # key 含 arch：arm64 和 x86_64 下载的 tarball 不同，缓存不能混用。
-      # build_runtime.py 里的 PY_VER / NODE_VER 变了记得同步 bump 这个 key。
-      - name: Cache runtime downloads
+      # 缓存【整个 runtime-build/】：staging 树（装好依赖的 python+node）+ 下载缓存
+      # + .source-state.json（pip 增量指纹状态——缺了它每次触发全量依赖安装）。
+      # key 含 arch：arm64 和 x86_64 的 staging 不能混用。pyproject.toml 变 → 换
+      # key 全量重建；只改源码 → build_runtime.py 走增量重装（--no-deps 快速路径）。
+      # PY_VER / NODE_VER 变了记得同步 bump key。
+      - name: Cache runtime tree
         uses: actions/cache@v4
         with:
-          path: desktop-shell/runtime-build/cache
-          key: thinkbuddy-runtime-mac-${{ matrix.arch }}-py3127-node2222
+          path: desktop-shell/runtime-build
+          key: thinkbuddy-runtime-mac-${{ matrix.arch }}-py3127-node2222-${{ hashFiles('pyproject.toml') }}
+
+      # Next.js 增量编译缓存：冷构建 3-5 分钟 → 增量 1-2 分钟。
+      - name: Cache Next.js build cache
+        uses: actions/cache@v4
+        with:
+          path: web/.next/cache
+          key: next-mac-${{ hashFiles('web/package-lock.json') }}
+          restore-keys: next-mac-
+
+      # pip 下载缓存：首次冷装 / 依赖变更重建时省去跨洋下载大包。
+      - name: Cache pip downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/pip
+          key: pip-mac-${{ hashFiles('pyproject.toml') }}
+          restore-keys: pip-mac-
+
+      # PyInstaller 分析缓存（spec 无 workpath 覆盖，产物在 build/<spec名>/）。
+      # spec 变更时自动重分析。
+      - name: Cache PyInstaller analysis
+        uses: actions/cache@v4
+        with:
+          path: desktop-shell/build/ThinkBuddyDesktop-mac
+          key: pyinstaller-mac-${{ matrix.arch }}
 
       # 从 icon.png 生成 .icns（macOS 自带 sips + iconutil，无需额外依赖）。
       # spec 引用 assets/icon.icns；本地开发可手动跑同样命令生成后签入。
@@ -226,6 +284,8 @@ jobs:
         working-directory: desktop-shell
         env:
           BUILD_PY: ${{ steps.py312.outputs.python-path }}
+          # runner 在海外：覆盖 build_runtime.py 默认的清华镜像，直连官方 pypi 更快。
+          PIP_INDEX_URL: https://pypi.org/simple
         run: .venv/bin/python tools/build_runtime.py --arch ${{ matrix.arch }}
 
       # 只重写 staging 产物里的用户可见品牌名；包名/类名/URL 受保护。幂等。
@@ -233,36 +293,31 @@ jobs:
         working-directory: desktop-shell
         run: .venv/bin/python tools/rebrand.py
 
+      # 不加 --clean：分析缓存（build/ThinkBuddyDesktop-mac/）对几乎不变的壳输入
+      # 完全可复用，--clean 每次强制全量重分析，纯浪费 1-3 分钟。
       - name: Build .app with PyInstaller
         working-directory: desktop-shell
-        run: .venv/bin/python -m PyInstaller --noconfirm --clean build/ThinkBuddyDesktop-mac.spec
+        run: .venv/bin/python -m PyInstaller --noconfirm build/ThinkBuddyDesktop-mac.spec
 
-      # artifact 保持 zip（和 Windows 一致，Actions 构建结果即 zip）。
-      - name: Zip .app bundle
-        working-directory: desktop-shell/dist
-        run: ditto -c -k --keepParent ThinkBuddyDesktop.app ThinkBuddyDesktop-mac-${{ matrix.arch }}.zip
-
-      # 仅勾选 release 时，额外把 .app 包成 .dmg 发布到 GitHub Release。
-      - name: Create DMG (release only)
-        if: inputs.release
+      # macOS 产物只出 dmg，不额外做 zip：Actions Artifacts 与 Release 附件同形
+      # （GitHub 下载 artifact 时平台自会再包一层 zip，内含 dmg）。
+      # 先拷到 /tmp 再打 DMG：PyInstaller 刚生成的 .app 可能有残留句柄 / Spotlight
+      # 正在索引，直接从 dist/ 源目录打包会触发 "Resource busy"。
+      - name: Create DMG
         working-directory: desktop-shell/dist
         run: |
-          hdiutil create -volname "ThinkBuddy" -srcfolder ThinkBuddyDesktop.app \
+          STAGE=$(mktemp -d /tmp/dmg-XXXXXX)
+          cp -R ThinkBuddyDesktop.app "$STAGE/"
+          hdiutil create -volname "ThinkBuddy" \
+            -srcfolder "$STAGE/ThinkBuddyDesktop.app" \
             -ov -format UDZO ThinkBuddyDesktop-mac-${{ matrix.arch }}.dmg
+          rm -rf "$STAGE"
 
       - name: List outputs
         working-directory: desktop-shell/dist
         run: ls -lh ThinkBuddyDesktop-mac-*
 
-      - name: Upload mac zip
-        uses: actions/upload-artifact@v4
-        with:
-          name: ThinkBuddyDesktop-mac-${{ matrix.arch }}-zip
-          path: desktop-shell/dist/ThinkBuddyDesktop-mac-${{ matrix.arch }}.zip
-          if-no-files-found: error
-
-      - name: Upload mac dmg (release only)
-        if: inputs.release
+      - name: Upload mac dmg
         uses: actions/upload-artifact@v4
         with:
           name: ThinkBuddyDesktop-mac-${{ matrix.arch }}-dmg
@@ -297,7 +352,7 @@ jobs:
           body: |
             ## Windows
             - `ThinkBuddyDesktop.exe` — 便携单文件（含离线运行时）
-            - `ThinkBuddySetup.exe` — 安装包（Inno Setup）
+            - `ThinkBuddySetup-dt<版本>.exe` — 安装包（Inno Setup，文件名含版本与时间戳）
 
             ## macOS
             - `ThinkBuddyDesktop-mac-arm64.dmg` — Apple Silicon
