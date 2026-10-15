@@ -1,4 +1,4 @@
-﻿# Build ThinkBuddy end-to-end (Windows).
+# Build ThinkBuddy end-to-end (Windows).
 #   1. builds the offline runtime staging tree (embeddable python + deeptutor + node)
 #   2. packages the native shell into dist\ThinkBuddyDesktop.exe  (PyInstaller)
 #   3. (optional) compiles dist\ThinkBuddySetup-dt<版本>.<时间戳>.exe with Inno Setup 7
@@ -13,11 +13,12 @@
 # Prereqs: Python 3.11+ with PyInstaller, and Inno Setup 7 installed at the
 #          standard path (only needed for step 3).
 # Run:     powershell -ExecutionPolicy Bypass -File build\build.ps1
-#              [-SkipRuntime] [-MakePortable] [-MakeZip] [-SkipInstaller]
+#              [-SkipRuntime] [-SkipWebBuild] [-MakePortable] [-MakeZip] [-SkipInstaller]
 #              [-StrictRuntime] [-FastInstaller]
 
 param(
     [switch]$SkipRuntime,       # kept for compatibility; the version gate ALWAYS runs (see below)
+    [switch]$SkipWebBuild,      # CI 已在独立步骤构建前端+打包 deeptutor_web，跳过 [0/3] 避免重复 npm run build
     [switch]$MakePortable,      # also build dist\ThinkBuddyPortable.zip (slow, ~8 min)
     [switch]$MakeZip,           # also build dist\runtime.zip (slow, for Inno path)
     [switch]$SkipInstaller,     # do not compile the Inno .iss
@@ -41,6 +42,9 @@ function Stop-Stage($name) { Write-Host ("  [{0}] done in {1:mm\:ss}" -f $name, 
 
 Push-Location $Root
 
+if ($SkipWebBuild) {
+    Write-Host "[0/3] skipped — CI pre-built frontend & deeptutor_web package"
+} else {
 Write-Host "[0/3] building and packaging the web frontend ..."
 $WebDir = Join-Path (Split-Path -Parent $Root) "web"
 $StampFile = Join-Path $WebDir ".web-build-stamp"
@@ -103,6 +107,7 @@ if ($webFresh -and ($pkgStamp -eq $fp)) {
     if ($fp) { try { Set-Content -LiteralPath $PkgStampFile -Value $fp -Encoding ASCII -NoNewline } catch {} }
     Stop-Stage "web package copy"
 }
+}  # end if (-not $SkipWebBuild)
 try {
     # ---------- 1. offline runtime (staging tree) ---------------------------
     # 无条件跑 build_runtime.py（幂等增量）；版本门禁不可跳过——曾因跳过把旧运行时打进新包。

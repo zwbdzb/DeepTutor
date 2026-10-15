@@ -145,10 +145,11 @@ jobs:
           BUILD_PY: ${{ steps.py312.outputs.python-path }}
           # runner 在海外：覆盖 build_runtime.py 默认的清华镜像，直连官方 pypi 更快。
           PIP_INDEX_URL: https://pypi.org/simple
-        # 日常 push 构建用 Inno fast 压缩（省 1-3 分钟，体积 +10~15%）；
-        # 勾选 release 的构建才用完整 lzma2，发布产物体积不变。
-        # （GH 表达式空串为 falsy，故用「非 release 时输出真值分支」的写法）
-        run: powershell -ExecutionPolicy Bypass -File build\build.ps1 ${{ inputs.release != true && '-FastInstaller' || '' }}
+        # -SkipWebBuild：workflow 已在独立步骤构建前端+打包 deeptutor_web，
+        # 跳过 build.ps1 [0/3] 避免重复 npm run build（CI 全新 checkout 指纹必 miss）。
+        # 日常 push 额外加 -FastInstaller（Inno fast 压缩省 1-3 min）；
+        # 勾选 release 用完整 lzma2，发布产物体积不变。
+        run: powershell -ExecutionPolicy Bypass -File build\build.ps1 -SkipWebBuild ${{ inputs.release != true && '-FastInstaller' || '' }}
 
       - name: List outputs
         working-directory: desktop-shell
