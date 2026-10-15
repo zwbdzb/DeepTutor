@@ -1,4 +1,4 @@
-# Build ThinkBuddy end-to-end (Windows).
+﻿# Build ThinkBuddy end-to-end (Windows).
 #   1. builds the offline runtime staging tree (embeddable python + deeptutor + node)
 #   2. packages the native shell into dist\ThinkBuddyDesktop.exe  (PyInstaller)
 #   3. (optional) compiles dist\ThinkBuddySetup-dt<版本>.<时间戳>.exe with Inno Setup 7
@@ -43,7 +43,7 @@ function Stop-Stage($name) { Write-Host ("  [{0}] done in {1:mm\:ss}" -f $name, 
 Push-Location $Root
 
 if ($SkipWebBuild) {
-    Write-Host "[0/3] skipped — CI pre-built frontend & deeptutor_web package"
+    Write-Host "[0/3] skipped - CI pre-built frontend and deeptutor_web package"
 } else {
 Write-Host "[0/3] building and packaging the web frontend ..."
 $WebDir = Join-Path (Split-Path -Parent $Root) "web"
