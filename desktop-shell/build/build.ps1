@@ -14,7 +14,7 @@
 #          standard path (only needed for step 3).
 # Run:     powershell -ExecutionPolicy Bypass -File build\build.ps1
 #              [-SkipRuntime] [-SkipWebBuild] [-MakePortable] [-MakeZip] [-SkipInstaller]
-#              [-StrictRuntime] [-FastInstaller]
+#              [-StrictRuntime] [-FastInstaller] [-NoCompression]
 
 param(
     [switch]$SkipRuntime,       # kept for compatibility; the version gate ALWAYS runs (see below)
@@ -24,6 +24,7 @@ param(
     [switch]$SkipInstaller,     # do not compile the Inno .iss
     [switch]$StrictRuntime,     # content-hash runtime sources (slower; release-time assurance)
     [switch]$FastInstaller,     # Inno lzma2/fast（开发迭代用，安装包体积 +10~15%，压缩时间大幅缩短）
+    [switch]$NoCompression,    # Inno Compression=none（CI 日常 push 用，秒级完成，安装包 ~500MB）
     # ADR-006 更新发布参数：出包后自动生成「带版本名安装包 + latest.json」（dist/）
     [string]$UpdateBase = "https://thinkbuddy.hanyoai.com/update",
     [string]$MinVersion = "0.1.0",
@@ -210,7 +211,8 @@ try {
                 catch { Write-Host "  WARN: cannot remove stale dist\ThinkBuddySetup.exe: $_" }
             }
             $isccArgs = @()
-            if ($FastInstaller) { $isccArgs += "/DFastCompression" }
+            if ($NoCompression) { $isccArgs += "/DNoCompression" }
+            elseif ($FastInstaller) { $isccArgs += "/DFastCompression" }
             $isccArgs += @("/DMyAppVersion=$appVer", "/DMyOutputName=$safeVer", "build\installer.iss")
             & $iscc @isccArgs
             if ($LASTEXITCODE -ne 0) { throw "iscc failed" }
