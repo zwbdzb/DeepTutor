@@ -499,7 +499,7 @@ def build(make_zip: bool = False, source_root: Path | None = None,
         download(PY_URL, PY_ZIP)
         download(NODE_URL, NODE_ZIP)
         extract(PY_ZIP, STAGING_PY)
-        extract(NODE_URL, STAGING_NODE)
+        extract(NODE_ZIP, STAGING_NODE)
         enable_site(STAGING_PY)
         if IS_MAC:
             (STAGE / ".staging-arch").write_text(_arch, encoding="utf-8")
