@@ -302,11 +302,17 @@ jobs:
 
       # macOS 产物只出 dmg，不额外做 zip：Actions Artifacts 与 Release 附件同形
       # （GitHub 下载 artifact 时平台自会再包一层 zip，内含 dmg）。
+      # 先拷到 /tmp 再打 DMG：PyInstaller 刚生成的 .app 可能有残留句柄 / Spotlight
+      # 正在索引，直接从 dist/ 源目录打包会触发 "Resource busy"。
       - name: Create DMG
         working-directory: desktop-shell/dist
         run: |
-          hdiutil create -volname "ThinkBuddy" -srcfolder ThinkBuddyDesktop.app \
+          STAGE=$(mktemp -d /tmp/dmg-XXXXXX)
+          cp -R ThinkBuddyDesktop.app "$STAGE/"
+          hdiutil create -volname "ThinkBuddy" \
+            -srcfolder "$STAGE/ThinkBuddyDesktop.app" \
             -ov -format UDZO ThinkBuddyDesktop-mac-${{ matrix.arch }}.dmg
+          rm -rf "$STAGE"
 
       - name: List outputs
         working-directory: desktop-shell/dist
