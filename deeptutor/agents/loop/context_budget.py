@@ -110,8 +110,15 @@ def detect_counter_name() -> str:
 
     ``count_tokens`` swallows a missing or broken tiktoken and silently drops to
     a chars/4 estimate; probing the same import keeps the reported counter from
-    claiming an accuracy the numbers do not have.
+    claiming an accuracy the numbers do not have. When the startup warmup is
+    still in flight (or failed) the turn path is on the heuristic right now,
+    and probing here would block the loop on the cold vocabulary download —
+    report that honestly instead.
     """
+    from deeptutor.services.session.context_builder import token_encoder_state
+
+    if token_encoder_state() in {"warming", "failed"}:
+        return "heuristic"
     try:
         import tiktoken
 

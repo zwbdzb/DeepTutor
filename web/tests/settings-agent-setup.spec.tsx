@@ -16,7 +16,9 @@ beforeEach(() => {
   vi.mocked(copyText).mockReset();
 });
 
-describe("Agent setup handoff", () => {
+// 二开暂时跳过（2026-10-16）：入口按钮已在 components/settings/AgentSetupHelp.tsx
+// 中暂时注释；恢复按钮时把 describe.skip 还原为 describe。
+describe.skip("Agent setup handoff", () => {
   it("copies the complete displayed guide and restores focus on Escape", async () => {
     vi.mocked(copyText).mockResolvedValue(undefined);
     render(<AgentSetupHelp />);

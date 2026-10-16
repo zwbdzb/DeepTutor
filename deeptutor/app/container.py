@@ -127,6 +127,14 @@ class ApplicationContainer:
                 "Turn coordination backend is unavailable; refusing to start"
             )
         self._started = True
+        # Warm the cl100k encoder in a background thread before the first
+        # turn needs it: tiktoken's cold load downloads the vocabulary with a
+        # blocking, un-timed HTTP call that stalled first-conversation turns
+        # past the lease TTL (seen as "worker executing this turn was lost"
+        # on fresh installs).
+        from deeptutor.services.session.context_builder import start_tokenizer_warmup
+
+        start_tokenizer_warmup()
 
     async def close(self) -> None:
         if not self._started:
@@ -180,7 +188,11 @@ class ApplicationContainer:
                     seen.add(scope_key)
                     recovery = self._recovery_services.get(scope_key)
                     if recovery is None:
-                        recovery = TurnRecoveryService(self.coordinator, store)
+                        recovery = TurnRecoveryService(
+                            self.coordinator,
+                            store,
+                            is_live=self.runtime_registry.get(store).has_live_execution,
+                        )
                         self._recovery_services[scope_key] = recovery
                     await recovery.recover_once()
             except WorkspaceError:
