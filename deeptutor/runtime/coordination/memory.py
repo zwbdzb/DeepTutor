@@ -58,7 +58,7 @@ class MemoryCoordinator:
     async def renew_turn(self, lease: TurnLease) -> TurnLease | None:
         async with self._lock:
             current = self._turn_leases.get(lease.turn_id)
-            if not self._active(current) or current is None:
+            if current is None:
                 return None
             if (
                 current.owner_id != lease.owner_id
@@ -66,6 +66,14 @@ class MemoryCoordinator:
                 or current.session_id != lease.session_id
             ):
                 return None
+            # Single-process backend: an expired lease that its owner is still
+            # renewing can only mean the shared event loop stalled past the
+            # TTL (blocking first-turn work starves the renewal task along
+            # with everything else). The renewing coroutine is itself proof
+            # the worker is alive, so a matching lease is always renewable;
+            # failing it would make this process's own leader recovery kill
+            # a live turn as "worker lost". Ownership checks above keep the
+            # fencing semantics intact.
             renewed = replace(current, expires_at=self._expires_at())
             self._turn_leases[lease.turn_id] = renewed
             return renewed

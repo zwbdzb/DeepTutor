@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import os
+from pathlib import Path
+import threading
 from typing import Any, Awaitable, Callable
 
 from deeptutor.agents.base_agent import BaseAgent
@@ -47,16 +50,82 @@ IMAGE_CONTEXT_TOKEN_ESTIMATE = 4096
 
 
 def count_tokens(text: str) -> int:
-    """Estimate token count with tiktoken when available."""
+    """Estimate token count with tiktoken when available.
+
+    tiktoken's first ``get_encoding("cl100k_base")`` downloads the BPE
+    vocabulary with an un-timed blocking ``requests.get``. On a fresh install
+    that first call used to run on the turn's event-loop thread: an
+    unreachable/slow ``openaipublic`` endpoint stalled the whole backend for
+    tens of seconds, the turn lease expired, and recovery failed the live
+    turn as "worker executing this turn was lost" — exactly the
+    first-install first-conversation report. :func:`start_tokenizer_warmup`
+    moves that cold load to a startup thread; while it is in flight (or when
+    it failed) this function falls back to the chars/4 heuristic instead of
+    ever blocking the loop. ``idle`` means no warmup was requested (CLI
+    one-shot paths), where the legacy inline load is kept.
+    """
     if not text:
         return 0
-    try:
-        import tiktoken
+    encoder = _token_encoder
+    if encoder is not None:
+        try:
+            return len(encoder.encode(text))
+        except Exception:
+            pass
+    if _tokenizer_state == "idle":
+        try:
+            import tiktoken
 
-        encoding = tiktoken.get_encoding("cl100k_base")
-        return len(encoding.encode(text))
+            return len(tiktoken.get_encoding("cl100k_base").encode(text))
+        except Exception:
+            pass
+    return max(1, len(text) // 4)
+
+
+_tokenizer_lock = threading.Lock()
+_tokenizer_state = "idle"  # idle | warming | ready | failed
+_token_encoder: Any = None
+
+
+def token_encoder_state() -> str:
+    """Where the shared cl100k encoder warmup stands (for telemetry gates)."""
+    return _tokenizer_state
+
+
+def start_tokenizer_warmup() -> None:
+    """Pre-load the cl100k encoder off the event loop, once per process.
+
+    Called during server startup so the (possibly slow) vocabulary download
+    happens while the user is still on the login/home screen rather than
+    inside the first conversation's context build. The persistent cache dir
+    under the runtime data root makes the download pay once per machine
+    instead of once per backend process.
+    """
+    global _tokenizer_state
+    with _tokenizer_lock:
+        if _tokenizer_state != "idle":
+            return
+        _tokenizer_state = "warming"
+    try:
+        from deeptutor.runtime.home import get_runtime_data_root
+
+        cache_dir = Path(get_runtime_data_root()) / "tiktoken-cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        os.environ.setdefault("TIKTOKEN_CACHE_DIR", str(cache_dir))
     except Exception:
-        return max(1, len(text) // 4)
+        pass
+
+    def _warm() -> None:
+        global _tokenizer_state, _token_encoder
+        try:
+            import tiktoken
+
+            _token_encoder = tiktoken.get_encoding("cl100k_base")
+            _tokenizer_state = "ready"
+        except Exception:
+            _tokenizer_state = "failed"
+
+    threading.Thread(target=_warm, name="tiktoken-warmup", daemon=True).start()
 
 
 def _count_model_context_tokens(value: Any) -> int:
