@@ -418,6 +418,12 @@ class TurnApplicationService:
                 # Something is genuinely executing it. The conflict is real and
                 # the caller should see it.
                 continue
+            # A lapsed lease is not proof of death when this process still owns
+            # a live execution: a loop stall past the TTL expires the lease
+            # while the worker keeps running. Reap only true zombies.
+            has_live = getattr(_runtime, "has_live_execution", None)
+            if has_live is not None and await has_live(turn_id):
+                continue
             if await self._reap_unowned_live_turn(turn_id):
                 reclaimed = True
         return reclaimed

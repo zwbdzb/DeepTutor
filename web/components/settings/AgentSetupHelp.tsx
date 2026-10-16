@@ -28,6 +28,8 @@ export default function AgentSetupHelp() {
         <p className="text-[13px] leading-relaxed text-[var(--muted-foreground)]">
           {t("settings.agentSetup.description")}
         </p>
+        {/* 二开暂时隐藏（2026-10-16，用户要求）：「让你的 Agent 帮你配置」入口。
+            恢复时取消注释，并同步还原 tests/settings-agent-setup.spec.tsx 的 describe.skip。
         <button
           type="button"
           onClick={() => {
@@ -39,6 +41,7 @@ export default function AgentSetupHelp() {
           <Bot size={16} aria-hidden="true" />
           {t("settings.agentSetup.title")}
         </button>
+        */}
       </div>
       <Modal
         isOpen={open}

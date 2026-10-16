@@ -353,6 +353,9 @@ export default function AboutSettingsPage() {
           </div>
         )}
 
+        {/* 二开隐藏（2026-10-16）：「由当前安装方式管理」展示上游 pip 安装/更新
+            命令，与 ThinkBuddy 桌面端安装器分发方式不符，用户要求移除。
+            恢复官方版本时取消下面整段注释即可。
         {status && !status.installation.automatic_update && (
           <div className="border-t border-[var(--border)]/50 py-4">
             <div className="mb-2 flex items-center gap-2 text-[12.5px] font-medium text-[var(--foreground)]">
@@ -367,6 +370,7 @@ export default function AboutSettingsPage() {
             </code>
           </div>
         )}
+        */}
 
         {job && (
           <div
@@ -398,7 +402,7 @@ export default function AboutSettingsPage() {
         <ResourceRow
           title={t("Documentation")}
           description={t("Installation, configuration, and guides")}
-          href="https://docs.deeptutor.info"
+          href="https://thinkbuddy.hanyoai.com/docs#/"
           icon={<ArrowUpRight className="h-4 w-4" />}
         />
       </SettingSection>
