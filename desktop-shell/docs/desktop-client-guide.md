@@ -216,7 +216,7 @@ Get-ChildItem dist\*.exe | Select-Object Name, Length, LastWriteTime
 | OAuth 请求的构造 | `desktop\auth\client.py` |
 | 启动流程/窗口行为 | `desktop\main.py` |
 | 启动页样式 | `desktop\splash.py` |
-| 打包配置 | `build\ThinkBuddyDesktop.spec`（PyInstaller）、`build\installer.iss`（安装器） |
+| 打包配置 | `build\ThinkBuddyDesktop.spec`（PyInstaller，Windows）、`build\ThinkBuddyDesktop-mac.spec`（macOS）、`build\installer.iss`（安装器） |
 
 ### 5.3 指向哪个平台（联调 vs 线上）
 
@@ -248,6 +248,14 @@ $env:TOKENGINE_API_BASE = "http://127.0.0.1:3000"
 `chip_model` / `account_menu_model`），动作接线在 `main.py` 的
 `_chip_actions`，账号区自绘与命中在 `native_menu_backend.py` 的
 `AccountChip`。关闭方式：再点账号区 / Esc / 点菜单外。
+
+> **macOS 实现（2026-10-16）**：账号区不用 WinForms，走
+> `desktop/inject.py` 的 `AccountChipInjector`——标题栏右侧
+> `NSTitlebarAccessoryViewController` 里的 borderless `NSButton`，点击弹
+> 原生 `NSMenu`。状态模型、动作分发表（`_chip_actions`）、显示时序与
+> Windows 完全共用。菜单动作在后台线程执行；系统弹窗走 osascript
+> （tkinter 会在 pywebview 进程里再起 NSApplication，SIGILL 崩溃）。
+> 机制与踩坑记录见 `docs/adr/ADR-004-titlebar-account-chip.md` 末节。
 
 > **2026-09-24 交互打磨**：所有下拉面板已做圆角（Win11 走 DWM 原生圆角，
 > Win10 退化为 Region 裁剪）；「点菜单外收回」由 UI 线程看门狗兜底（物理
@@ -314,7 +322,8 @@ runtime-build\staging\python\python.exe -c "from deeptutor.__version__ import __
 1. **改前先建分支**：`git switch -c feat/xxx`。改坏了随时弃车保帅。
 2. **小步提交**：一个功能拆成几个小 commit，写清做了什么。
 3. **提交前自测**：至少跑通 §4.1 开发态 + 看一遍 `app.log` 无 ERROR。
-4. **不确定就看日志**：`%LOCALAPPDATA%\ThinkBuddy\logs\app.log` 是你的眼睛。
+4. **不确定就看日志**：Windows `%LOCALAPPDATA%\ThinkBuddy\logs\app.log`、
+   macOS `~/Library/Application Support/ThinkBuddy/logs/app.log` 是你的眼睛。
 5. **读代码顺序建议**：`main.py`（入口）→ `inject.py`（注入）→ `auth/manager.py`（登录编排）。
    每个文件开头都有中文注释讲设计取舍。
 6. **别怕 PyInstaller**：它只是把 Python 代码+依赖打成一个 exe。spec 文件就是配置，

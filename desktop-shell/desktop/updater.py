@@ -31,6 +31,7 @@ import logging
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
@@ -107,13 +108,67 @@ def installed_version() -> str | None:
     return None
 
 
+_SENTINEL = object()
+_SYSTEM_SSL_CTX: object = _SENTINEL
+
+
+def _system_ssl_context():
+    """macOS：用系统钥匙串的信任链校验 HTTPS（对齐 Windows/WKWebView 行为）。
+
+    urllib 默认用 OpenSSL 自带 CA bundle；用户系统装了自签根证书的代理
+    （企业网关 / Clash mitm 等）时会 CERTIFICATE_VERIFY_FAILED（2026-10-16
+    真机更新检查必现），而 Windows 的 WinHTTP 与 WKWebView 走系统信任库
+    无此问题。这里把系统钥匙串证书导出为 PEM 灌进 SSL context。导出失败
+    退回 None（urlopen 默认行为）。非 macOS 返回 None。
+    """
+    global _SYSTEM_SSL_CTX
+    if sys.platform != "darwin":
+        return None
+    if _SYSTEM_SSL_CTX is not _SENTINEL:
+        return _SYSTEM_SSL_CTX
+    try:
+        import ssl
+
+        ctx = ssl.create_default_context()
+        pems = []
+        for keychain in (
+            "/Library/Keychains/System.keychain",
+            "/System/Library/Keychains/SystemRootCertificates.keychain",
+            os.path.expanduser("~/Library/Keychains/login.keychain-db"),
+        ):
+            try:
+                result = subprocess.run(
+                    ["security", "find-certificate", "-a", "-p", keychain],
+                    capture_output=True, text=True, timeout=10, check=False,
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    pems.append(result.stdout)
+            except Exception:  # noqa: BLE001  单个钥匙串导出失败不致命
+                log.debug("keychain export failed: %s", keychain)
+        bundle = "\n".join(pems).strip()
+        if bundle:
+            fh = tempfile.NamedTemporaryFile("w", suffix=".pem", delete=False)
+            fh.write(bundle + "\n")
+            fh.close()
+            ctx.load_verify_locations(fh.name)
+            _SYSTEM_SSL_CTX = ctx
+            log.info("更新检查启用系统钥匙串信任链（%d 字节 PEM）", len(bundle))
+            return ctx
+    except Exception:  # noqa: BLE001  构建信任链失败 → 退回默认校验
+        log.exception("system ssl context build failed")
+    _SYSTEM_SSL_CTX = None
+    return None
+
+
 def _get_json(url: str, timeout: float) -> dict:
     try:
         request = urllib.request.Request(
             url,
             headers={"Accept": "application/json", "User-Agent": _USER_AGENT},
         )
-        with urllib.request.urlopen(request, timeout=timeout) as resp:
+        with urllib.request.urlopen(
+            request, timeout=timeout, context=_system_ssl_context()
+        ) as resp:
             raw = resp.read()
     except urllib.error.HTTPError as exc:
         try:
@@ -196,7 +251,9 @@ def download(
     try:
         request = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
         last_report = [0.0]
-        with urllib.request.urlopen(request, timeout=timeout) as resp:
+        with urllib.request.urlopen(
+            request, timeout=timeout, context=_system_ssl_context()
+        ) as resp:
             total = int(resp.headers.get("Content-Length") or 0)
             with open(tmp, "wb") as fh:
                 while True:

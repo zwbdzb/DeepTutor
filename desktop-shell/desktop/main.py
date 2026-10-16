@@ -293,7 +293,7 @@ def _chip_actions(api: Api) -> dict:
     def about() -> None:
         info = api.about()
         lines = [
-            f"{info['app']}  v{info['app_version']}",
+            f"{APP_NAME} 桌面端：v{info['app_version']}",
             f"ThinkBuddy 引擎：v{info['deeptutor_version']}",
         ]
         if info.get("relay"):
@@ -494,6 +494,13 @@ def bootstrap(window, api: Api, auth: AuthManager) -> None:
             )
             _shared["account_chip_injector"] = _account_chip_injector
             _account_chip_injector.run()  # 主线程内初始化（callAfter 派发）
+            # 应用菜单（屏幕顶部第一项）中文化：等 pywebview 建好菜单后派发
+            from desktop import menubar as _menubar
+
+            threading.Thread(
+                target=_menubar._localize_app_menu_later,
+                daemon=True, name="dt-appmenu-localize",
+            ).start()
 
         sync = AccountStatusSync(
             chip_fn=lambda: native_menu_backend.account_chip() or _account_chip_injector,
@@ -554,6 +561,9 @@ def main() -> int:
 
     # Keep downloads in the authenticated WebView and use its native save dialog.
     webview.settings["ALLOW_DOWNLOADS"] = True
+    # macOS：不追加 pywebview 默认的英文 Edit / View 菜单，顶部菜单栏只保留
+    # build_native_menu 的 文件 / 编辑 / 视图 / 帮助（避免中英文菜单重复）。
+    webview.settings["SHOW_DEFAULT_MENUS"] = False
 
     frontend_url = f"http://127.0.0.1:{DEFAULT_FRONTEND_PORT}"
     auth = AuthManager()

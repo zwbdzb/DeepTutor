@@ -15,7 +15,12 @@ runtime-build/
 # 这里显式重新纳入目录本身；下一行的 PyInstaller 工作目录仍保持忽略。
 !build/
 build/ThinkBuddyDesktop/
+build/ThinkBuddyDesktop-mac/
 build/build_last.log
+
+# mac 图标：由 tools 打包流程从 assets/icon.png 现生成（CI 同样现生成），
+# 派生资产不入库（见根 .gitignore "dependency-generated assets" 约定）
+assets/icon.icns
 
 # 运行期数据
 logs/

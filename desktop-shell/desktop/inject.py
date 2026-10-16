@@ -13,8 +13,8 @@ Windows 账号入口仍用原生标题栏 ``AccountChip``，mac 上没有 WinFor
 ``import AppKit`` + ``AppHelper.callAfter`` 在某些时机下静默失败。
 
 改用 ``NSWindow.titlebarAccessoryViewController``（macOS 10.10+）：
-在壳原生红绿灯**左边**加自定义 ``NSView`` + ``NSTextField`` 显示账号
-文案，位置与 Windows 账号区几乎一致（标题栏右侧）。pywebview 的 Cocoa
+在原生标题栏**右侧**（红绿灯对侧、与 Windows 账号区同位）加自定义
+``NSView`` + ``NSTextField`` 显示账号文案。pywebview 的 Cocoa
 后端已在顶层 ``import AppKit``（见 webview/platforms/cocoa.py），打包
 必然含 pyobjc，无需额外 hiddenimports。
 
@@ -136,14 +136,50 @@ class ToastInjector:
 # --------------------------------------------------------------------------- #
 # macOS 壳原生账号 chip（仅 darwin）---------------------------------------- #
 # --------------------------------------------------------------------------- #
-# 壳原生方案：用 NSWindow.titlebarAccessoryViewController 在红绿灯左边加
-# 自定义 NSView + NSTextField 显示账号文案。位置和 Windows 账号区几乎一致。
+# 壳原生方案：用 NSWindow.titlebarAccessoryViewController 在原生标题栏
+# 右侧加自定义 NSView + NSButton 显示账号文案。位置和 Windows 账号区一致。
 # 点击 chip 弹出 NSPopover 显示下拉菜单（壳原生，不走页面内注入）。
+# chip 用 NSButton（标题栏可点击控件的标准做法）而非 NSClickGestureRecognizer
+# ——标题栏区域的鼠标事件优先被窗口拖拽逻辑消费，手势识别器不可靠。
 #
 # pywebview 的 Cocoa 后端已在顶层 import AppKit / Foundation / WebKit /
 # objc / PyObjCTools.AppHelper（见 webview/platforms/cocoa.py 第 11-15
 # 行），所以打包后 pyobjc 必然存在，这里只做延迟 import 避免非 mac 环境
 # 跑起来崩掉。
+
+import sys
+
+if sys.platform == "darwin":
+    import objc  # noqa: PLC0415  仅 darwin 存在 pyobjc
+
+    import AppKit  # noqa: PLC0415
+
+    from Foundation import NSObject  # noqa: PLC0415
+
+    class _ChipActionTarget(NSObject):  # noqa: N801  (pyobjc 类命名)
+        """chip 与菜单项按钮共享的 ObjC target。
+
+        action 选择器必须定义在 NSObject 子类的**类上**，ObjC 运行时才
+        派发得到（曾把 handler 挂在普通 Python 对象实例上 + 手动
+        NSSelectorFromString，真机点击静默无响应）。所有按钮共用一个
+        target，动作名经 NSButton.representedObject 携带。
+        """
+
+        def initWithInjector_(self, injector):  # noqa: N802
+            self = objc.super(_ChipActionTarget, self).init()
+            if self is None:
+                return None
+            self._injector = injector
+            return self
+
+        def chipClicked_(self, sender):  # noqa: N802
+            log.debug("chip action chipClicked: 派发进入")
+            self._injector.handle_chip_click()
+
+        def menuItemClicked_(self, sender):  # noqa: N802
+            action = str(sender.representedObject() or "")
+            log.info("chip 菜单项动作：%s", action)
+            self._injector._dispatch_menu(action)
 
 
 class AccountChipInjector:
@@ -172,9 +208,8 @@ class AccountChipInjector:
 
         # 延迟初始化：等 webview.start 事件循环跑起来后在主线程创建 AppKit 对象
         self._initialized = threading.Event()
-        self._chip_label = None  # NSTextField
-        self._popover = None    # NSPopover
-        self._menu_populating = False
+        self._target = None     # _ChipActionTarget（chip + 菜单项共享）
+        self._chip_button = None  # NSButton（chip 本体）
 
     # ---- 对外 ---------------------------------------------------------- #
     def set_model(self, model: dict) -> None:
@@ -222,154 +257,121 @@ class AccountChipInjector:
             log.warning("mac 壳原生账号 chip：window.native 为 None")
             return
 
-        # ---- 创建 chip NSView ----
-        chip_view = AppKit.NSView.alloc().initWithFrame_(AppKit.NSMakeRect(0, 0, 160, 28))
-        chip_view.setWantsLayer_(True)
-        chip_view.layer().setCornerRadius_(6)
-        chip_view.layer().setBackgroundColor_(
+        # ---- 创建 chip NSView + NSButton ----
+        # 共享 ObjC target（选择器在类上，运行时可派发，见 _ChipActionTarget）
+        self._target = _ChipActionTarget.alloc().initWithInjector_(self)
+
+        container = AppKit.NSView.alloc().initWithFrame_(AppKit.NSMakeRect(0, 0, 160, 28))
+        container.setWantsLayer_(True)
+        container.layer().setCornerRadius_(6)
+        container.layer().setBackgroundColor_(
             AppKit.NSColor.colorWithRed_green_blue_alpha_(0.96, 0.96, 0.96, 0.85).CGColor()
         )
 
-        # 账号文案 NSTextField
-        label = AppKit.NSTextField.alloc().initWithFrame_(AppKit.NSMakeRect(8, 6, 144, 16))
-        label.setBezeled_(False)
-        label.setDrawsBackground_(False)
-        label.setEditable_(False)
-        label.setSelectable_(False)
-        label.setBordered_(False)
-        label.setFont_(AppKit.NSFont.systemFontOfSize_(12))
-        label.setTextColor_(AppKit.NSColor.colorWithRed_green_blue_alpha_(0.15, 0.15, 0.15, 1.0))
-        label.setAlignment_(AppKit.NSTextAlignmentLeft)
-        label.setStringValue_("登录")
-        chip_view.addSubview_(label)
-        self._chip_label = label
-
-        # 下拉箭头
-        arrow = AppKit.NSTextField.alloc().initWithFrame_(AppKit.NSMakeRect(148, 6, 12, 16))
-        arrow.setBezeled_(False)
-        arrow.setDrawsBackground_(False)
-        arrow.setEditable_(False)
-        arrow.setSelectable_(False)
-        arrow.setBordered_(False)
-        arrow.setFont_(AppKit.NSFont.systemFontOfSize_(10))
-        arrow.setTextColor_(AppKit.NSColor.colorWithRed_green_blue_alpha_(0.5, 0.5, 0.5, 1.0))
-        arrow.setStringValue_("▾")
-        chip_view.addSubview_(arrow)
-
-        # 点击手势
-        click = AppKit.NSClickGestureRecognizer.alloc().initWithTarget_action_(self, "_chip_clicked:")
-        chip_view.addGestureRecognizer_(click)
+        # borderless NSButton：标题栏里可点击控件的标准做法，原生 hit-test 可靠
+        btn = AppKit.NSButton.alloc().initWithFrame_(AppKit.NSMakeRect(0, 0, 160, 28))
+        btn.setBordered_(False)
+        btn.setFont_(AppKit.NSFont.systemFontOfSize_(12))
+        btn.setAlignment_(AppKit.NSTextAlignmentCenter)
+        btn.setTitle_("登录 ▾")
+        btn.setTarget_(self._target)
+        btn.setAction_(AppKit.NSSelectorFromString("chipClicked:"))
+        container.addSubview_(btn)
+        self._chip_button = btn
 
         # ---- 创建 NSViewController ----
-        vc = AppKit.NSViewController.alloc().init()
-        vc.setView_(chip_view)
-        ns_window.setTitlebarAccessoryViewController_(vc)
-        ns_window.titlebarAccessoryViewController().setLayoutAttribute_(
-            AppKit.NSLayoutAttributeLeading
-        )
-
-        # ---- 创建 NSPopover 下拉菜单 ----
-        self._popover = AppKit.NSPopover.alloc().init()
-        self._popover.setBehaviors_(AppKit.NSPopoverBehaviorTransient)
-        self._popover.setAnimates_(True)
-
-        # popover 关闭时清理
-        self._popover.setDelegate_(self)
+        # 必须是 NSTitlebarAccessoryViewController（layoutAttribute 在它身上），
+        # 普通 NSViewController 没有 setLayoutAttribute_。
+        vc = AppKit.NSTitlebarAccessoryViewController.alloc().init()
+        vc.setView_(container)
+        # 挂载用数组版 API：单一 `setTitlebarAccessoryViewController_` 已被
+        # Apple 弃用并从新版 SDK 移除，pyobjc 12 绑定里不存在（曾致
+        # AttributeError: NSKVONotifying_WindowHost has no attribute ...，
+        # KVO isa-swap 只是报错里的表象）。layoutAttribute 须在挂载前设置：
+        # Trailing = 标题栏右侧，与 Windows 账号区位置一致。
+        vc.setLayoutAttribute_(AppKit.NSLayoutAttributeTrailing)
+        ns_window.addTitlebarAccessoryViewController_(vc)
 
     # ---- AppKit 回调（主线程） ------------------------------------------ #
-    def _chip_clicked_(self, sender) -> None:  # noqa: N802  (pyobjc selector 命名)
-        """点击 chip：有菜单则 toggle popover，无菜单则发登录。"""
+    def handle_chip_click(self) -> None:
+        """点击 chip：有菜单则弹出 NSMenu，无菜单则发登录。
+
+        用 NSMenu.popUpMenu...（鼠标全局位置弹出）而非 NSPopover：popover
+        需要窗口内锚点视图且受标题栏布局影响，两轮真机验证都弹不出来；
+        NSMenu 原生下拉观感一致、零锚定依赖。
+        """
         import AppKit  # type: ignore
 
+        log.info("chip 点击事件进入 handle_chip_click")
         model = self._model or {}
-        menu = model.get("menu") or []
+        # menu 是 dict：{"header": {title, sub}, "items": [...]}（见
+        # titlebar_account.account_menu_model），不是列表——曾直接遍历它，
+        # 迭代出的是键字符串，item.get 炸出 AttributeError（真机菜单从未弹出）。
+        menu_model = model.get("menu") or {}
+        menu_items = menu_model.get("items") or []
 
-        if self._popover.isShown():
-            self._popover.performClose_(sender)
-            return
-
-        if not menu:
+        if not menu_items:
             # 未登录：发起 OAuth
+            log.info("mac 壳账号 chip 点击：无菜单（未登录），触发登录")
             self._safe_login()
             return
 
-        # 构建 popover 内容 NSView + NSStackView + NSButtons
-        self._populate_popover(menu)
+        try:
+            menu = AppKit.NSMenu.alloc().init()
+            menu.setAutoenablesItems_(False)
 
-        # 定位到 chip 视图下方
-        chip_view = self._popover.contentViewController().view().superview()
-        if chip_view is None:
-            return
-        self._popover.showRelativeToRect_ofView_preferredEdge_(
-            chip_view.frame(), chip_view, AppKit.NSRectEdgeMinY
-        )
-
-    def popoverDidClose_(self, notification) -> None:  # noqa: N802
-        """NSPopover delegate：关闭时清理。"""
-        pass
-
-    # ---- NSPopover 菜单构建（主线程） ----------------------------------- #
-    def _populate_popover(self, menu_items: list) -> None:
-        """根据 chip 模型的 menu 列表构建 NSPopover 内容。"""
-        import AppKit  # type: ignore
-
-        container = AppKit.NSView.alloc().initWithFrame_(AppKit.NSMakeRect(0, 0, 220, 36))
-        y = 0
-        row_h = 32
-
-        for item in menu_items:
-            if item.get("type") == "sep":
-                sep = AppKit.NSBox.alloc().initWithFrame_(AppKit.NSMakeRect(12, y + 15, 196, 1))
-                sep.setBoxType_(AppKit.NSBoxSeparator)
-                sep.setBorderWidth_(0)
-                container.addSubview_(sep)
-                y += row_h
-                continue
-
-            label = str(item.get("label") or "")
-            action = str(item.get("action") or "")
-            danger = bool(item.get("danger"))
-
-            btn = AppKit.NSButton.alloc().initWithFrame_(
-                AppKit.NSMakeRect(0, y, 220, row_h)
+            # 菜单头（账号名 + 余额），禁用态展示，与 Windows 下拉一致
+            header = menu_model.get("header") or {}
+            htext = "  ".join(
+                part for part in (str(header.get("title") or "").strip(),
+                                  str(header.get("sub") or "").strip()) if part
             )
-            btn.setBezelStyle_(AppKit.NSBezelStyleRegularSquare)
-            btn.setBordered_(False)
-            btn.setTitle_(label)
-            btn.setFont_(AppKit.NSFont.systemFontOfSize_(13))
-            btn.setAlignment_(AppKit.NSTextAlignmentLeft)
-            btn.contentEdgeInsets = AppKit.NSEdgeInsets(0, 14, 0, 14)
-            btn.setTarget_(self)
-            btn.setAction_(self._make_menu_selector(action))
-
-            if danger:
-                btn.setTitleColor_(
-                    AppKit.NSColor.colorWithRed_green_blue_alpha_(0.85, 0.2, 0.2, 1.0)
+            if htext:
+                hmi = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                    htext, None, ""
                 )
+                hmi.setEnabled_(False)
+                menu.addItem_(hmi)
+                menu.addItem_(AppKit.NSMenuItem.separatorItem())
 
-            container.addSubview_(btn)
-            y += row_h
+            for item in menu_items:
+                if item.get("type") == "sep":
+                    menu.addItem_(AppKit.NSMenuItem.separatorItem())
+                    continue
+                label = str(item.get("label") or "")
+                action = str(item.get("action") or "")
+                mi = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                    label, AppKit.NSSelectorFromString("menuItemClicked:"), ""
+                )
+                mi.setTarget_(self._target)
+                mi.setRepresentedObject_(action)
+                # 危险项红色文字：NSButton/NSMenuItem 都没有 setTitleColor_，
+                # 走 attributed title（曾致 AttributeError）。
+                if item.get("danger"):
+                    from AppKit import (  # noqa: PLC0415
+                        NSAttributedString, NSColor, NSDictionary, NSFont,
+                        NSFontAttributeName, NSForegroundColorAttributeName,
+                    )
+                    mi.setAttributedTitle_(
+                        NSAttributedString.alloc().initWithString_attributes_(
+                            label,
+                            NSDictionary.dictionaryWithObjects_forKeys_(
+                                [NSColor.colorWithRed_green_blue_alpha_(0.85, 0.2, 0.2, 1.0),
+                                 NSFont.systemFontOfSize_(13)],
+                                [NSForegroundColorAttributeName, NSFontAttributeName],
+                            ),
+                        )
+                    )
+                menu.addItem_(mi)
+        except Exception:  # noqa: BLE001
+            log.exception("chip 下拉菜单构建失败")
+            return
 
-        container.setFrame_(AppKit.NSMakeRect(0, 0, 220, y))
-
-        # 创建新的 contentViewController
-        vc = AppKit.NSViewController.alloc().init()
-        vc.setView_(container)
-        self._popover.setContentViewController_(vc)
-        self._popover.setContentSize_(AppKit.NSSize(220, y))
-
-    def _make_menu_selector(self, action: str):
-        """为菜单项创建一个可调用的 selector（_menu_handler_<action>:）。"""
-        selector_name = f"_menu_handler_{action}:"
-        # 动态绑定方法到 self（pyobjc 允许这种 monkey-patch）
-        import AppKit  # type: ignore
-
-        def handler(sender=None):
-            self._dispatch_menu(action)
-
-        setattr(self, selector_name, handler)
-        # 返回 selector
-        return AppKit.NSSelectorFromString(selector_name)
+        # 弹在鼠标当前位置（全局屏幕坐标，inView=None），与 chip 视图层级解耦
+        loc = AppKit.NSEvent.mouseLocation()
+        log.info("mac 壳账号 chip 点击：%d 个菜单项，弹出 NSMenu @ (%.0f, %.0f)",
+                 len(menu_items), loc.x, loc.y)
+        AppKit.NSMenu.popUpMenuPositioningItem_atLocation_inView_(menu, None, loc, None)
 
     # ---- 模型推送（线程安全：主线程调度） ------------------------------- #
     def _update_chip(self) -> None:
@@ -380,44 +382,47 @@ class AccountChipInjector:
             return
 
         def _do_update() -> None:
-            import AppKit  # type: ignore
-
-            if self._chip_label is None:
+            if self._chip_button is None:
                 return
             model = self._model or {}
             logged_in = bool(model.get("logged_in"))
 
-            # chip 视图本身（label 的 superview 的 superview 是 titlebarAccessory 的 view）
-            chip_view = self._chip_label.superview()
-            if chip_view is None:
+            # chip 容器（按钮的 superview）
+            container = self._chip_button.superview()
+            if container is None:
                 return
 
             if not logged_in:
-                # 未登录：隐藏整个 chip 视图（从标题栏移除视觉占用）
-                chip_view.setHidden_(True)
+                # 未登录：隐藏整个 chip 容器（从标题栏移除视觉占用）
+                container.setHidden_(True)
                 return
 
-            # 已登录：显示 chip + 更新文案
-            chip_view.setHidden_(False)
+            # 已登录：显示 chip + 更新文案（文案后跟 ▾ 表示有下拉菜单）
+            container.setHidden_(False)
             label = str(model.get("label") or "").strip()
-            self._chip_label.setStringValue_(label[:20] + ("…" if len(label) > 20 else ""))
+            label = label[:20] + ("…" if len(label) > 20 else "")
+            caret = " ▾" if ((model.get("menu") or {}).get("items")) else ""
+            self._chip_button.setTitle_(label + caret)
 
         AppHelper.callAfter(_do_update)
 
     # ---- 动作分发 ------------------------------------------------------ #
     def _dispatch_menu(self, action: str) -> None:
-        """分发菜单项动作到 main._chip_actions（后台线程，避免阻塞主线程）。"""
+        """分发菜单项动作到 main._chip_actions（后台线程，避免阻塞主线程）。
+
+        菜单项动作在主线程的 NSMenu 追踪循环里触发；动作里可能有弹窗
+        （osascript 子进程、最长 60s）或网络请求，内联执行会冻住 UI。
+        """
         handler = self._menu_actions.get(action)
         if handler is None:
             log.warning("未知/未注册的菜单动作：%s", action)
             return
-        # 关闭 popover（在主线程）
-        try:
-            from PyObjCTools import AppHelper  # type: ignore
-            AppHelper.callAfter(lambda: self._popover.performClose_(None) if self._popover else None)
-        except Exception:  # noqa: BLE001
-            pass
-        # 执行动作（后台线程）
+        threading.Thread(
+            target=self._run_action, args=(action, handler),
+            name=f"chip-action-{action}", daemon=True,
+        ).start()
+
+    def _run_action(self, action: str, handler) -> None:
         try:
             handler()
         except Exception:  # noqa: BLE001

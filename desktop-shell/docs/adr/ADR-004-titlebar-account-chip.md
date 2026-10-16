@@ -56,7 +56,8 @@ ADR-002 的方案把登录/账号按钮注入 DeepTutor 页面（`position:fixed
 - 菜单渲染/悬停/关闭全是系统原生行为，删掉约 200 行自绘 JS/CSS。
 
 **更困难的 / 需要留意**：
-- 账号区是 WinForms 自绘，非 Windows 平台无此实现（壳本来就只面向 Windows）；
+- 账号区是 WinForms 自绘，仅 Windows 有原生标题栏实现；macOS 走另一套
+  AppKit 方案（见下方「macOS 实现（2026-10-16）」节）；
 - 原生菜单没有「再点一次」的两段式确认，退出登录改走 MessageBox（交互
   习惯变化，需在发布说明里提一句）；
 - 账号区宽度随文案变化，条带右缩进必须动态让位（`extra_right_padding`），
@@ -167,3 +168,36 @@ strip）、圆角（同一 `_apply_dropdown_shape`）、外部收回（同一看
 - `test_menu_polish_headed.py` 新增 A0.5a-d：初始隐藏、进应用后可见、
   菜单栏下拉无图列、下拉字体与 chip 一致；连同原 13 项共 **17 项全过**。
 - `test_login_gate.py` 48 项、`_verify_fixes.py` 13 项回归全过。
+
+## macOS 实现（2026-10-16）
+
+mac 无 WinForms，账号区用 AppKit 原生标题栏附件实现，交互与 Windows 对齐
+（未登录隐藏、已登录显示用户名、点击弹菜单、头行只读、危险项红色）。
+
+### 方案
+
+| 环节 | 实现（`desktop/inject.py` → `AccountChipInjector`） |
+| --- | --- |
+| 芯片本体 | `NSTitlebarAccessoryViewController`（`layoutAttribute=Trailing`，窗口标题栏**右侧**，与 Windows 同位）内的 borderless `NSButton`（标题栏可点击控件的标准做法，hit-test 原生可靠） |
+| 挂载 API | `addTitlebarAccessoryViewController_`——曾用 Apple 已移除的弃用 API `setTitlebarAccessoryViewController_`，pyobjc 12 无此绑定导致挂载失败 |
+| 下拉菜单 | 原生 `NSMenu.popUpMenu` 弹在鼠标位置（曾试 NSPopover：锚到自身 contentViewController 在弹出前无 superview，永远弹不出，弃用） |
+| 点击派发 | `_ChipActionTarget(NSObject)` 类上定义 `chipClicked:` / `menuItemClicked:` 选择器；**选择器必须定义在 NSObject 子类的类上**，挂普通 Python 对象再 `NSSelectorFromString` 会静默无响应；菜单项动作名经 `representedObject` 携带 |
+| 应用菜单 | pywebview 默认生成的英文应用菜单（About/Hide/Quit…）由 `menubar.localize_app_menu()` 整体重建为中文（选择器与快捷键不变，`PyObjCTools.AppHelper.callAfter` 派发主线程） |
+| 状态同步 | 复用 Windows 侧 `titlebar_account.AccountStatusSync`，chip_fn 回退链兼容 mac 注入器 |
+
+### 踩坑记录（真机定位）
+
+1. **菜单模型解包**：`chip_model()["menu"]` 是 dict（`{header, items}`），
+   不是列表——直接 `for item in menu` 迭代出键字符串，`item.get(...)` 抛
+   `AttributeError`，菜单构建静默失败、菜单永远不弹（表观症状「点击无反应」）。
+   教训：**先插桩分清「事件没到」还是「处理崩了」**，本例前几轮都在修外围。
+2. **弹窗禁用 tkinter**：菜单动作里的系统弹窗曾用 tkinter 实现，
+   `tk.Tk()` 会在 pywebview 已有 `NSApplication` 的进程里再起一个
+   Tcl/NSApplication，AppKit 直接 SIGILL 崩掉主线程（历史崩溃报告
+   `EXC_BAD_INSTRUCTION` 佐证）。mac 弹窗一律走 osascript（独立进程，
+   见 `desktop/dialogs.py`）。
+3. **菜单动作后台线程**：`NSMenu` 菜单项动作在主线程的菜单追踪循环里触发，
+   动作处理（osascript 弹窗最长 60s、网络请求）必须抛到后台线程执行，
+   否则冻住/炸掉 UI。
+4. **AppHelper 导入位置**：pyobjc 12 的 `AppHelper` 在 `PyObjCTools` 包，
+   不随 `AppKit` 导出。

@@ -63,7 +63,7 @@ def _menu_about(api) -> None:
 
         info = api.about()
         lines = [
-            f"{info['app']}  v{info['app_version']}",
+            f"{APP_NAME} 桌面端：v{info['app_version']}",
             f"ThinkBuddy 引擎：v{info['deeptutor_version']}",
         ]
         if info.get("relay"):
@@ -209,7 +209,23 @@ def _check_updates(api, manual: bool = True) -> None:
             _toast(f"{APP_NAME} 已是最新版本 ✓（v{shown}）")
         return
 
-    # ---- 发现新版本：询问 → 下载校验 → 再确认 → 静默安装 ----
+    # ---- 发现新版本 ----
+    if sys.platform == "darwin":
+        # mac 无 Inno 静默安装链路（ADR-006 的安装包是 .exe + 注册表卸载）：
+        # 只提示到官网下载，不做下载/安装。SSL 检查已走系统钥匙串信任链
+        # （见 updater._system_ssl_context），代理环境下也能正常完成检查。
+        from desktop import dialogs
+
+        dialogs.message_box(
+            "发现新版本",
+            f"发现新版本 v{manifest['version']}\n"
+            f"当前版本：v{installed}\n\n"
+            f"macOS 版请前往官网下载最新安装包。",
+            0x40,  # MB_ICONINFORMATION
+        )
+        return
+
+    # ---- 询问 → 下载校验 → 再确认 → 静默安装 ----
     # MB_OKCANCEL | MB_ICONQUESTION == 0x21；IDOK == 1
     if dialogs.message_box("发现新版本", _update_prompt_text(manifest, installed), 0x21) != 1:
         return
@@ -280,6 +296,74 @@ def _auto_check_updates_on_startup(api) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# macOS 应用菜单中文化 ---------------------------------------------------------- #
+def localize_app_menu() -> None:
+    """把 pywebview Cocoa 后端生成的英文应用菜单（第一项）替换为中文。
+
+    必须在主线程调用（配合 AppHelper.callAfter）。动作选择器全部沿用
+    系统标准（orderFrontStandardAboutPanel: / hide: / terminate: 等），
+    仅替换标题文案；「服务」子菜单需 NSApp.setServicesMenu_ 挂回才能用。
+    """
+    if sys.platform != "darwin":
+        return
+    try:
+        import AppKit
+
+        app = AppKit.NSApplication.sharedApplication()
+        main_menu = app.mainMenu()
+        if main_menu is None or main_menu.numberOfItems() < 1:
+            log.warning("app menu localize skipped: no main menu yet")
+            return
+        app_item = main_menu.itemAtIndex_(0)
+
+        def _item(title: str, action: str | None, key: str = ""):
+            it = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                title,
+                AppKit.NSSelectorFromString(action) if action else None,
+                key,
+            )
+            return it
+
+        sub = AppKit.NSMenu.alloc().initWithTitle_(app_item.title() or APP_NAME)
+        sub.addItem_(_item(f"关于 {APP_NAME}", "orderFrontStandardAboutPanel:"))
+        sub.addItem_(AppKit.NSMenuItem.separatorItem())
+
+        services_item = _item("服务", None)
+        services_menu = AppKit.NSMenu.alloc().initWithTitle_("服务")
+        services_item.setSubmenu_(services_menu)
+        sub.addItem_(services_item)
+        app.setServicesMenu_(services_menu)
+
+        sub.addItem_(AppKit.NSMenuItem.separatorItem())
+        hide = _item(f"隐藏 {APP_NAME}", "hide:", "h")
+        sub.addItem_(hide)
+        hide_others = _item("隐藏其他", "hideOtherApplications:", "h")
+        hide_others.setKeyEquivalentModifierMask_(
+            AppKit.NSEventModifierFlagCommand | AppKit.NSEventModifierFlagOption
+        )
+        sub.addItem_(hide_others)
+        sub.addItem_(_item("全部显示", "unhideAllApplications:"))
+        sub.addItem_(AppKit.NSMenuItem.separatorItem())
+        sub.addItem_(_item(f"退出 {APP_NAME}", "terminate:", "q"))
+
+        app_item.setSubmenu_(sub)
+        log.info("mac 应用菜单已中文化")
+    except Exception:  # noqa: BLE001  菜单本地化失败不影响功能
+        log.exception("app menu localize failed")
+
+
+def _localize_app_menu_later() -> None:
+    """后台线程等菜单建好后派发到主线程执行 localize_app_menu。"""
+    time.sleep(3.0)
+    try:
+        from PyObjCTools import AppHelper  # type: ignore  (AppKit 不导出该名字)
+
+        AppHelper.callAfter(localize_app_menu)
+    except Exception:  # noqa: BLE001
+        log.exception("app menu localize schedule failed")
+
+
+# --------------------------------------------------------------------------- #
 # 编辑：对页面做富文本操作（WebView2 网页里通常由应用自身处理，这里是兜底）----- #
 def _exec_edit(command: str) -> None:
     window = _main_window()
@@ -343,12 +427,25 @@ def _win_close() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 帮助：打开平台 / 刷新模型 ---------------------------------------------------- #
+# 帮助：打开官网 / 平台 / 刷新模型 ---------------------------------------------- #
 def _open_platform(api) -> None:
     try:
         api.open_platform()
     except Exception:  # noqa: BLE001
         log.exception("open platform failed")
+
+
+def _open_website() -> None:
+    """打开 ThinkBuddy 官网（帮助菜单；URL 走 endpoints 覆盖链，默认官网首页）。"""
+    try:
+        import webbrowser
+
+        from desktop.auth import config as auth_config
+
+        url = auth_config.thinkbuddy_website_url(ROOT) or "https://thinkbuddy.hanyoai.com"
+        webbrowser.open(url)
+    except Exception:  # noqa: BLE001
+        log.exception("open website failed")
 
 
 def _refresh_models(api) -> None:
@@ -403,7 +500,7 @@ def build_native_menu(api) -> list[Menu]:
         Menu(
             "帮助",
             [
-                MenuAction("打开 Tokengine 平台", lambda: _open_platform(api)),
+                MenuAction("打开 ThinkBuddy 网站", lambda: _open_website()),
                 MenuSeparator(),
                 MenuAction(f"关于 {APP_NAME}", lambda: _menu_about(api)),
             ],
