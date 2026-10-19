@@ -11,9 +11,11 @@
 
 实现要点：
 * 用 ctypes 给 BrowserForm 装轻量 WndProc 钩子，仅拦截 ``WM_NCCALCSIZE``：
-  把客户区扩展到整个窗口矩形 → 系统标题栏在窗口可见**之前**就消失
-  （无闪烁）。窗口样式里的 WS_CAPTION / WS_THICKFRAME / WS_MAXIMIZEBOX
-  全部保留，因此缩放、贴靠、动画这些系统行为原封不动。
+  客户区顶部内缩为 0（标题栏无声消失，无闪烁），左右下三边保留系统缩放
+  边框（内缩一个边框厚度、留在非客户区）——WebView2 子窗口盖满客户区，
+  若客户区吞掉整窗矩形，边缘 WM_NCHITTEST 全部落进子窗口，拖拽缩放即
+  失效。窗口样式里的 WS_CAPTION / WS_THICKFRAME / WS_MAXIMIZEBOX 全部
+  保留，因此缩放、贴靠、动画这些系统行为原封不动。
 * 菜单走 pywebview 的 ``Menu`` / ``MenuAction`` / ``MenuSeparator`` 通道，
   渲染成 ``MenuStrip``（Dock=Top）——与 pywebview 原版 ``set_window_menu``
   同一条久经验证的路径；客户区扩大后菜单条自然顶到第一排。
@@ -246,15 +248,19 @@ def _make_form_handler(hwnd: int):
             return None
         if msg != WM_NCCALCSIZE or not wp:
             return None
-        # 客户区 = 整个窗口矩形；最大化时按边框厚度内缩，避免内容溢出屏幕
-        if _user32.IsZoomed(hwnd):
-            ins = _frame_thickness()
-            if ins > 0 and lp:
-                rect = ctypes.cast(lp, ctypes.POINTER(_RECT)).contents
-                rect.left += ins
+        # 只抹掉标题栏（顶部内缩为 0），左右下三边保留系统缩放边框（非客户
+        # 区）：WebView2 子窗口盖满客户区，若客户区=整窗矩形，左右下边缘的
+        # WM_NCHITTEST 全部落进子窗口、永远到不了窗体，边缘拖拽缩放即失效。
+        # 保留边框后由系统原生接管缩放（含四个角），观感与普通窗口一致。
+        # 最大化时四边都按边框厚度内缩，避免内容溢出屏幕。
+        ins = _frame_thickness()
+        if ins > 0 and lp:
+            rect = ctypes.cast(lp, ctypes.POINTER(_RECT)).contents
+            rect.left += ins
+            rect.right -= ins
+            rect.bottom -= ins
+            if _user32.IsZoomed(hwnd):
                 rect.top += ins
-                rect.right -= ins
-                rect.bottom -= ins
         return 0
 
     return handler

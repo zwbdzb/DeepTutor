@@ -24,7 +24,11 @@ _setup_logger = None
 DEFAULT_INTERFACE_SETTINGS = {
     # "snow" is the pure-white neutral theme, shown as "Default" in the UI.
     "theme": "snow",
-    "language": "en",
+    # Seed language for a fresh install. Nothing derives this from the OS or
+    # browser locale, so a new user's first screen is whatever is written here.
+    # Only applied when interface.json is absent (_ensure_essential_settings
+    # never overwrites an existing file), so existing users keep their choice.
+    "language": "zh",
     "sidebar_description": "✨ Data Intelligence Lab @ HKU",
     "sidebar_nav_order": {
         "start": ["/", "/history", "/knowledge-bases", "/notebooks"],
@@ -35,7 +39,9 @@ DEFAULT_INTERFACE_SETTINGS = {
 
 DEFAULT_MAIN_SETTINGS = {
     "system": {
-        "language": "en",
+        # Model-output language for the fresh-install seed; keep in step with
+        # DEFAULT_INTERFACE_SETTINGS["language"] above.
+        "language": "zh",
     },
     "logging": {
         "level": "WARNING",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 
 from deeptutor.services.session.protocol import TurnRepository
 
@@ -17,9 +18,18 @@ class TurnRecoveryService:
         self,
         coordinator: RuntimeCoordinator,
         repository: TurnRepository,
+        *,
+        is_live: Callable[[str], Awaitable[bool]] | None = None,
     ) -> None:
         self.coordinator = coordinator
         self.repository = repository
+        # Optional liveness probe scoped to the leader's own process. A lease
+        # can lapse while its worker is perfectly healthy when the shared
+        # event loop stalls past the TTL (first-turn blocking work starves the
+        # renewal task); failing such a turn turns a slow answer into
+        # "worker lost". When the probe says the leader's own runtime still
+        # owns a live execution for the turn, recovery must leave it alone.
+        self.is_live = is_live
         self.backlog = 0
 
     async def recover_once(self) -> int:
@@ -28,6 +38,8 @@ class TurnRecoveryService:
         recovered = 0
         for turn_id in turn_ids:
             try:
+                if self.is_live is not None and await self.is_live(turn_id):
+                    continue
                 outcome = await self._recover_turn(turn_id)
                 # An expired id can belong to a different user repository.
                 # Do not globally acknowledge it until the leader finds the
