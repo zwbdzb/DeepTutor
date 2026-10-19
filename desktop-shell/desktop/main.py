@@ -28,7 +28,14 @@ import time
 import webbrowser
 from collections import deque
 
-from desktop import APP_NAME, __version__, clipboard, dialogs, native_menu_backend
+from desktop import (
+    APP_NAME,
+    __version__,
+    clipboard,
+    dialogs,
+    native_menu_backend,
+    single_instance,
+)
 from desktop.auth import AuthManager
 from desktop.auth import config as auth_config
 from desktop.checkin import CheckinCoordinator, checkin_message
@@ -75,27 +82,6 @@ def _setup_logging() -> None:
     sh.setFormatter(fmt)
     root.addHandler(sh)
     log.info("=== %s v%s starting ===", APP_NAME, __version__)
-
-
-# --------------------------------------------------------------------------- #
-# single instance ------------------------------------------------------------- #
-def _single_instance() -> bool:
-    """Return False if another instance already holds the lock."""
-    lock = rt.ROOT / "app.lock"
-    rt.ROOT.mkdir(parents=True, exist_ok=True)
-    try:
-        fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-        os.write(fd, str(os.getpid()).encode())
-        os.close(fd)
-        return True
-    except FileExistsError:
-        try:
-            pid = int(lock.read_text().strip())
-            os.kill(pid, 0)  # process alive -> still running
-            return False
-        except (ProcessLookupError, ValueError, OSError):
-            lock.unlink(missing_ok=True)
-            return _single_instance()
 
 
 # --------------------------------------------------------------------------- #
@@ -293,7 +279,7 @@ def _chip_actions(api: Api) -> dict:
     def about() -> None:
         info = api.about()
         lines = [
-            f"{info['app']}  v{info['app_version']}",
+            f"{APP_NAME} 桌面端：v{info['app_version']}",
             f"ThinkBuddy 引擎：v{info['deeptutor_version']}",
         ]
         if info.get("relay"):
@@ -494,6 +480,13 @@ def bootstrap(window, api: Api, auth: AuthManager) -> None:
             )
             _shared["account_chip_injector"] = _account_chip_injector
             _account_chip_injector.run()  # 主线程内初始化（callAfter 派发）
+            # 应用菜单（屏幕顶部第一项）中文化：等 pywebview 建好菜单后派发
+            from desktop import menubar as _menubar
+
+            threading.Thread(
+                target=_menubar._localize_app_menu_later,
+                daemon=True, name="dt-appmenu-localize",
+            ).start()
 
         sync = AccountStatusSync(
             chip_fn=lambda: native_menu_backend.account_chip() or _account_chip_injector,
@@ -533,8 +526,13 @@ def bootstrap(window, api: Api, auth: AuthManager) -> None:
 def main() -> int:
     _setup_logging()
 
-    if not _single_instance():
-        log.warning("another instance is already running")
+    outcome = single_instance.acquire_or_activate(rt.ROOT / "app.lock", APP_NAME)
+    if outcome == single_instance.ACTIVATED:
+        # 已有实例：已把它的窗口带到前台，本进程静默退出（点快捷方式的预期行为）
+        log.info("another instance is running; its window was brought to front")
+        return 0
+    if outcome != single_instance.PRIMARY:
+        log.warning("another instance is already running; window not activatable")
         # 用跨平台 dialogs.message_box（mac 走 tkinter/osascript）。
         # 之前直接调 ctypes.windll.user32.MessageBoxW，在 mac 上抛
         # AttributeError 被吞掉后静默 return 1 —— 表现就是“图标闪一下没窗口”。
@@ -554,6 +552,9 @@ def main() -> int:
 
     # Keep downloads in the authenticated WebView and use its native save dialog.
     webview.settings["ALLOW_DOWNLOADS"] = True
+    # macOS：不追加 pywebview 默认的英文 Edit / View 菜单，顶部菜单栏只保留
+    # build_native_menu 的 文件 / 编辑 / 视图 / 帮助（避免中英文菜单重复）。
+    webview.settings["SHOW_DEFAULT_MENUS"] = False
 
     frontend_url = f"http://127.0.0.1:{DEFAULT_FRONTEND_PORT}"
     auth = AuthManager()
@@ -651,11 +652,7 @@ def _on_closed() -> None:
 
 def _shutdown() -> None:
     _on_closed()
-    lock = rt.ROOT / "app.lock"
-    try:
-        lock.unlink(missing_ok=True)
-    except Exception:  # noqa: BLE001
-        pass
+    single_instance.release(rt.ROOT / "app.lock")
     log.info("exited cleanly")
 
 

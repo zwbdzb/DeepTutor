@@ -2,7 +2,8 @@
 
 > 面向团队成员的打包机制科普 + 操作手册。读完你只需要记住**一条命令**和**四步自检**。
 >
-> - 一条命令：`powershell -ExecutionPolicy Bypass -File build\build.ps1`
+> - 一条命令：`powershell -ExecutionPolicy Bypass -File build\build.ps1`（Windows）
+> - macOS：见 §9（无 Inno 安装包环节，产物为 `.app`）
 > - 四步自检：见 §6
 >
 > 相关决策记录：ADR-004（标题栏账号区）、ADR-005（运行时解析顺序）、ADR-003（登录门禁）。
@@ -224,11 +225,97 @@ cd D:\studio\DeepTutor\desktop-shell
 
 | 文件 | 角色 |
 |---|---|
-| `build/build.ps1` | 一键流水线（本指南 §3 的编排者） |
+| `build/build.ps1` | 一键流水线（本指南 §3 的编排者，Windows） |
 | `tools/build_runtime.py` | 运行时组装 + 版本门禁 + 指纹增量 |
 | `tools/rebrand.py` | staging 品牌改写（幂等） |
-| `build/ThinkBuddyDesktop.spec` | PyInstaller 配方（壳 exe） |
+| `tools/inject_version.py` | 壳版本注入 `<引擎版本>.<MMDDHHmm>`（§9；打包前注入、打包后 `--restore`） |
+| `build/ThinkBuddyDesktop.spec` | PyInstaller 配方（壳 exe，Windows） |
+| `build/ThinkBuddyDesktop-mac.spec` | PyInstaller 配方（壳 `.app`，macOS） |
 | `build/installer.iss` | Inno Setup 脚本（安装包 + 升级清扫） |
 | `desktop/runtime.py` | 运行时解析顺序（exe 旁 > 解包 > 缓存，版本择优） |
-| `docs/adr/ADR-004` | 标题栏账号区（登录入口迁移） |
+| `docs/adr/ADR-004` | 标题栏账号区（登录入口迁移 + macOS 实现） |
 | `docs/adr/ADR-005` | 运行时解析顺序事故与修复 |
+
+## 9. macOS 打包（2026-10-16 起）
+
+mac 没有 Inno Setup 安装包环节，产物是 `dist/ThinkBuddyDesktop.app`
+（+ 手动 zip/dmg 分发）。运行时组装、版本门禁、rebrand 与 Windows 完全
+共用同一套脚本。
+
+### 9.1 前置条件（一次性）
+
+```bash
+cd desktop-shell
+python3 -m venv .venv
+.venv/bin/pip install -U pip pywebview pillow pyinstaller
+# Node + npm：前端构建用
+```
+
+### 9.2 流水线（等价于 build.ps1 的 mac 分步）
+
+```bash
+cd /path/to/DeepTutor
+
+# ⓪ 生成图标（mac spec 引用 assets/icon.icns，仓库无现成文件时才需要）
+ICONSET=/tmp/icon.iconset; SRC=desktop-shell/assets/icon.png; mkdir -p "$ICONSET"
+for s in 16 32 128 256 512; do
+  sips -z $s $s "$SRC" --out "$ICONSET/icon_${s}x${s}.png" >/dev/null
+  d=$((s*2)); sips -z $d $d "$SRC" --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
+done
+sips -z 1024 1024 "$SRC" --out "$ICONSET/icon_512x512@2x.png" >/dev/null
+iconutil -c icns "$ICONSET" -o desktop-shell/assets/icon.icns
+
+# ① 前端构建 + 刷新 deeptutor_web 包
+cd web && npm ci --legacy-peer-deps && npm run build && cd ..
+python3 scripts/prepare_web_package.py --skip-build
+
+# ② 运行时组装 + 版本门禁 + rebrand（mac 必须内嵌 runtime.zip，不加 --no-zip）
+cd desktop-shell
+export BUILD_PY=$(which python3.12)
+# build_runtime 在打 runtime.zip 之前会内置执行 rebrand + 安全自检
+# （2026-10-19 修复：此前 rebrand 在 zip 之后才跑，dmg 里品牌未换）。
+# 之后的 rebrand.py 幂等重刷，主要覆盖 staging 磁盘目录（便携 zip 流程用）。
+.venv/bin/python tools/build_runtime.py --arch $(uname -m)
+.venv/bin/python tools/rebrand.py
+
+# ③ 壳版本注入（对齐 Windows：__version__ = 引擎版本.MMDDHHmm）
+.venv/bin/python tools/inject_version.py
+
+# ④ 壳编译
+.venv/bin/python -m PyInstaller --noconfirm build/ThinkBuddyDesktop-mac.spec
+
+# ⑤ 还原源码开发态版本号
+.venv/bin/python tools/inject_version.py --restore
+```
+
+产物：`desktop-shell/dist/ThinkBuddyDesktop.app`。分发打包：
+
+```bash
+cd dist
+ditto -c -k --keepParent ThinkBuddyDesktop.app ThinkBuddyDesktop-mac-x86_64.zip
+# 或
+hdiutil create -volname "ThinkBuddy" -srcfolder ThinkBuddyDesktop.app \
+  -ov -format UDZO ThinkBuddyDesktop-mac-x86_64.dmg
+```
+
+### 9.3 mac 与 Windows 的差异
+
+| 环节 | Windows | macOS |
+|---|---|---|
+| 安装包 | Inno Setup `ThinkBuddySetup.exe` | 无（`.app` 直接分发）；更新只提示到官网下载 |
+| 壳版本号 | build.ps1 注入 | `tools/inject_version.py` 注入（同格式） |
+| runtime 托管 | `%LOCALAPPDATA%\ThinkBuddy\runtime` | `~/Library/Application Support/ThinkBuddy/runtime`（首启自解压 10–30s） |
+| 弹窗 | ctypes MessageBoxW | osascript（**禁用 tkinter**——会在 pywebview 进程里再起 NSApplication，SIGILL 崩溃，见 ADR-004） |
+| 更新检查 SSL | WinHTTP 系统信任库 | `updater._system_ssl_context()`：导出系统钥匙串证书灌入 SSL context（代理自签根证书场景） |
+| 账号区 | WinForms 自绘 chip | `NSTitlebarAccessoryViewController` + `NSButton` + `NSMenu`（ADR-004 mac 节） |
+| 应用菜单 | 菜单栏由 winforms 渲染 | 顶部系统菜单栏；pywebview 英文应用菜单由 `menubar.localize_app_menu()` 重建为中文 |
+| 未签名行为 | 无影响 | 首次打开需右键 → 打开 绕过 Gatekeeper |
+
+### 9.4 mac 自检清单
+
+1. `VERSION GATE OK` 门禁日志（与 Windows 同一关）；
+2. `dist/ThinkBuddyDesktop.app` 存在且时间戳是刚刚；
+3. 启动后日志 `=== ThinkBuddy v<引擎版本>.<时间戳> starting ===`（例
+   `v1.6.15.10161557`）——引擎版本取自 `deeptutor/__version__.py`，时间戳为
+   构建时刻；版本号只有裸引擎版本、没带时间戳 = 忘了跑 `inject_version.py`；
+4. 顶部应用菜单为中文、账号 chip 点击有下拉、关于/检查更新可用。

@@ -64,6 +64,7 @@ TARGET_PACKAGES = ("deeptutor", "deeptutor_cli", "deeptutor_web")
 PLAINTEXT_SUFFIXES = {
     ".yaml", ".yml", ".json", ".js", ".mjs", ".cjs",
     ".html", ".htm", ".css", ".txt",
+    ".rsc",  # Next.js 预渲染段 payload（RSC），设置页等首屏文案烧在里面
 }
 SKIP_SUFFIXES = {".pyc", ".pyo", ".map"}
 

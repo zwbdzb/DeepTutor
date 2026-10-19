@@ -222,13 +222,15 @@ jobs:
       # build_runtime.py --arch：下载对应架构的 python-build-standalone + node darwin tarball。
       # **不带** --no-zip：mac 没有安装器（无 Inno），runtime.zip 必须内嵌进 .app，
       # shell 首启自解压到 ~/Library/Application Support/ThinkBuddy/runtime/。
+      # build_runtime 内置「zip 前 rebrand + 安全自检」（2026-10-19 修复：
+      # 此处原 rebrand 在 zip 之后才跑，dmg 里品牌未换）。
       - name: Build runtime + zip
         working-directory: desktop-shell
         env:
           BUILD_PY: ${{ steps.py312.outputs.python-path }}
         run: .venv/bin/python tools/build_runtime.py --arch ${{ matrix.arch }}
 
-      # 只重写 staging 产物里的用户可见品牌名；包名/类名/URL 受保护。幂等。
+      # 幂等重刷 staging 磁盘目录品牌（便携 zip 流程用）；zip 内品牌由上一步保证。
       - name: Rebrand staging (DeepTutor -> ThinkBuddy)
         working-directory: desktop-shell
         run: .venv/bin/python tools/rebrand.py
@@ -243,12 +245,12 @@ jobs:
         run: ditto -c -k --keepParent ThinkBuddyDesktop.app ThinkBuddyDesktop-mac-${{ matrix.arch }}.zip
 
       # 仅勾选 release 时，额外把 .app 包成 .dmg 发布到 GitHub Release。
+      # make_dmg.sh 生成标准拖拽安装布局（app + Applications 符号链接），
+      # 文件名自动带 dt<版本>.<北京时间MMddHHmm>（与 Windows 安装包命名对齐）。
       - name: Create DMG (release only)
         if: inputs.release
-        working-directory: desktop-shell/dist
-        run: |
-          hdiutil create -volname "ThinkBuddy" -srcfolder ThinkBuddyDesktop.app \
-            -ov -format UDZO ThinkBuddyDesktop-mac-${{ matrix.arch }}.dmg
+        working-directory: desktop-shell
+        run: bash tools/make_dmg.sh
 
       - name: List outputs
         working-directory: desktop-shell/dist
@@ -266,7 +268,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ThinkBuddyDesktop-mac-${{ matrix.arch }}-dmg
-          path: desktop-shell/dist/ThinkBuddyDesktop-mac-${{ matrix.arch }}.dmg
+          path: desktop-shell/dist/ThinkBuddyDesktop-mac-*.dmg
           if-no-files-found: error
 
   # 统一发布：把 Windows + macOS 的所有包汇总到【同一个】GitHub Release。
@@ -285,6 +287,17 @@ jobs:
         with:
           path: release-artifacts
           merge-multiple: true
+
+      # 汇总双平台更新清单：顶层 = Windows（老客户端兼容），mac.<arch> = macOS。
+      # 客户端 updater.check_latest 按平台读取；发布时把 latest.json 与安装包
+      # 一起上传到更新源（上传顺序铁律：先安装包，后 latest.json）。
+      - name: Build unified latest.json
+        run: |
+          python3 desktop-shell/tools/build_update_manifest.py \
+            --win-exe "release-artifacts/ThinkBuddySetup-dt*.exe" \
+            --mac-dmg "release-artifacts/ThinkBuddyDesktop-mac-arm64-*.dmg" \
+            --mac-dmg "release-artifacts/ThinkBuddyDesktop-mac-x86_64-*.dmg" \
+            --out release-artifacts/latest.json
 
       - name: List release artifacts
         run: ls -lh release-artifacts

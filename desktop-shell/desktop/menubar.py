@@ -63,7 +63,7 @@ def _menu_about(api) -> None:
 
         info = api.about()
         lines = [
-            f"{info['app']}  v{info['app_version']}",
+            f"{APP_NAME} 桌面端：v{info['app_version']}",
             f"ThinkBuddy 引擎：v{info['deeptutor_version']}",
         ]
         if info.get("relay"):
@@ -209,7 +209,11 @@ def _check_updates(api, manual: bool = True) -> None:
             _toast(f"{APP_NAME} 已是最新版本 ✓（v{shown}）")
         return
 
-    # ---- 发现新版本：询问 → 下载校验 → 再确认 → 静默安装 ----
+    # ---- 发现新版本（双平台同流程：询问 → 下载校验 → 再确认 → 静默安装）----
+    # mac 的静默安装由 updater._run_installer_darwin 编排（挂载 dmg → 覆盖
+    # /Applications → 延迟重启）；更新检查走系统钥匙串信任链（见
+    # updater._system_ssl_context），代理环境下也能正常完成。
+
     # MB_OKCANCEL | MB_ICONQUESTION == 0x21；IDOK == 1
     if dialogs.message_box("发现新版本", _update_prompt_text(manifest, installed), 0x21) != 1:
         return
@@ -238,7 +242,7 @@ def _check_updates(api, manual: bool = True) -> None:
     # ThinkBuddyDesktop.exe」，python/node 都能正常关闭），Inno 静默模式
     # 会把被抑制的「无法关闭应用」提示按「取消」处理直接中止——表现为
     # app 已被强杀、新版没装上、也不会重启。走与关窗一致的优雅退出
-    # （停后端进程树、清 app.lock），安装器到场时已无进程可关，装完由
+    # （停后端进程树、释放单实例锁），安装器到场时已无进程可关，装完由
     # [Run] 段自动拉起新版。
     _graceful_exit_for_update(api)
 
@@ -250,10 +254,10 @@ def _graceful_exit_for_update(api) -> None:
     except Exception:  # noqa: BLE001  跨线程销毁窗口失败则直接硬退
         log.exception("graceful quit for update failed; hard exit")
         os._exit(0)
-    # 优雅退出链（webview 退出 → _on_closed → proc.stop → 清锁）正常几秒内
-    # 结束进程；若 15s 后线程还在跑说明链路卡死，硬退兜底。遗留的后端进程
-    # 交给安装器的 Restart Manager 关闭（实测 python/node 均可正常关闭），
-    # 陈旧 app.lock 由下次启动的 _single_instance 自愈。
+    # 优雅退出链（webview 退出 → _on_closed → proc.stop → 释放单实例锁）
+    # 正常几秒内结束进程；若 15s 后线程还在跑说明链路卡死，硬退兜底。遗留的
+    # 后端进程交给安装器的 Restart Manager 关闭（实测 python/node 均可正常
+    # 关闭），单实例锁是命名互斥体，随进程消亡由内核自动释放，无需清理。
     for _ in range(150):
         time.sleep(0.1)
     log.warning("graceful exit timed out; hard exit for update")
@@ -277,6 +281,74 @@ def _auto_check_updates_on_startup(api) -> None:
         _check_updates(api, manual=False)
     except Exception:  # noqa: BLE001
         log.exception("startup auto update check failed")
+
+
+# --------------------------------------------------------------------------- #
+# macOS 应用菜单中文化 ---------------------------------------------------------- #
+def localize_app_menu() -> None:
+    """把 pywebview Cocoa 后端生成的英文应用菜单（第一项）替换为中文。
+
+    必须在主线程调用（配合 AppHelper.callAfter）。动作选择器全部沿用
+    系统标准（orderFrontStandardAboutPanel: / hide: / terminate: 等），
+    仅替换标题文案；「服务」子菜单需 NSApp.setServicesMenu_ 挂回才能用。
+    """
+    if sys.platform != "darwin":
+        return
+    try:
+        import AppKit
+
+        app = AppKit.NSApplication.sharedApplication()
+        main_menu = app.mainMenu()
+        if main_menu is None or main_menu.numberOfItems() < 1:
+            log.warning("app menu localize skipped: no main menu yet")
+            return
+        app_item = main_menu.itemAtIndex_(0)
+
+        def _item(title: str, action: str | None, key: str = ""):
+            it = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                title,
+                AppKit.NSSelectorFromString(action) if action else None,
+                key,
+            )
+            return it
+
+        sub = AppKit.NSMenu.alloc().initWithTitle_(app_item.title() or APP_NAME)
+        sub.addItem_(_item(f"关于 {APP_NAME}", "orderFrontStandardAboutPanel:"))
+        sub.addItem_(AppKit.NSMenuItem.separatorItem())
+
+        services_item = _item("服务", None)
+        services_menu = AppKit.NSMenu.alloc().initWithTitle_("服务")
+        services_item.setSubmenu_(services_menu)
+        sub.addItem_(services_item)
+        app.setServicesMenu_(services_menu)
+
+        sub.addItem_(AppKit.NSMenuItem.separatorItem())
+        hide = _item(f"隐藏 {APP_NAME}", "hide:", "h")
+        sub.addItem_(hide)
+        hide_others = _item("隐藏其他", "hideOtherApplications:", "h")
+        hide_others.setKeyEquivalentModifierMask_(
+            AppKit.NSEventModifierFlagCommand | AppKit.NSEventModifierFlagOption
+        )
+        sub.addItem_(hide_others)
+        sub.addItem_(_item("全部显示", "unhideAllApplications:"))
+        sub.addItem_(AppKit.NSMenuItem.separatorItem())
+        sub.addItem_(_item(f"退出 {APP_NAME}", "terminate:", "q"))
+
+        app_item.setSubmenu_(sub)
+        log.info("mac 应用菜单已中文化")
+    except Exception:  # noqa: BLE001  菜单本地化失败不影响功能
+        log.exception("app menu localize failed")
+
+
+def _localize_app_menu_later() -> None:
+    """后台线程等菜单建好后派发到主线程执行 localize_app_menu。"""
+    time.sleep(3.0)
+    try:
+        from PyObjCTools import AppHelper  # type: ignore  (AppKit 不导出该名字)
+
+        AppHelper.callAfter(localize_app_menu)
+    except Exception:  # noqa: BLE001
+        log.exception("app menu localize schedule failed")
 
 
 # --------------------------------------------------------------------------- #
@@ -343,12 +415,50 @@ def _win_close() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 帮助：打开平台 / 刷新模型 ---------------------------------------------------- #
-def _open_platform(api) -> None:
+# 帮助：打开官网 / 使用文档 / 日志目录 / 刷新模型 --------------------------------- #
+def _open_website() -> None:
+    """打开 ThinkBuddy 官网（文件菜单；URL 走 endpoints 覆盖链，默认官网首页）。"""
     try:
-        api.open_platform()
+        import webbrowser
+
+        from desktop.auth import config as auth_config
+
+        url = auth_config.thinkbuddy_website_url(ROOT) or "https://thinkbuddy.hanyoai.com"
+        webbrowser.open(url)
     except Exception:  # noqa: BLE001
-        log.exception("open platform failed")
+        log.exception("open website failed")
+
+
+def _open_docs() -> None:
+    """打开 ThinkBuddy 使用文档（帮助菜单；官网域名 + ``/docs``）。"""
+    try:
+        import webbrowser
+
+        from desktop.auth import config as auth_config
+
+        base = auth_config.thinkbuddy_website_url(ROOT) or "https://thinkbuddy.hanyoai.com"
+        webbrowser.open(f"{base}/docs")
+    except Exception:  # noqa: BLE001
+        log.exception("open docs failed")
+
+
+def _open_log_dir() -> None:
+    """在系统文件管理器中打开日志目录（帮助菜单）。"""
+    try:
+        log_dir = ROOT / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        if sys.platform == "darwin":
+            import subprocess
+
+            subprocess.Popen(["open", str(log_dir)])
+        elif os.name == "nt":
+            os.startfile(str(log_dir))  # noqa: S606  仅 Windows 可用
+        else:
+            import subprocess
+
+            subprocess.Popen(["xdg-open", str(log_dir)])
+    except Exception:  # noqa: BLE001
+        log.exception("open log dir failed")
 
 
 def _refresh_models(api) -> None:
@@ -368,7 +478,7 @@ def build_native_menu(api) -> list[Menu]:
         Menu(
             "文件",
             [
-                MenuAction("打开 Tokengine 平台", lambda: _open_platform(api)),
+                MenuAction("打开 ThinkBuddy 网站", lambda: _open_website()),
                 MenuAction("刷新可用模型", lambda: _refresh_models(api)),
                 MenuSeparator(),
                 MenuAction("检查更新...", lambda: _check_updates(api)),
@@ -403,7 +513,8 @@ def build_native_menu(api) -> list[Menu]:
         Menu(
             "帮助",
             [
-                MenuAction("打开 Tokengine 平台", lambda: _open_platform(api)),
+                MenuAction("使用文档", lambda: _open_docs()),
+                MenuAction("打开日志目录", lambda: _open_log_dir()),
                 MenuSeparator(),
                 MenuAction(f"关于 {APP_NAME}", lambda: _menu_about(api)),
             ],

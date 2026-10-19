@@ -14,7 +14,7 @@
   （详见 [`docs/tokengine-integration.md`](docs/tokengine-integration.md) 与
   [`docs/adr/ADR-003-login-gate.md`](docs/adr/ADR-003-login-gate.md)）
 - `deeptutor start` 以**隐藏子进程**运行；关闭窗口用 `taskkill /T` 连后端(:8001)+前端(:3782)一起停
-- **单实例**
+- **单实例**（再次启动不重复开窗，而是把已打开的窗口带到前台）
 - 工作区数据在 `~/ThinkBuddy`, 日志落盘 `%LOCALAPPDATA%\ThinkBuddy\logs\app.log`、
 
 ## Tokengine 登录（三步）

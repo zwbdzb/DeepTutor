@@ -16,12 +16,24 @@
 不在 excludes 里去掉 tkinter：mac 上 dialogs.py 的 fallback 用 tkinter.messagebox。
 """
 import os
+import re
 from pathlib import Path
 
 ROOT = Path(SPECPATH)          # build/  (this spec lives in build/)
 PROJECT = ROOT.parent
 ASSETS = PROJECT / "assets"
 DIST = PROJECT / "dist"
+
+# 壳版本（inject_version 在编译前写入 desktop/__init__.py，格式 1.6.14.MMddHHmm）。
+# 写进 Info.plist 的 CFBundleShortVersionString，更新器用它做「本机已装版本」。
+SHELL_VERSION = "1.0"
+try:
+    _m = re.search(r'__version__\s*=\s*"([^"]+)"',
+                   (PROJECT / "desktop" / "__init__.py").read_text(encoding="utf-8"))
+    if _m:
+        SHELL_VERSION = _m.group(1)
+except Exception:
+    pass
 
 datas = [
     (str(ASSETS / "icon.png"), "assets"),
@@ -77,7 +89,7 @@ app = BUNDLE(
     info_plist={
         "CFBundleName": "ThinkBuddy",
         "CFBundleDisplayName": "ThinkBuddy",
-        "CFBundleShortVersionString": "1.0",
+        "CFBundleShortVersionString": SHELL_VERSION,
         "CFBundleExecutable": "ThinkBuddyDesktop",
         "NSHighResolutionCapable": True,
         "LSMinimumSystemVersion": "12.0",

@@ -44,7 +44,7 @@ venv 里的 `pyvenv.cfg`/绝对路径搬迁即坏；embeddable 分发天生可�
 
 ```
 双击 exe
- └─ 单实例检查(app.lock)
+ └─ 单实例检查(Windows=命名互斥体 / macOS=PID 文件；已运行则激活既有窗口后退出)
  └─ create_window(启动画面) → webview.start(...)
      └─ 引导线程:
          1 ensure_runtime()        → (deeptutor_cmd, node_dir)
