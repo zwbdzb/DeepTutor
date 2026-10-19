@@ -3,7 +3,7 @@
 # Windows 与本地 desktop-shell\build\build.ps1 完全等价的三步：
 #   1. 前端 standalone 构建 + prepare_web_package.py -> deeptutor_web/
 #   2. build_runtime.py -> runtime-build/staging (embeddable Python + deeptutor 源码 + Node 22)
-#   3. PyInstaller -> dist\ThinkBuddyDesktop.exe；Inno Setup -> dist\ThinkBuddySetup.exe
+#   3. PyInstaller -> dist\ThinkBuddyDesktop.exe；Inno Setup -> dist\ThinkBuddySetup-<ver>.<ts>.exe
 #
 # macOS（arm64 + x86_64）平行流程，同样是三步：
 #   1. 前端 standalone 构建 + prepare_web_package.py -> deeptutor_web/
@@ -134,7 +134,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ThinkBuddySetup-windows
-          path: desktop-shell/dist/ThinkBuddySetup.exe
+          path: desktop-shell/dist/ThinkBuddySetup-*.exe
           if-no-files-found: error
 
   mac:
@@ -297,7 +297,7 @@ jobs:
           body: |
             ## Windows
             - `ThinkBuddyDesktop.exe` — 便携单文件（含离线运行时）
-            - `ThinkBuddySetup.exe` — 安装包（Inno Setup）
+            - `ThinkBuddySetup-<ver>.<ts>.exe` — 安装包（Inno Setup）
 
             ## macOS
             - `ThinkBuddyDesktop-mac-arm64.dmg` — Apple Silicon
