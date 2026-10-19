@@ -50,8 +50,8 @@ OutputBaseFilename=ThinkBuddySetup
 SetupIconFile=..\assets\icon.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 UninstallDisplayName={#MyAppName}
-; Compression: 默认 lzma2（发布档，体积最小但 ~600MB 压缩要 8-15 分钟）。
-; /DFastCompression 切到 lzma2/fast——开发迭代用，压缩时间缩短到分钟级以内，
+; Compression: 默认 lzma2（发布档，体积最小但慢）。
+; /DFastCompression 切到 lzma2/fast——开发迭代和 CI 用，压缩时间大幅缩短，
 ; 体积代价 +10~15%。build.ps1 的 -FastInstaller 会传这个 define。
 #ifdef FastCompression
 Compression=lzma2/fast
