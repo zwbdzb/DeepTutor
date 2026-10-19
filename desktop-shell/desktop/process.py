@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import signal
 import socket
 import subprocess
 import threading
@@ -166,6 +167,42 @@ def _taskkill_tree(pid: int) -> None:
         )
     except Exception as exc:  # noqa: BLE001
         log.warning("taskkill failed: %s", exc)
+
+
+def _listener_pids_posix(port: int) -> list[int]:
+    """Find PIDs listening on a TCP port via lsof (macOS/Linux）。
+
+    与 Windows 的 _listener_pid 对等：后端/前端孙进程被 detach 成独立
+    进程组，SIGTERM 编排进程够不到它们，只能按端口定位后逐个发信号。
+    """
+    if os.name == "nt":
+        return []
+    try:
+        out = subprocess.run(
+            ["lsof", "-ti", f"tcp:{port}", "-s", "tcp:listen"],
+            capture_output=True, text=True, timeout=3, check=False,
+        ).stdout
+        pids: list[int] = []
+        for line in out.splitlines():
+            try:
+                pids.append(int(line.strip()))
+            except ValueError:
+                continue
+        return pids
+    except Exception as exc:  # noqa: BLE001
+        log.warning("lsof port %s failed: %s", port, exc)
+        return []
+
+
+def _kill_port_listeners_posix(port: int, sig: int) -> None:
+    for pid in _listener_pids_posix(port):
+        try:
+            os.kill(pid, sig)
+            log.info("posix kill(%s) pid=%s on port %s", sig, pid, port)
+        except ProcessLookupError:
+            pass
+        except Exception as exc:  # noqa: BLE001
+            log.warning("posix kill pid=%s failed: %s", pid, exc)
 
 
 class DeepTutorProcess:
@@ -371,8 +408,15 @@ class DeepTutorProcess:
                     except Exception as exc:  # noqa: BLE001
                         log.warning("port kill failed: %s", exc)
         else:
+            # SIGTERM 编排器，让它尽快收尾
             if self.proc and self.proc.poll() is None:
                 self.proc.terminate()
+            # 后端/前端孙进程被 detach 成独立进程组，SIGTERM 编排器够不到
+            # 它们（Windows 靠 taskkill /T；mac 无对等物）。按端口先礼后兵，
+            # 否则要死等编排器优雅收尾，关窗体感拖沓且留孤儿占 8001/3782。
+            if self.proc is not None:
+                _kill_port_listeners_posix(self.backend_port, signal.SIGTERM)
+                _kill_port_listeners_posix(self.frontend_port, signal.SIGTERM)
 
         deadline = time.monotonic() + timeout
         while self.proc and self.proc.poll() is None and time.monotonic() < deadline:
@@ -382,6 +426,10 @@ class DeepTutorProcess:
                 self.proc.kill()
             except Exception:  # noqa: BLE001
                 pass
+        if os.name != "nt" and self.proc is not None:
+            # 兜底：优雅退出超时的孙进程直接 SIGKILL，不留孤儿
+            _kill_port_listeners_posix(self.backend_port, signal.SIGKILL)
+            _kill_port_listeners_posix(self.frontend_port, signal.SIGKILL)
         self._close_handles()
 
     # ------------------------------------------------------------------ #

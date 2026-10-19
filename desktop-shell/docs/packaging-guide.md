@@ -272,6 +272,9 @@ python3 scripts/prepare_web_package.py --skip-build
 # ② 运行时组装 + 版本门禁 + rebrand（mac 必须内嵌 runtime.zip，不加 --no-zip）
 cd desktop-shell
 export BUILD_PY=$(which python3.12)
+# build_runtime 在打 runtime.zip 之前会内置执行 rebrand + 安全自检
+# （2026-10-19 修复：此前 rebrand 在 zip 之后才跑，dmg 里品牌未换）。
+# 之后的 rebrand.py 幂等重刷，主要覆盖 staging 磁盘目录（便携 zip 流程用）。
 .venv/bin/python tools/build_runtime.py --arch $(uname -m)
 .venv/bin/python tools/rebrand.py
 

@@ -486,6 +486,23 @@ def save_source_state(source_root: Path, fingerprint: str, deps_sig: str,
     )
 
 
+def _rebrand_staging(site_packages: Path) -> None:
+    """调用 tools/rebrand.py 对 staging site-packages 做品牌重写 + 安全自检。
+
+    通过文件路径加载，避免对包结构的依赖；self_check 不过会 SystemExit，
+    直接让构建失败（宁可失败，不可把未换牌运行时发出去）。
+    """
+    import importlib.util
+    rebrand_py = Path(__file__).resolve().parent / "rebrand.py"
+    spec = importlib.util.spec_from_file_location("rebrand", rebrand_py)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(mod)
+    log("rebranding staging before zip...")
+    mod.rebrand_root(site_packages)
+    mod.self_check(site_packages)
+
+
 def build(make_zip: bool = False, source_root: Path | None = None,
           force_deeptutor: bool = False, strict_fingerprint: bool = False) -> None:
     source_root = source_root or MONOREPO_SOURCE
@@ -586,6 +603,12 @@ def build(make_zip: bool = False, source_root: Path | None = None,
     if not make_zip:
         log("staging ready at " + str(STAGE / "staging") + " (zip skipped)")
         return
+
+    # 打 zip 前强制重刷品牌（rebrand 幂等）。此前 rebrand 在本脚本之后才跑，
+    # zip 里装的是换牌前的旧内容——mac dmg 出现 EduBuddy/DeepTutor 的根因
+    # （2026-10-19）。必须在 zip 之前执行，失败即中止构建。
+    _rebrand_staging(_py_site_packages(STAGING_PY))
+
     out_zip = DIST / "runtime.zip"
     out_zip.unlink(missing_ok=True)
     with zipfile.ZipFile(out_zip, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:

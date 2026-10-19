@@ -209,23 +209,11 @@ def _check_updates(api, manual: bool = True) -> None:
             _toast(f"{APP_NAME} 已是最新版本 ✓（v{shown}）")
         return
 
-    # ---- 发现新版本 ----
-    if sys.platform == "darwin":
-        # mac 无 Inno 静默安装链路（ADR-006 的安装包是 .exe + 注册表卸载）：
-        # 只提示到官网下载，不做下载/安装。SSL 检查已走系统钥匙串信任链
-        # （见 updater._system_ssl_context），代理环境下也能正常完成检查。
-        from desktop import dialogs
+    # ---- 发现新版本（双平台同流程：询问 → 下载校验 → 再确认 → 静默安装）----
+    # mac 的静默安装由 updater._run_installer_darwin 编排（挂载 dmg → 覆盖
+    # /Applications → 延迟重启）；更新检查走系统钥匙串信任链（见
+    # updater._system_ssl_context），代理环境下也能正常完成。
 
-        dialogs.message_box(
-            "发现新版本",
-            f"发现新版本 v{manifest['version']}\n"
-            f"当前版本：v{installed}\n\n"
-            f"macOS 版请前往官网下载最新安装包。",
-            0x40,  # MB_ICONINFORMATION
-        )
-        return
-
-    # ---- 询问 → 下载校验 → 再确认 → 静默安装 ----
     # MB_OKCANCEL | MB_ICONQUESTION == 0x21；IDOK == 1
     if dialogs.message_box("发现新版本", _update_prompt_text(manifest, installed), 0x21) != 1:
         return
