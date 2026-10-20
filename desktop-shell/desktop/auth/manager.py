@@ -216,13 +216,20 @@ class AuthManager:
     def _claim_first_use_gift(self, access_token: str) -> None:
         if not access_token:
             return
+
+        def claim() -> None:
+            try:
+                result = request_first_use_gift(
+                    cfg.thinkbuddy_website_url(self._root), access_token,
+                )
+                log.info("ThinkBuddy subscription gift status: %s", result.get("status"))
+            except Exception as exc:  # noqa: BLE001
+                log.warning("ThinkBuddy subscription gift request failed: %s", exc)
+
         try:
-            result = request_first_use_gift(
-                cfg.thinkbuddy_website_url(self._root), access_token,
-            )
-            log.info("ThinkBuddy subscription gift status: %s", result.get("status"))
+            threading.Thread(target=claim, name="dt-first-use-gift", daemon=True).start()
         except Exception as exc:  # noqa: BLE001
-            log.warning("ThinkBuddy subscription gift request failed: %s", exc)
+            log.warning("ThinkBuddy subscription gift thread failed to start: %s", exc)
 
     def refresh_models(self) -> dict[str, Any]:
         """重拉 userinfo + /api/status → 重写 model_catalog → 回写账号信息。
