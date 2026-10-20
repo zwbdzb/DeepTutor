@@ -3,24 +3,28 @@
 #   挂载卷里 = ThinkBuddyDesktop.app + 指向 /Applications 的符号链接，
 #   用户双击 dmg 后直接把 app 拖进 Applications 即完成安装。
 #
-# 命名与 Windows 对齐：ThinkBuddyDesktop-mac-<arch>-dt<版本>.<MMddHHmm>.dmg
-# （引擎版本读 deeptutor/__version__.py；时间戳取北京时间，与 build.ps1 同源）。
+# 命名与 Windows 对齐：ThinkBuddyDesktop-mac-<arch>-dt<版本>.dmg
+# 版本来自 inject_version 写入 desktop/__init__.py 的 __version__（<引擎版本>.<MMDDHHmm>），
+# 本脚本不再自行计算时间戳，保证 plist / 文件名 / 清单三处一致。
 #
 # Usage:
 #   bash tools/make_dmg.sh [app_path] [output_dmg]
-#   默认: dist/ThinkBuddyDesktop.app -> dist/ThinkBuddyDesktop-mac-<arch>-dt<ver>.<ts>.dmg
+#   默认: dist/ThinkBuddyDesktop.app -> dist/ThinkBuddyDesktop-mac-<arch>-dt<ver>.dmg
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 APP="${1:-dist/ThinkBuddyDesktop.app}"
 ARCH=$(uname -m)
 
-# 引擎版本（与 inject_version/build.ps1 同源：deeptutor/__version__.py）
-VERSION=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' ../deeptutor/__version__.py | head -1)
-[ -n "$VERSION" ] || VERSION="0.0.0"
-# 北京时间 MMddHHmm（CI runner 时区不定，必须显式指定）
-TIMESTAMP=$(TZ=Asia/Shanghai date +%m%d%H%M)
-DEFAULT_OUT="dist/ThinkBuddyDesktop-mac-${ARCH}-dt${VERSION}.${TIMESTAMP}.dmg"
+# 壳版本（inject_version 已注入 desktop/__init__.py；格式 <引擎版本>.<MMDDHHmm>）
+SHELL_VERSION=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' desktop/__init__.py | head -1)
+if printf '%s' "$SHELL_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]{8}$'; then
+  APP_VERSION="$SHELL_VERSION"
+else
+  echo "ERROR: desktop/__init__.py __version__=$SHELL_VERSION 不符合四段/末段8位；请先 inject_version" >&2
+  exit 1
+fi
+DEFAULT_OUT="dist/ThinkBuddyDesktop-mac-${ARCH}-dt${APP_VERSION}.dmg"
 
 OUT="${2:-$DEFAULT_OUT}"
 
@@ -44,7 +48,6 @@ DMG_NAME=$(basename "$OUT")
 SHA256=$(shasum -a 256 "$OUT" | awk '{print $1}')
 SIZE=$(stat -f%z "$OUT")
 PUBLISHED=$(TZ=Asia/Shanghai date +%Y-%m-%dT%H:%M:%S+08:00)
-APP_VERSION="${VERSION}.${TIMESTAMP}"
 
 cat > "dist/latest-mac-${ARCH}.json" <<EOF
 {

@@ -296,6 +296,10 @@ jobs:
 
       # 不加 --clean：分析缓存（build/ThinkBuddyDesktop-mac/）对几乎不变的壳输入
       # 完全可复用，--clean 每次强制全量重分析，纯浪费 1-3 分钟。
+      - name: Inject shell version
+        working-directory: desktop-shell
+        run: .venv/bin/python tools/inject_version.py
+
       - name: Build .app with PyInstaller
         working-directory: desktop-shell
         run: .venv/bin/python -m PyInstaller --noconfirm build/ThinkBuddyDesktop-mac.spec
