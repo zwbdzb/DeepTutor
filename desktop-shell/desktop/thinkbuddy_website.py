@@ -39,23 +39,45 @@ def checkin(
     if not _PROVIDER_USER_ID.fullmatch(user_id):
         raise ThinkBuddyWebsiteError("invalid provider user id")
 
+    return _post_json(base_url, "/api/v1/checkin", {"provider_user_id": user_id}, timeout)
+
+
+def claim_first_use_gift(
+    base_url: str,
+    access_token: str,
+    timeout: float = 25.0,
+) -> dict[str, Any]:
+    """Request the account gift; eligibility and plan selection belong to the server."""
+    access_token = str(access_token or "").strip()
+    if not access_token:
+        raise ThinkBuddyWebsiteError("OAuth access token is required")
+    return _post_json(base_url, "/api/v1/first-use-gift", {}, timeout, access_token)
+
+
+def _post_json(
+    base_url: str,
+    path: str,
+    payload: dict[str, Any],
+    timeout: float,
+    access_token: str = "",
+) -> dict[str, Any]:
     url = str(base_url or "").strip().rstrip("/")
     if not url:
         raise ThinkBuddyWebsiteError("thinkbuddy-website URL is required")
 
     body = json.dumps(
-        {"provider_user_id": user_id},
+        payload,
         ensure_ascii=True,
         separators=(",", ":"),
     ).encode("utf-8")
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    if access_token:
+        headers["Authorization"] = f"Bearer {access_token}"
     try:
         request = urllib.request.Request(
-            f"{url}/api/v1/checkin",
+            f"{url}{path}",
             data=body,
-            headers={
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-            },
+            headers=headers,
             method="POST",
         )
         with urllib.request.urlopen(request, timeout=timeout) as response:

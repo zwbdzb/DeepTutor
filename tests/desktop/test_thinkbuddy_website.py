@@ -13,7 +13,7 @@ import pytest
 DESKTOP_SHELL = Path(__file__).resolve().parents[2] / "desktop-shell"
 sys.path.insert(0, str(DESKTOP_SHELL))
 
-from desktop.thinkbuddy_website import ThinkBuddyWebsiteError, checkin
+from desktop.thinkbuddy_website import ThinkBuddyWebsiteError, checkin, claim_first_use_gift
 
 
 class FakeResponse:
@@ -103,3 +103,25 @@ def test_checkin_rejects_invalid_response(payload: bytes) -> None:
             checkin("https://website.example.com", "u_314")
 
     assert caught.value.status_code == 502
+
+
+def test_first_use_gift_sends_oauth_access_token_without_client_identity_or_plan() -> None:
+    with patch(
+        "desktop.thinkbuddy_website.urllib.request.urlopen",
+        return_value=FakeResponse(b'{"status":"granted","plan_id":42}'),
+    ) as urlopen:
+        result = claim_first_use_gift("https://website.example.com/", "oauth-access-token")
+
+    request = urlopen.call_args.args[0]
+    assert request.full_url == "https://website.example.com/api/v1/first-use-gift"
+    assert request.method == "POST"
+    assert request.get_header("Authorization") == "Bearer oauth-access-token"
+    assert json.loads(request.data) == {}
+    assert result == {"status": "granted", "plan_id": 42}
+
+
+def test_first_use_gift_requires_oauth_token() -> None:
+    with patch("desktop.thinkbuddy_website.urllib.request.urlopen") as urlopen:
+        with pytest.raises(ThinkBuddyWebsiteError, match="OAuth access token is required"):
+            claim_first_use_gift("https://website.example.com", "")
+    urlopen.assert_not_called()

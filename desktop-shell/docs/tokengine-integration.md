@@ -126,6 +126,28 @@ Content-Type: application/json
 重试。桌面提示会区分 `pending/processing`、`succeeded` 和 `failed`。重复点击由桌面端
 并发锁拦截，同一天重复请求也由服务端返回原签到记录，不会重复记积分。
 
+### 3.4 登录领取订阅
+
+OAuth 登录拿到 `ai_token` 后，桌面端还会向 thinkbuddy-website 请求一次订阅赠送：
+
+```http
+POST <thinkbuddy_website_url>/api/v1/first-use-gift
+Authorization: Bearer <OAuth access_token>
+Content-Type: application/json
+
+{}
+```
+
+已有登录态的用户在启动后台刷新账号时也会请求，使用刷新后的 access token。
+服务器验证用户身份，并按自己的数据库配置决定赠送套餐；客户端不传用户 ID、套餐 ID，
+不保存“已领取”标记，也不检查历史令牌或历史订阅。新老账号通过新功能均可领取一次，
+多设备和后续登录通过服务端领取记录判断。
+
+请求复用 `thinkbuddy_website_url` 配置及现有标准库 HTTP 客户端。服务返回
+`granted`、`already_received`、`disabled` 或待核对状态时只记录状态日志；请求失败不使
+OAuth 登录或模型刷新失败。只配置了手动 AI 令牌的用户没有 OAuth 身份，不会请求赠送。
+thinkbuddy-web 的开关默认关闭，套餐和管理员服务凭据均配置在服务端。
+
 ## 4. 配置与覆盖（联调期指向本地平台）
 
 端点解析优先级：**环境变量 > `<ROOT>/endpoints.json` > 内置默认**

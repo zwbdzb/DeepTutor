@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .. import runtime as rt
+from ..thinkbuddy_website import claim_first_use_gift as request_first_use_gift
 from . import config as cfg
 from . import pkce
 from .catalog import (
@@ -212,6 +213,17 @@ class AuthManager:
                     "relay_base": override, "previous": stored_relay}
 
     # -- 刷新 / 平台入口（右键菜单用）---------------------------------- #
+    def _claim_first_use_gift(self, access_token: str) -> None:
+        if not access_token:
+            return
+        try:
+            result = request_first_use_gift(
+                cfg.thinkbuddy_website_url(self._root), access_token,
+            )
+            log.info("ThinkBuddy subscription gift status: %s", result.get("status"))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("ThinkBuddy subscription gift request failed: %s", exc)
+
     def refresh_models(self) -> dict[str, Any]:
         """重拉 userinfo + /api/status → 重写 model_catalog → 回写账号信息。
 
@@ -236,6 +248,8 @@ class AuthManager:
                     log.warning("刷新时 userinfo 失败（将沿用本地账号）：%s", exc)
             if access_valid:
                 self._store.save(payload)
+            if fresh.get("sub"):
+                self._claim_first_use_gift(access)
             account = dict(payload.get("account") or {})
             account.update({k: v for k, v in fresh.items()
                             if v not in (None, "")})
@@ -422,6 +436,8 @@ class AuthManager:
                 "detail": "userinfo 缺少 ai_token 字段",
             })
             return
+
+        self._claim_first_use_gift(access_token)
 
         # 手机号 / 中继域名：复用 refresh_models 同款推导。
         # 中继域名只来自内置默认 + endpoints.json/env 显式覆盖 + userinfo
