@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
 # 制作标准「拖拽安装」布局的 ThinkBuddy DMG：
-#   挂载卷里 = ThinkBuddyDesktop.app + 指向 /Applications 的符号链接，
+#   挂载卷里 = ThinkBuddy.app + 指向 /Applications 的符号链接，
 #   用户双击 dmg 后直接把 app 拖进 Applications 即完成安装。
 #
-# 命名与 Windows 对齐：ThinkBuddyDesktop-mac-<arch>-dt<版本>.dmg
+# 命名与 Windows 对齐：ThinkBuddy-mac-<arch>-dt<版本>.dmg
+#   注：dmg 文件名不变，仅内部的 .app 改叫 ThinkBuddy.app，
+#   app 名与 Windows 桌面快捷方式一致显示为 ThinkBuddy。
 # 版本来自 inject_version 写入 desktop/__init__.py 的 __version__（<引擎版本>.<MMDDHHmm>），
 # 本脚本不再自行计算时间戳，保证 plist / 文件名 / 清单三处一致。
 #
 # Usage:
 #   bash tools/make_dmg.sh [app_path] [output_dmg]
-#   默认: dist/ThinkBuddyDesktop.app -> dist/ThinkBuddyDesktop-mac-<arch>-dt<ver>.dmg
+#   默认: dist/ThinkBuddy.app -> dist/ThinkBuddy-mac-<arch>-dt<ver>.dmg
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-APP="${1:-dist/ThinkBuddyDesktop.app}"
+APP="${1:-dist/ThinkBuddy.app}"
 ARCH=$(uname -m)
 
 # 壳版本（inject_version 已注入 desktop/__init__.py；格式 <引擎版本>.<MMDDHHmm>）
