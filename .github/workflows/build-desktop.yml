@@ -30,7 +30,7 @@ on:
         type: boolean
         default: false
   push:
-    branches: [main, develop]
+    branches: [main, develop, dev1019]
     paths:
       - "desktop-shell/**"
       - "web/**"
@@ -304,16 +304,11 @@ jobs:
         working-directory: desktop-shell
         run: .venv/bin/python -m PyInstaller --noconfirm build/ThinkBuddyDesktop-mac.spec
 
-      # artifact 保持 zip（和 Windows 一致，Actions 构建结果即 zip）。
-      - name: Zip .app bundle
-        working-directory: desktop-shell/dist
-        run: ditto -c -k --keepParent ThinkBuddyDesktop.app ThinkBuddyDesktop-mac-${{ matrix.arch }}.zip
-
-      # 仅勾选 release 时，额外把 .app 包成 .dmg 发布到 GitHub Release。
+      # mac 只出 dmg，不打 zip——日常 push 和 release 均使用 dmg，
+      # 与 Windows Inno 安装包对标（都是"安装包"而非"压缩包"）。
       # make_dmg.sh 生成标准拖拽安装布局（app + Applications 符号链接），
       # 文件名自动带 dt<版本>.<北京时间MMddHHmm>（与 Windows 安装包命名对齐）。
-      - name: Create DMG (release only)
-        if: inputs.release
+      - name: Create DMG
         working-directory: desktop-shell
         run: bash tools/make_dmg.sh
 
@@ -321,15 +316,7 @@ jobs:
         working-directory: desktop-shell/dist
         run: ls -lh ThinkBuddyDesktop-mac-*
 
-      - name: Upload mac zip
-        uses: actions/upload-artifact@v4
-        with:
-          name: ThinkBuddyDesktop-mac-${{ matrix.arch }}-zip
-          path: desktop-shell/dist/ThinkBuddyDesktop-mac-${{ matrix.arch }}.zip
-          if-no-files-found: error
-
-      - name: Upload mac dmg (release only)
-        if: inputs.release
+      - name: Upload mac dmg
         uses: actions/upload-artifact@v4
         with:
           name: ThinkBuddyDesktop-mac-${{ matrix.arch }}-dmg
@@ -374,8 +361,8 @@ jobs:
           name: ThinkBuddy Desktop build ${{ github.run_number }}
           body: |
             ## Windows
-            - `ThinkBuddyDesktop.exe` — 便携单文件（含离线运行时）
             - `ThinkBuddySetup-<ver>.<ts>.exe` — 安装包（Inno Setup）
+            - `ThinkBuddyDesktop.exe` — 便携单文件（含离线运行时）
 
             ## macOS
             - `ThinkBuddyDesktop-mac-arm64.dmg` — Apple Silicon
@@ -383,9 +370,15 @@ jobs:
 
             **macOS 首次打开方式**（未签名应用绕过 Gatekeeper）：
             1. 下载对应架构的 `ThinkBuddyDesktop-mac-<arch>.dmg` 并双击挂载
-            2. 把 `ThinkBuddyDesktop.app` 拖入「应用程序」
+            2. 把 `ThinkBuddy.app` 拖入「应用程序」
             3. **右键** → 「打开」→ 弹窗点「仍要打开」
             4. 之后双击即可正常启动
 
             首次启动会自解压运行时（python + node），可能需要 10-30 秒。
-          files: release-artifacts/*
+          # 只发布安装包与 dmg；mac 的 .zip 仅作为 CI 构建 artifact 保留，
+          # 不进 GitHub Release（避免 release 页出现多余 zip）。
+          files: |
+            release-artifacts/ThinkBuddySetup-*.exe
+            release-artifacts/ThinkBuddyDesktop.exe
+            release-artifacts/ThinkBuddyDesktop-mac-arm64-*.dmg
+            release-artifacts/ThinkBuddyDesktop-mac-x86_64-*.dmg
