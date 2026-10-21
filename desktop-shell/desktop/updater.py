@@ -336,7 +336,7 @@ def download(
 def _run_installer_darwin(dmg_path: str) -> None:
     """macOS 静默更新：detached sh 脚本编排（本进程随后自行优雅退出）。
 
-    时序：等旧进程退场 → 挂载 dmg → ditto 覆盖 /Applications/ThinkBuddyDesktop.app
+    时序：等旧进程退场 → 挂载 dmg → ditto 覆盖 /Applications/ThinkBuddy.app
     → 卸载 → 延迟拉起新版（给文件系统/安全扫描留缓冲，对齐 Windows
     「安装器不要立刻 Exec 新壳」的教训）。关键节点写 <dmg名>.update.log。
     dmg 由 urllib 下载、hdiutil 挂载，均不经过 LaunchServices，不会带
@@ -344,7 +344,7 @@ def _run_installer_darwin(dmg_path: str) -> None:
     """
     dmg = Path(dmg_path).resolve()
     update_log = dmg.parent / (dmg.stem + ".update.log")
-    app_name = "ThinkBuddyDesktop.app"
+    app_name = "ThinkBuddy.app"
     script = "\n".join([
         "set -u",
         'DMG="$1"; LOG="$2"',

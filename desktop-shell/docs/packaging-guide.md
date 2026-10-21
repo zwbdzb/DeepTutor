@@ -238,7 +238,7 @@ cd D:\studio\DeepTutor\desktop-shell
 
 ## 9. macOS 打包（2026-10-16 起）
 
-mac 没有 Inno Setup 安装包环节，产物是 `dist/ThinkBuddyDesktop.app`
+mac 没有 Inno Setup 安装包环节，产物是 `dist/ThinkBuddy.app`
 （+ 手动 zip/dmg 分发）。运行时组装、版本门禁、rebrand 与 Windows 完全
 共用同一套脚本。
 
@@ -288,13 +288,13 @@ export BUILD_PY=$(which python3.12)
 .venv/bin/python tools/inject_version.py --restore
 ```
 
-产物：`desktop-shell/dist/ThinkBuddyDesktop.app`。分发打包：
+产物：`desktop-shell/dist/ThinkBuddy.app`。分发打包（dmg/zip 文件名保留，仅内部 .app 叫 ThinkBuddy.app）：
 
 ```bash
 cd dist
-ditto -c -k --keepParent ThinkBuddyDesktop.app ThinkBuddyDesktop-mac-x86_64.zip
+ditto -c -k --keepParent ThinkBuddy.app ThinkBuddyDesktop-mac-x86_64.zip
 # 或
-hdiutil create -volname "ThinkBuddy" -srcfolder ThinkBuddyDesktop.app \
+hdiutil create -volname "ThinkBuddy" -srcfolder ThinkBuddy.app \
   -ov -format UDZO ThinkBuddyDesktop-mac-x86_64.dmg
 ```
 
@@ -314,7 +314,7 @@ hdiutil create -volname "ThinkBuddy" -srcfolder ThinkBuddyDesktop.app \
 ### 9.4 mac 自检清单
 
 1. `VERSION GATE OK` 门禁日志（与 Windows 同一关）；
-2. `dist/ThinkBuddyDesktop.app` 存在且时间戳是刚刚；
+2. `dist/ThinkBuddy.app` 存在且时间戳是刚刚；
 3. 启动后日志 `=== ThinkBuddy v<引擎版本>.<时间戳> starting ===`（例
    `v1.6.15.10161557`）——引擎版本取自 `deeptutor/__version__.py`，时间戳为
    构建时刻；版本号只有裸引擎版本、没带时间戳 = 忘了跑 `inject_version.py`；

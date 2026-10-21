@@ -1,12 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for ThinkBuddyDesktop.app (macOS arm64 + x86_64, onedir + BUNDLE).
+"""PyInstaller spec for ThinkBuddy.app (macOS arm64 + x86_64, onedir + BUNDLE).
 
 与 Windows 版 ``ThinkBuddyDesktop.spec`` 平行：
   * 入口仍是 ``desktop/main.py``（壳代码已平台化，mac 上 install_windows_shell_menu
     返回 False，走 pywebview Cocoa 后端 + 系统标准标题栏）
   * hiddenimports 改用 ``webview.platforms.cocoa``（WKWebView）
   * icon 用 ``.icns``（CI inline 生成，不签入仓库；本地开发可手动生成）
-  * 产出 ``dist/ThinkBuddyDesktop.app``（BUNDLE，onedir；onefile 在 mac 上不支持 BUNDLE）
+  * 产出 ``dist/ThinkBuddy.app``（BUNDLE，onedir；onefile 在 mac 上不支持 BUNDLE）
   * runtime.zip 仍内嵌（mac 上 build_runtime.py 不带 --no-zip，shell 首启自解压）
   * 架构由 CI runner + build_runtime.py --arch 决定：
       arm64 job → macos-15 (Apple Silicon) + --arch arm64
@@ -69,7 +69,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,   # onedir 模式：二进制放进 .app/Contents/MacOS
-    name="ThinkBuddyDesktop",
+    name="ThinkBuddy",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -83,14 +83,14 @@ app = BUNDLE(
     exe,
     a.binaries,
     a.datas,
-    name="ThinkBuddyDesktop.app",
+    name="ThinkBuddy.app",
     icon=str(icon_path) if icon_path.exists() else None,
     bundle_identifier="com.thinkbuddy.desktop",
     info_plist={
         "CFBundleName": "ThinkBuddy",
         "CFBundleDisplayName": "ThinkBuddy",
         "CFBundleShortVersionString": SHELL_VERSION,
-        "CFBundleExecutable": "ThinkBuddyDesktop",
+        "CFBundleExecutable": "ThinkBuddy",
         "NSHighResolutionCapable": True,
         "LSMinimumSystemVersion": "12.0",
     },
