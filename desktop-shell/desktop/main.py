@@ -18,6 +18,7 @@ Closing the window terminates the whole deeptutor process tree.
 """
 from __future__ import annotations
 
+from collections import deque
 import json
 import logging
 import logging.handlers
@@ -27,7 +28,6 @@ import threading
 import time
 import uuid
 import webbrowser
-from collections import deque
 
 from desktop import (
     APP_NAME,
@@ -40,22 +40,23 @@ from desktop import (
 from desktop.auth import AuthManager
 from desktop.auth import config as auth_config
 from desktop.checkin import CheckinCoordinator, checkin_message
-from desktop.inject import ToastInjector, AccountChipInjector
+from desktop.engine_log_tail import EngineLogTail
+from desktop.inject import AccountChipInjector, ToastInjector
 from desktop.menubar import _auto_check_updates_on_startup, build_native_menu
 from desktop.native_menu_backend import (
     configure_account_chip,
     install_windows_shell_menu,
     set_account_chip_hidden,
 )
-from desktop.process import DeepTutorProcess, DEFAULT_FRONTEND_PORT
-from desktop.engine_log_tail import EngineLogTail
+from desktop.process import DEFAULT_FRONTEND_PORT, DeepTutorProcess
+import desktop.runtime as rt
+from desktop.splash import splash_html
 from desktop.telemetry_reporter import (
     TelemetryReporter,
     load_or_create_device_id,
+    os_description,
     truncate_message,
 )
-import desktop.runtime as rt
-from desktop.splash import splash_html
 from desktop.titlebar_account import AccountStatusSync
 
 log = logging.getLogger("dt.main")
@@ -447,19 +448,16 @@ def bootstrap(window, api: Api, auth: AuthManager) -> None:
         _shared["proc"] = proc
         proc.start()
 
-        # 3.5 遥测最小闭环（2026-10-21 定）：只采 error（+退出钩子 app_exit），
-        #     直报不走本地队列。error 数据源 = 引擎 JSONL 增量 tail——引擎的
-        #     deeptutor.jsonl 是结构化事实源（level 独立字段），壳 app.log 的
-        #     转发副本级别已混淆，不作为数据源。login 事件挂钩在 AuthManager
-        #     登录流程（后续接入，reporter 接口已就绪）。
+        # 3.5 直报不走本地队列。错误数据来自引擎 JSONL 增量 tail。
         reporter = TelemetryReporter(
             auth_config.telemetry_url(rt.ROOT),
             {
                 "device_id": load_or_create_device_id(home),
                 "session_id": str(uuid.uuid4()),
                 "app_ver": __version__,
-                "os": sys.platform,
+                "os": os_description(),
             },
+            access_token=auth.telemetry_access_token,
         )
         _shared["reporter"] = reporter
         _shared["boot_t0"] = time.monotonic()
@@ -507,6 +505,10 @@ def bootstrap(window, api: Api, auth: AuthManager) -> None:
                     log.warning("Tokengine refresh skipped or failed")
             except Exception:
                 log.exception("Tokengine boot refresh failed")
+            finally:
+                # One event per launch; wait for the existing background token
+                # refresh so saved sessions can be identified after a restart.
+                reporter.report("app_start")
 
         threading.Thread(target=_boot_refresh, daemon=True, name="dt-boot-refresh").start()
 
@@ -619,7 +621,12 @@ def main() -> int:
     webview.settings["SHOW_DEFAULT_MENUS"] = False
 
     frontend_url = f"http://127.0.0.1:{DEFAULT_FRONTEND_PORT}"
-    auth = AuthManager()
+    def _on_login(access_token: str) -> None:
+        reporter = _shared.get("reporter")
+        if reporter is not None:
+            reporter.report("login", access_token=access_token)
+
+    auth = AuthManager(on_login=_on_login)
     api = Api(
         frontend_url,
         auth,

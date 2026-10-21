@@ -5,10 +5,11 @@ main.py 的 Api 桥、bootstrap 门控只与它交互。
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 import logging
-import time
-import threading
 from pathlib import Path
+import threading
+import time
 from typing import Any, Optional
 
 from .. import runtime as rt
@@ -31,10 +32,14 @@ GATE_READY = "ready"      # 已有可用令牌，直接进
 
 
 class AuthManager:
-    def __init__(self, root: Optional[Path] = None, home: Optional[Path] = None) -> None:
+    def __init__(
+        self, root: Optional[Path] = None, home: Optional[Path] = None,
+        *, on_login: Callable[[str], None] | None = None,
+    ) -> None:
         self._root = root or rt.ROOT
         self._home = home or rt.default_workspace()
         self._store = TokenStore(self._root)
+        self._on_login = on_login
 
         # 端点优先级：环境变量 > <root>/endpoints.json > 内置默认。
         # endpoints.json 让打包版无需重建即可指向本地平台（联调期用）。
@@ -90,6 +95,17 @@ class AuthManager:
         if not isinstance(raw, dict):
             return ""
         return str(raw.get("sub") or "").strip()
+
+    def telemetry_access_token(self) -> str:
+        """只读取本地 OAuth 凭证；不刷新、不联网，不使用 AI 业务令牌。"""
+        payload = self._store.load()
+        try:
+            expires_at = float(payload.get("expires_at") or 0)
+        except (TypeError, ValueError):
+            return ""
+        if expires_at and expires_at <= time.time():
+            return ""
+        return str(payload.get("access_token") or "")
 
     def status(self) -> dict[str, Any]:
         payload = self._store.load()
@@ -462,6 +478,12 @@ class AuthManager:
             "relay_source": relay_source,
         }
         self._store.save(payload)
+
+        if self._on_login is not None:
+            try:
+                self._on_login(access_token)
+            except Exception:  # noqa: BLE001 — telemetry must never fail login
+                log.debug("login report callback failed")
 
         # 落地到 DeepTutor：写业务令牌 + 中继域名 + 模型列表。
         # models 来自中继 /v1/models（网关当前暴露的全量名单，每项自带

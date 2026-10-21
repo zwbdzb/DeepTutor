@@ -1,7 +1,7 @@
 """Telemetry event reporter — direct HTTPS report, no local queue.
 
 设计（2026-10-21 定，详见会话规划）：
-- 只承载**低频**事件（当前：error / app_exit；login 预留），直接 POST 到
+- 只承载**低频**事件（app_start / login / error / app_exit），直接 POST 到
   服务端 ``POST /v1/events``（批量数组协议，当前单次一条）——将来高频
   turn 事件上本地队列时，服务端协议层零改动。
 - fire-and-forget：每事件一个 daemon 线程，**绝不阻塞调用方**；任何失败
@@ -20,20 +20,37 @@
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 import json
 import logging
-import os
+from pathlib import Path
+import platform
 import threading
 import time
+from typing import Any
 import urllib.request
 import uuid
-from pathlib import Path
-from typing import Any
 
 log = logging.getLogger("dt.telemetry")
 
 _DEVICE_ID_FILE = "telemetry_device_id"
 _MESSAGE_MAX_CHARS = 200
+
+
+def os_description() -> str:
+    """系统名称和版本合并上报，不采集主机名或单独的架构字段。"""
+    system = platform.system()
+    if system == "Darwin":
+        return f"macOS {platform.mac_ver()[0] or platform.release()}"
+    if system == "Windows":
+        return f"Windows {platform.release()} ({platform.version()})"
+    return f"{system} {platform.release()}".strip() or "unknown"
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # Never forward OAuth credentials or report contents to a redirect target.
+        return None
 
 
 def load_or_create_device_id(home: Path) -> str:
@@ -73,6 +90,7 @@ class TelemetryReporter:
         endpoint: str,
         base_props: dict[str, Any],
         *,
+        access_token: Callable[[], str] | None = None,
         timeout: float = 4.0,
         flush_timeout: float = 1.0,
         error_rate_limit: int = 50,
@@ -81,6 +99,7 @@ class TelemetryReporter:
     ) -> None:
         self._endpoint = (endpoint or "").rstrip("/")
         self._base = dict(base_props)
+        self._access_token = access_token or (lambda: "")
         self._timeout = timeout
         self._flush_timeout = flush_timeout
         self._error_rate_limit = error_rate_limit
@@ -99,34 +118,51 @@ class TelemetryReporter:
         return bool(self._endpoint)
 
     # ------------------------------------------------------------------ #
-    def report(self, name: str, props: dict[str, Any] | None = None) -> None:
+    def report(
+        self, name: str, props: dict[str, Any] | None = None, *, access_token: str | None = None
+    ) -> None:
         """Fire-and-forget 上报；任何路径都不抛异常、不阻塞调用方。"""
         if not self.enabled:
             return
-        thread = threading.Thread(
-            target=self._post,
-            args=(name, dict(props or {})),
-            daemon=True,
-            name="dt-telemetry",
-        )
-        thread.start()
+        try:
+            # Snapshot identity before scheduling: switching accounts must not
+            # attribute an older event to the new account.
+            token = self._access_token() if access_token is None else access_token
+            thread = threading.Thread(
+                target=self._post,
+                args=(name, dict(props or {}), token),
+                daemon=True,
+                name="dt-telemetry",
+            )
+            thread.start()
+        except Exception:  # noqa: BLE001
+            with self._lock:
+                self._lost += 1
+            log.debug("telemetry scheduling failed")
 
     # ------------------------------------------------------------------ #
     def flush_exit(self, name: str, props: dict[str, Any] | None = None) -> None:
         """退出钩子专用：同步短超时发一条（app_exit 每会话仅一次，值得等）。"""
         if not self.enabled:
             return
-        self._post_sync(name, dict(props or {}))
-
-    # ------------------------------------------------------------------ #
-    def _post(self, name: str, props: dict[str, Any]) -> None:
         try:
-            self._post_sync(name, props)
-        except Exception:  # noqa: BLE001 — fire-and-forget 铁律：绝不外泄异常
-            log.debug("telemetry post raised unexpectedly", exc_info=True)
+            self._post(name, dict(props or {}), self._access_token(), timeout=self._flush_timeout)
+        except Exception:  # noqa: BLE001
+            log.debug("telemetry exit report failed")
 
     # ------------------------------------------------------------------ #
-    def _post_sync(self, name: str, props: dict[str, Any]) -> None:
+    def _post(
+        self, name: str, props: dict[str, Any], token: str, *, timeout: float | None = None
+    ) -> None:
+        try:
+            self._post_sync(name, props, token, timeout=timeout)
+        except Exception:  # noqa: BLE001 — fire-and-forget 铁律：绝不外泄异常
+            log.debug("telemetry post raised unexpectedly")
+
+    # ------------------------------------------------------------------ #
+    def _post_sync(
+        self, name: str, props: dict[str, Any], token: str, *, timeout: float | None = None
+    ) -> None:
         now = time.monotonic()
         with self._lock:
             if self._closed:
@@ -149,26 +185,30 @@ class TelemetryReporter:
         }
         payload = json.dumps({"events": [event]}).encode("utf-8")
         try:
+            headers = {"Content-Type": "application/json"}
+            if token:
+                headers["Authorization"] = "Bearer " + token
             request = urllib.request.Request(
                 self._endpoint,
                 data=payload,
-                headers={"Content-Type": "application/json"},
+                headers=headers,
                 method="POST",
             )
-            with urllib.request.urlopen(request, timeout=self._timeout) as response:
+            opener = urllib.request.build_opener(_NoRedirect())
+            with opener.open(request, timeout=self._timeout if timeout is None else timeout) as response:
                 response.read(1024)
             with self._lock:
                 self._fails = 0
             log.debug("telemetry sent: %s", name)
-        except OSError as exc:
+        except OSError:
             with self._lock:
                 self._fails += 1
-                self._lost += 1
+                self._lost += lost_before + 1
                 if self._fails >= self._fail_threshold:
                     self._muted_until = time.monotonic() + self._mute_seconds
                     log.debug(
-                        "telemetry muted for %ss after %d consecutive failures (%s)",
-                        self._mute_seconds, self._fails, exc,
+                        "telemetry muted for %ss after %d consecutive failures",
+                        self._mute_seconds, self._fails,
                     )
 
     # ------------------------------------------------------------------ #
