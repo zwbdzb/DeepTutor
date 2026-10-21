@@ -1,8 +1,15 @@
-"""Manage the `deeptutor start` subprocess (backend :8001 + frontend :3782)."""
+"""Manage the `deeptutor start` subprocess.
+
+端口策略（2026-10-20 定）：壳托管模式（DEEPTUTOR_SHELL_MANAGED=1）下后端口由
+launcher 让内核 bind(:0) 分配（ephemeral，零冲突），前端口由壳在 spawn 前
+bind 探测选定（3782 固定优先、被外部占用时向上回退）并经 FRONTEND_PORT env
+注入；实际后端口从子进程 banner 行回读，供 stop() 的端口清扫兜底。
+"""
 from __future__ import annotations
 
 import logging
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -22,9 +29,33 @@ EMBED_INVOKE = (
 )
 
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
-DEFAULT_BACKEND_PORT = 8001
+DEFAULT_BACKEND_PORT = 8001  # legacy sweep target; the live port is OS-assigned in shell-managed mode
 DEFAULT_FRONTEND_PORT = 3782
 FRONTEND_PATH = "/"  # health-probe path on the frontend server
+SHELL_MANAGED_ENV = "DEEPTUTOR_SHELL_MANAGED"
+# 后端 banner 行回读：zh "后端       http://127.0.0.1:PORT" / en "Backend  ..."
+BACKEND_URL_PATTERN = re.compile(r"http://127\.0\.0\.1:(\d+)")
+
+# 已知异常退出码的机制解读（取证用）。键一律按无符号 32 位归一。
+# 依据：2026-10-20 用户机 app.log 实证 + Windows NTSTATUS 文档。
+_EXIT_CODE_HINTS = {
+    0x00000001: "进程被外部 TerminateProcess 结束（taskkill /F、任务管理器、"
+                "安全软件拦截）或自行 process.exit(1)；进程自身零输出 = 外杀特征",
+    0x40010004: "DBG_TERMINATE_PROCESS：系统关机/控制台控制事件强制终止"
+                "（0xC000013A CTRL_C 同族），常伴随整机重启",
+    0xC000013A: "STATUS_CONTROL_C_EXIT：收到 CTRL+C / CTRL_BREAK 控制台事件",
+    0xC0000005: "STATUS_ACCESS_VIOLATION：进程自身崩溃（内存访问越界）",
+    0xC0000409: "STATUS_STACK_BUFFER_OVERRUN：进程自身崩溃（栈溢出保护触发）",
+}
+
+
+def describe_exit_code(code: int) -> str:
+    """Human-readable mechanism hint for an abnormal Windows exit code."""
+    try:
+        normalized = int(code) & 0xFFFFFFFF
+    except (TypeError, ValueError):
+        return ""
+    return _EXIT_CODE_HINTS.get(normalized, "")
 
 
 def _as_cmd(deeptutor) -> list[str]:
@@ -98,6 +129,37 @@ def _http_probe(url: str, timeout: float = 2.0) -> tuple[bool, int | None]:
             return True, 200
     except Exception:  # noqa: BLE001 - any failure means "not ready yet"
         return False, None
+
+
+def _port_free(port: int) -> bool:
+    """bind 探测：此刻能否在该端口监听（内核原子裁决，无 TOCTOU 时点快照问题）。
+
+    connect 探测回答「有没有人在听」，这里回答「能不能 bind」——才是选口真正
+    要的判定。nginx [::]:8001 事件（2026-10-20）实证了缺口：Windows 默认
+    V6ONLY=1 下，外部进程只监听 [::]:P 不妨碍 0.0.0.0:P bind 成功，但浏览器
+    解析 localhost 优先走 ::1，会撞上别人的服务——因此 IPv4/IPv6 双栈都必须
+    空闲。socket 选项按平台对齐 asyncio/uvicorn 的真实 bind 行为。
+    """
+    probes: list[tuple[int, str]] = [(socket.AF_INET, "0.0.0.0")]
+    try:
+        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM):
+            pass
+        probes.append((socket.AF_INET6, "::"))
+    except OSError:
+        pass  # 无 IPv6 栈：IPv4 判定即权威
+    for family, host in probes:
+        sock = socket.socket(family, socket.SOCK_STREAM)
+        try:
+            if os.name == "nt":
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            else:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind((host, port))
+        except OSError:
+            return False
+        finally:
+            sock.close()
+    return True
 
 
 # --------------------------------------------------------------------------- #
@@ -231,6 +293,7 @@ class DeepTutorProcess:
         self.child_log_path: Path | None = None
         self.frontend_ready = threading.Event()
         self.frontend_launching = threading.Event()
+        self._stopping = False  # 主动关停标记：监督线程据此放弃自动拉起
 
     # ------------------------------------------------------------------ #
     @property
@@ -295,6 +358,31 @@ class DeepTutorProcess:
                 _taskkill_tree(pid)
 
     # ------------------------------------------------------------------ #
+    def _select_frontend_port(self) -> int:
+        """前端口选口：3782 固定优先，被外部进程占用时向上回退（bind 探测）。
+
+        清场（_kill_stale_listeners）只处理本运行时孤儿，所以走到这里仍被
+        占用的端口必然属于外部进程，直接换口而不是失败。后端口不在这里定：
+        壳托管模式下 launcher 让内核 bind(:0) 分配，前端代理经 spawn env
+        握手跟随后端口，壳只需盯住自己要加载的前端 URL。
+        """
+        preferred = DEFAULT_FRONTEND_PORT
+        for candidate in range(preferred, min(preferred + 200, 65536)):
+            if _port_free(candidate):
+                if candidate != preferred:
+                    log.warning(
+                        "frontend port %s held by a foreign process; "
+                        "falling back to %s",
+                        preferred, candidate,
+                    )
+                return candidate
+        log.warning(
+            "no free port at or above %d; keeping %d and letting the child report",
+            preferred, preferred,
+        )
+        return preferred
+
+    # ------------------------------------------------------------------ #
     def start(self) -> None:
         """Spawn `deeptutor start --home <ws> --no-browser` as a hidden child."""
         self.home.mkdir(parents=True, exist_ok=True)
@@ -306,6 +394,19 @@ class DeepTutorProcess:
 
         # 启动前清场：别让上次异常退出留下的孤儿把端口冲突顶到子进程面前。
         self._kill_stale_listeners()
+        # 前端口选口（bind 探测，外部占用向上回退）；清场之后执行，刚杀掉的
+        # 本应用孤儿端口会回到空闲态、优先复用。
+        self.frontend_port = self._select_frontend_port()
+        # 壳托管标记：launcher 据此让内核为后端分配 ephemeral 端口（bind :0），
+        # 彻底消除后端口冲突；前端经 FRONTEND_PORT 显式注入，壳与子进程天然一致。
+        env[SHELL_MANAGED_ENV] = "1"
+        env["FRONTEND_PORT"] = str(self.frontend_port)
+
+        # 监督线程用 _stopping 区分「主动关停」与「意外死亡」；每次 start
+        # （含监督线程的自动拉起）都回到运行态，并复位就绪事件的陈旧状态。
+        self._stopping = False
+        self.frontend_ready.clear()
+        self.frontend_launching.clear()
 
         cmd = self.deeptutor_cmd + [
             "start",
@@ -315,7 +416,22 @@ class DeepTutorProcess:
         log.info("spawn: %s", " ".join(cmd))
         self.child_log_path = self.home / "logs" / "deeptutor-child.log"
         self.child_log_path.parent.mkdir(parents=True, exist_ok=True)
-        self._child_out = self.child_log_path.open("wb")
+        # 证据保全：追加而非截断（"wb" 曾把上一会话的临终输出连同崩溃取证
+        # 一起抹掉）。超过 8MB 轮转成 .old，防止无限膨胀。
+        try:
+            if (
+                self.child_log_path.exists()
+                and self.child_log_path.stat().st_size > 8 * 1024 * 1024
+            ):
+                rotated = self.child_log_path.with_name(
+                    self.child_log_path.name + ".old"
+                )
+                rotated.unlink(missing_ok=True)
+                self.child_log_path.replace(rotated)
+                log.info("rotated %s -> %s", self.child_log_path.name, rotated.name)
+        except OSError:
+            log.exception("child log rotation failed; appending anyway")
+        self._child_out = self.child_log_path.open("ab")
         self.proc = subprocess.Popen(
             cmd,
             cwd=str(self.home),
@@ -370,6 +486,103 @@ class DeepTutorProcess:
                 )
 
     # ------------------------------------------------------------------ #
+    def supervise(
+        self,
+        *,
+        on_event=None,
+        max_restarts: int = 3,
+        backoff: float = 5.0,
+        stability_window: float = 600.0,
+    ) -> threading.Thread:
+        """稳态监督：子进程意外退出时自动拉起，恢复后通知壳重载页面。
+
+        背景（2026-10-20 用户机实证）：前端 node / 后端 uvicorn 可被外部
+        TerminateProcess（安全软件、任务管理器、taskkill）或系统关机事件
+        静默杀死；launcher 检测到后停掉整个子树退出，而壳若无所知，
+        WebView 停在 ERR_CONNECTION_REFUSED 死页上——用户只能干等或重启
+        应用。此线程把「死页挂一小时」变成「自愈几秒」。
+
+        策略：意外退出 → stop() 清树 → start() 重新 spawn → wait_ready；
+        最多 max_restarts 次，指数退避 backoff×次数；服务稳定运行超过
+        stability_window 秒后重置计数（偶发外杀不会耗尽预算，崩溃循环
+        仍有界）。
+
+        on_event(kind, message)：kind ∈ child_exit / restarting /
+        restart_failed / recovered / gave_up，供壳做 UI 提示与页面重载。
+        """
+        def _emit(kind: str, message: str) -> None:
+            if on_event is None:
+                return
+            try:
+                on_event(kind, message)
+            except Exception:  # noqa: BLE001
+                log.exception("supervise on_event callback failed")
+
+        def _loop() -> None:
+            restarts = 0
+            stable_since: float | None = None
+            while not self._stopping:
+                proc = self.proc
+                if proc is None:
+                    return
+                rc = proc.poll()
+                if rc is None:
+                    time.sleep(2.0)
+                    continue
+                if self._stopping:
+                    return
+                # 服务已稳定跑过一整个窗口期才重置重试预算：崩溃循环仍有界
+                now = time.monotonic()
+                if stable_since is not None and now - stable_since >= stability_window:
+                    restarts = 0
+                log.error(
+                    "deeptutor exited unexpectedly (rc=%s)%s",
+                    rc,
+                    f"; {describe_exit_code(rc)}" if describe_exit_code(rc) else "",
+                )
+                _emit("child_exit", f"本地服务意外退出（退出码 {rc}）")
+                gave_up = False
+                while restarts < max_restarts and not self._stopping:
+                    restarts += 1
+                    _emit(
+                        "restarting",
+                        f"正在自动恢复本地服务（第 {restarts}/{max_restarts} 次）…",
+                    )
+                    log.info(
+                        "supervise: restarting deeptutor (attempt %d/%d)",
+                        restarts, max_restarts,
+                    )
+                    try:
+                        self.stop()
+                        self.start()
+                        self.wait_ready(timeout=120.0)
+                    except Exception as exc:  # noqa: BLE001
+                        log.exception("supervise: restart attempt %d failed", restarts)
+                        _emit("restart_failed", f"自动恢复失败：{exc}")
+                        deadline = time.monotonic() + backoff * restarts
+                        while time.monotonic() < deadline and not self._stopping:
+                            time.sleep(0.5)
+                        continue
+                    stable_since = time.monotonic()
+                    log.info("supervise: recovered after %d restart(s)", restarts)
+                    _emit("recovered", "本地服务已恢复")
+                    break
+                else:
+                    if not self._stopping:
+                        gave_up = True
+                if gave_up:
+                    log.error("supervise: giving up after %d restarts", max_restarts)
+                    _emit(
+                        "gave_up",
+                        "本地服务多次自动恢复失败，请关闭窗口后重新打开 ThinkBuddy",
+                    )
+                    return
+
+        thread = threading.Thread(target=_loop, daemon=True, name="dt-supervise")
+        thread.start()
+        return thread
+
+    # ------------------------------------------------------------------ #
     def stop(self, timeout: float = 10.0) -> None:
         """Terminate the whole process tree (backend + next.js server).
 
@@ -378,6 +591,8 @@ class DeepTutorProcess:
         orphans behind. We therefore also re-scan the known ports and kill any
         listener there.
         """
+        # 先立关停标记：监督线程看到后放弃自动拉起，避免关窗途中又 spawn。
+        self._stopping = True
         start_pid = None
         if self.proc is not None:
             start_pid = self.proc.pid
@@ -448,8 +663,9 @@ class DeepTutorProcess:
         except OSError:
             log.exception("tail thread: open failed")
             return
+        # 子日志已改为追加模式：跳过历史会话内容，只尾随本次 spawn 之后的新输出。
+        os.lseek(fd, 0, os.SEEK_END)
         total = 0
-        last_beat = time.monotonic()
         try:
             pending = bytearray()
             while True:
@@ -470,9 +686,8 @@ class DeepTutorProcess:
                     if pending:
                         self._handle_line(bytes(pending) + b"\n")
                     break
-                if time.monotonic() - last_beat >= 10:
-                    last_beat = time.monotonic()
-                    log.debug("tail alive: %d bytes so far", total)
+                # 心跳已删除（2026-10-21）：wait_ready 只依赖端口探测、
+                # 不依赖任何文本；10s 一条的心跳曾占 app.log 大头。
                 time.sleep(0.2)
         except Exception:  # noqa: BLE001
             log.exception("tail thread: failed to read deeptutor output")
@@ -485,12 +700,30 @@ class DeepTutorProcess:
 
     def _handle_line(self, raw: bytes) -> None:
         line = _decode_line(raw)
-        log.info("deeptutor: %s", line)
+        # app.log 只记壳事件（2026-10-21）：子进程转发行降为 DEBUG。此前无条件
+        # INFO 把"读到一行"这个动作标成了级别，导致 app.log 里 ERROR/WARNING
+        # 全部伪装成 INFO（级别语义在转发链路上从未被传递）。子进程输出的
+        # 完整原样副本仍在 <home>/logs/deeptutor-child.log；结构化事实源是
+        # 引擎自己的 <home>/data/user/logs/deeptutor.jsonl（error 遥测走
+        # EngineLogTail 增量读它，不依赖本行）。
+        log.debug("deeptutor: %s", line)
         lowered = line.lower()
         if "前端 已就绪" in line or "frontend ready" in lowered:
             self.frontend_ready.set()
         if "正在启动前端" in line or "starting frontend" in lowered:
             self.frontend_launching.set()
+        # 壳托管模式下后端口由 OS 分配，壳无法预知；从子进程 banner 行
+        # （后端/Backend + http://127.0.0.1:PORT）回读实际端口，stop() 的
+        # 端口清扫才能兜住 taskkill /T 偶尔漏掉的孙进程。前端 API 行
+        # （前端 API / Frontend API）是浏览器侧外部地址，显式排除。
+        if "后端" in line or "backend" in lowered:
+            if "前端" not in line and "frontend" not in lowered:
+                match = BACKEND_URL_PATTERN.search(line)
+                if match:
+                    port = int(match.group(1))
+                    if port != self.backend_port:
+                        log.info("learned OS-assigned backend port %s", port)
+                        self.backend_port = port
         if self.on_line:
             try:
                 self.on_line(line)

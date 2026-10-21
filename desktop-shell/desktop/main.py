@@ -25,6 +25,7 @@ import os
 import sys
 import threading
 import time
+import uuid
 import webbrowser
 from collections import deque
 
@@ -47,6 +48,12 @@ from desktop.native_menu_backend import (
     set_account_chip_hidden,
 )
 from desktop.process import DeepTutorProcess, DEFAULT_FRONTEND_PORT
+from desktop.engine_log_tail import EngineLogTail
+from desktop.telemetry_reporter import (
+    TelemetryReporter,
+    load_or_create_device_id,
+    truncate_message,
+)
 import desktop.runtime as rt
 from desktop.splash import splash_html
 from desktop.titlebar_account import AccountStatusSync
@@ -439,6 +446,46 @@ def bootstrap(window, api: Api, auth: AuthManager) -> None:
         )
         _shared["proc"] = proc
         proc.start()
+
+        # 3.5 遥测最小闭环（2026-10-21 定）：只采 error（+退出钩子 app_exit），
+        #     直报不走本地队列。error 数据源 = 引擎 JSONL 增量 tail——引擎的
+        #     deeptutor.jsonl 是结构化事实源（level 独立字段），壳 app.log 的
+        #     转发副本级别已混淆，不作为数据源。login 事件挂钩在 AuthManager
+        #     登录流程（后续接入，reporter 接口已就绪）。
+        reporter = TelemetryReporter(
+            auth_config.telemetry_url(rt.ROOT),
+            {
+                "device_id": load_or_create_device_id(home),
+                "session_id": str(uuid.uuid4()),
+                "app_ver": __version__,
+                "os": sys.platform,
+            },
+        )
+        _shared["reporter"] = reporter
+        _shared["boot_t0"] = time.monotonic()
+
+        def _on_engine_error(entry: dict) -> None:
+            reporter.report(
+                "error_backend",
+                {
+                    "logger": truncate_message(entry.get("logger", ""), 120),
+                    "message": truncate_message(entry.get("message", "")),
+                    # exception 全文含本机路径（用户名属 PII 边缘），只报
+                    # 首行异常类型做聚合指纹。
+                    "error_kind": truncate_message(
+                        str(entry.get("exception", "")).splitlines()[-1] if entry.get("exception") else "",
+                        120,
+                    ),
+                },
+            )
+
+        tail = EngineLogTail(
+            home / "data" / "user" / "logs" / "deeptutor.jsonl",
+            on_error=_on_engine_error,
+        )
+        _shared["engine_log_tail"] = tail
+        tail.start()
+
         api.set_status(
             "boot",
             "正在启动本地服务…",
@@ -500,6 +547,21 @@ def bootstrap(window, api: Api, auth: AuthManager) -> None:
         toaster = ToastInjector(window, expect_url=url)
         _shared["toast_injector"] = toaster
         threading.Thread(target=toaster.run, daemon=True, name="dt-toast").start()
+
+        # 5.5 稳态监督：子进程（后端/前端）被外杀或崩溃时自动拉起，恢复后
+        #     重载页面——否则 WebView 会停在 ERR_CONNECTION_REFUSED 死页上
+        #     直到用户手动重启（2026-10-20 用户机 app.log 实证：前端 14:28
+        #     被外部 TerminateProcess 杀死，死页挂了近 1 小时无人知晓）。
+        def _on_service_event(kind: str, message: str) -> None:
+            log.info("service event: %s — %s", kind, message)
+            if kind == "recovered":
+                try:
+                    window.load_url(url)
+                except Exception:  # noqa: BLE001
+                    log.exception("reload after service recovery failed")
+            api.set_status("error" if kind == "gave_up" else "boot", message, "")
+
+        proc.supervise(on_event=_on_service_event)
 
         # 6. 登录门控会话主循环（门控 ↔ 应用，退出登录即回门控页）
         stop_evt = threading.Event()
@@ -648,6 +710,32 @@ def _on_closed() -> None:
         except Exception:  # noqa: BLE001
             pass
         _shared["proc"] = None
+    tail = _shared.get("engine_log_tail")
+    if tail is not None:
+        try:
+            tail.stop()
+        except Exception:  # noqa: BLE001
+            pass
+        _shared["engine_log_tail"] = None
+    reporter = _shared.get("reporter")
+    if reporter is not None:
+        try:
+            # app_exit 走同步短超时（护栏3）：daemon 线程在进程退出时被硬杀，
+            # 退出原因事件必须同步发。clean=True 仅覆盖用户主动关窗路径；
+            # 壳自身崩溃时无人发送（已知接受的极限场景）。
+            duration = time.monotonic() - _shared.get("boot_t0", time.monotonic())
+            reporter.flush_exit(
+                "app_exit",
+                {
+                    "reason": "window_closed",
+                    "clean": True,
+                    "session_duration_s": round(duration, 1),
+                },
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        reporter.close()
+        _shared["reporter"] = None
 
 
 def _shutdown() -> None:

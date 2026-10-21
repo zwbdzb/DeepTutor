@@ -415,7 +415,7 @@ def _win_close() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 帮助：打开官网 / 使用文档 / 日志目录 / 刷新模型 --------------------------------- #
+# 帮助：打开官网 / 使用文档 / 日志目录 -------------------------------------------- #
 def _open_website() -> None:
     """打开 ThinkBuddy 官网（文件菜单；URL 走 endpoints 覆盖链，默认官网首页）。"""
     try:
@@ -461,25 +461,16 @@ def _open_log_dir() -> None:
         log.exception("open log dir failed")
 
 
-def _refresh_models(api) -> None:
-    try:
-        res = api.refresh_models()
-        _toast("模型已刷新 ✓" if res.get("ok") else (res.get("message") or "刷新失败"))
-    except Exception:  # noqa: BLE001
-        log.exception("refresh models failed")
-
-
 def build_native_menu(api) -> list[Menu]:
     """构造常规桌面菜单栏：文件 / 编辑 / 视图 / 帮助。
 
-    ``api`` 是 main.Api 实例；闭包捕获它来提供关于信息 / 平台跳转 / 模型刷新。
+    ``api`` 是 main.Api 实例；闭包捕获它来提供关于信息 / 平台跳转。
     """
     return [
         Menu(
             "文件",
             [
                 MenuAction("打开 ThinkBuddy 网站", lambda: _open_website()),
-                MenuAction("刷新可用模型", lambda: _refresh_models(api)),
                 MenuSeparator(),
                 MenuAction("检查更新...", lambda: _check_updates(api)),
                 MenuSeparator(),

@@ -15,10 +15,12 @@
     }
 
 可覆写的键：``api_base`` / ``authorize_url`` / ``token_url`` / ``userinfo_url`` /
-``revoke_url`` / ``relay_base`` / ``thinkbuddy_website_url`` / ``update_url``。
+``revoke_url`` / ``relay_base`` / ``thinkbuddy_website_url`` / ``update_url`` /
+``telemetry_url``。
 
 Tokengine 环境变量名为 ``TOKENGINE_`` + 对应键的大写形式；网站服务地址使用
-``THINKBUDDY_WEBSITE_URL``；更新源使用 ``THINKBUDDY_UPDATE_URL``。
+``THINKBUDDY_WEBSITE_URL``；更新源使用 ``THINKBUDDY_UPDATE_URL``；遥测端点
+使用 ``TELEMETRY_URL``。
 """
 from __future__ import annotations
 
@@ -58,7 +60,7 @@ _TOKENGINE_ENDPOINT_KEYS = (
     "revoke_url",
     "relay_base",
 )
-_CONFIG_KEYS = (*_TOKENGINE_ENDPOINT_KEYS, "thinkbuddy_website_url", "update_url")
+_CONFIG_KEYS = (*_TOKENGINE_ENDPOINT_KEYS, "thinkbuddy_website_url", "update_url", "telemetry_url")
 
 
 def _read_endpoints_file(root: Optional[Path]) -> dict[str, str]:
@@ -120,6 +122,25 @@ def thinkbuddy_website_url(root: Optional[Path] = None) -> str:
         if isinstance(candidate, str) and candidate.strip():
             return candidate.strip().rstrip("/")
     return ""
+
+
+def telemetry_url(root: Optional[Path] = None) -> str:
+    """Resolve the telemetry ingest endpoint for the shell's direct reporter.
+
+    优先级：环境变量 ``TELEMETRY_URL`` > ``endpoints.json`` 的
+    ``telemetry_url`` > 默认 ``<thinkbuddy_website_url>/v1/events``。
+    返回空串表示遥测关闭（reporter 直接丢弃事件）。
+    """
+    file_over = _read_endpoints_file(root)
+    candidates = (
+        os.environ.get("TELEMETRY_URL"),
+        file_over.get("telemetry_url"),
+    )
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip().rstrip("/")
+    website = thinkbuddy_website_url(root)
+    return f"{website}/v1/events" if website else ""
 
 
 def update_base(root: Optional[Path] = None) -> str:
