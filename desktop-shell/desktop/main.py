@@ -57,7 +57,7 @@ from desktop.telemetry_reporter import (
     os_description,
     truncate_message,
 )
-from desktop.titlebar_account import AccountStatusSync
+from desktop.titlebar_account import AccountStatusSync, _fmt_balance
 
 log = logging.getLogger("dt.main")
 
@@ -65,8 +65,13 @@ log = logging.getLogger("dt.main")
 # Set DEEPTUTOR_DESKTOP_DEBUG=1 to render it again for development.
 DEBUG = os.environ.get("DEEPTUTOR_DESKTOP_DEBUG", "") == "1"
 
-# 邀请活动页（走系统浏览器打开）
-INVITE_URL = "https://thinkbuddy.hanyoai.com/invite?utm_source=agent"
+# 邀请活动页（走系统浏览器打开）；域名走 endpoints 覆盖链
+# （环境变量 THINKBUDDY_API_BASE > endpoints.json#api_base > 内置生产默认），
+# 解析为空串时回退内置生产默认，避免拼出 "/invite?..." 相对路径。
+INVITE_URL = (
+    (auth_config.thinkbuddy_api_base(rt.ROOT) or "https://thinkbuddy.hanyoai.com")
+    + "/invite?utm_source=agent"
+)
 
 # --------------------------------------------------------------------------- #
 # logging -------------------------------------------------------------------- #
@@ -109,7 +114,7 @@ class Api:
         configured_website_url = (
             website_url
             if website_url is not None
-            else auth_config.thinkbuddy_website_url(rt.ROOT)
+            else auth_config.thinkbuddy_api_base(rt.ROOT)
         )
         self._website_url = configured_website_url.strip().rstrip("/")
         self._checkin = CheckinCoordinator(auth, self._website_url)
@@ -175,6 +180,10 @@ class Api:
     def refresh_models(self) -> dict:
         """重拉中继 /v1/models → 重写 model_catalog → 回写账号信息。"""
         return self._auth.refresh_models()
+
+    def refresh_user_info(self) -> dict:
+        """重拉平台 /v1/userinfo → 只更新用户名/余额（不动模型、不刷页面）。"""
+        return self._auth.refresh_user_info()
 
     def checkin_points(self) -> dict:
         """Use the OAuth subject to check in directly with thinkbuddy-website."""
@@ -266,6 +275,19 @@ def _chip_actions(api: Api) -> dict:
         else:
             api.toast(res.get("message") or res.get("error") or "刷新失败")
 
+    def refresh_user() -> None:
+        """菜单头 ⟳ 图标：轻量刷新用户名/余额（/v1/userinfo）。
+
+        不动模型目录、不刷新页面；store 更新后 AccountStatusSync（0.4s
+        轮询）会自动把新余额推到菜单头行。toast 带上新余额给即时反馈。
+        """
+        res = api.refresh_user_info()
+        if res.get("ok"):
+            amount = _fmt_balance(res.get("balance"))
+            api.toast("用户信息已刷新" + (f"，余额 ¥{amount}" if amount else ""))
+        else:
+            api.toast(res.get("message") or res.get("error") or "刷新失败")
+
     def checkin() -> None:
         api.toast("正在签到...")
         result = api.checkin_points()
@@ -301,6 +323,7 @@ def _chip_actions(api: Api) -> dict:
         "invite": invite,
         "checkin": checkin,
         "refresh": refresh,
+        "refresh_user": refresh_user,
         "copy": api.copy_relay,
         "logout": logout,
         "about": about,
@@ -631,7 +654,7 @@ def main() -> int:
         frontend_url,
         auth,
         debug=DEBUG,
-        website_url=auth_config.thinkbuddy_website_url(rt.ROOT),
+        website_url=auth_config.thinkbuddy_api_base(rt.ROOT),
     )
 
     # 端点对齐要赶在 DeepTutor 后端起来之前做：catalog 改写完成后，

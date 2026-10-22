@@ -122,6 +122,15 @@ LABELS: dict[str, dict[str, str]] = {
         "start.received_signal": "Received {signal}; shutting down ...",
         "start.stopping": "Stopping {name} (PID {pid})",
         "start.exited": "{name} exited with code {code}",
+        "start.exited_hint": "exit code {code}: {hint}",
+        "start.exit_hint.external": "terminated externally (TerminateProcess — "
+        "taskkill /F, Task Manager, security software) or self process.exit(1); "
+        "no output at all indicates an external kill",
+        "start.exit_hint.shutdown": "DBG_TERMINATE_PROCESS — force-terminated by "
+        "system shutdown / console control event (CTRL_C family)",
+        "start.exit_hint.ctrl": "STATUS_CONTROL_C_EXIT — console CTRL+C / CTRL_BREAK received",
+        "start.exit_hint.crash": "the process crashed on its own (access violation "
+        "or stack buffer overrun)",
         "stop.not_running": "No detached DeepTutor launcher is running.",
         "stop.requested": "Requested a graceful stop from launcher PID {pid}.",
         "stop.complete": "DeepTutor stopped.",
@@ -244,6 +253,13 @@ LABELS: dict[str, dict[str, str]] = {
         "start.received_signal": "收到 {signal} 信号,正在关闭 ...",
         "start.stopping": "正在停止 {name} (PID {pid})",
         "start.exited": "{name} 已退出 (退出码 {code})",
+        "start.exited_hint": "退出码 {code}：{hint}",
+        "start.exit_hint.external": "被外部 TerminateProcess 结束（taskkill /F、任务管理器、"
+        "安全软件拦截）或自行 process.exit(1)；全程零输出是外杀特征",
+        "start.exit_hint.shutdown": "DBG_TERMINATE_PROCESS —— 被系统关机/控制台控制事件强制终止"
+        "（与 CTRL_C 同族），常伴随整机重启",
+        "start.exit_hint.ctrl": "STATUS_CONTROL_C_EXIT —— 收到控制台 CTRL+C / CTRL_BREAK 事件",
+        "start.exit_hint.crash": "进程自身崩溃（内存访问越界或栈缓冲溢出保护）",
         "stop.not_running": "当前没有后台 DeepTutor launcher 在运行。",
         "stop.requested": "已请求 launcher PID {pid} 正常停止。",
         "stop.complete": "DeepTutor 已停止。",

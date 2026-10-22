@@ -235,6 +235,9 @@ def scenario_bootstrap_wiring(base: Path) -> None:
         def wait_ready(self, timeout: float = 150):
             return (self.frontend_url, 200)
 
+        def supervise(self, on_event=None) -> None:
+            pass  # 2026-10-20 起主流程调用；桩里不模拟子进程事件
+
         def stop(self) -> None:
             pass
 

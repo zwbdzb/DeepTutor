@@ -50,7 +50,7 @@ TOAST_ENSURE_JS = """
     t = document.createElement('div');
     t.id = '%(id)s';
     t.textContent = '';
-    t.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);' +
+    t.style.cssText = 'position:fixed;bottom:24px;left:50%%;transform:translateX(-50%%);' +
       'background:rgba(40,40,40,0.88);color:#fff;padding:8px 18px;border-radius:8px;' +
       'font:500 14px/1.4 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;' +
       'z-index:2147483000;pointer-events:none;opacity:0;transition:opacity .2s ease;';
@@ -103,7 +103,10 @@ class ToastInjector:
         while not self._stop.is_set():
             if self._on_app_page():
                 try:
-                    self._w.evaluate_js(TOAST_ENSURE_JS)
+                    # TOAST_ENSURE_JS 是含 %(id)s 的模板，必须先格式化再下发；
+                    # 裸 evaluate 会在页面里挂出 id 为字面 '%(id)s' 的脏节点，
+                    # 且 show()（按真实 id 格式化的 TOAST_SHOW_JS）永远找不到元素。
+                    self._w.evaluate_js(TOAST_ENSURE_JS % {"id": TOAST_ID})
                 except Exception:  # noqa: BLE001  页面未就绪，下一轮再试
                     pass
             self._stop.wait(self._interval)
@@ -179,6 +182,25 @@ if sys.platform == "darwin":
         def menuItemClicked_(self, sender):  # noqa: N802
             action = str(sender.representedObject() or "")
             log.info("chip 菜单项动作：%s", action)
+            self._injector._dispatch_menu(action)
+
+        def headerRefreshClicked_(self, sender):  # noqa: N802
+            """菜单头行 ⟳ 按钮：先收起弹出菜单再派发 refresh_user。
+
+            视图化菜单项里的 NSButton 点击不会自动结束菜单追踪（普通
+            NSMenuItem 才会），需显式 cancelTracking——否则余额在背后更新
+            了，用户看到的还是打开时的旧菜单。动作经 enclosingMenuItem()
+            反查所属菜单，无需持有引用。
+            """
+            try:
+                item = sender.enclosingMenuItem()
+                menu = item.menu() if item is not None else None
+                if menu is not None:
+                    menu.cancelTracking()
+            except Exception:  # noqa: BLE001  收起失败不影响动作派发
+                log.exception("cancel menu tracking failed")
+            action = str(sender.representedObject() or "refresh_user")
+            log.info("chip 头行刷新动作：%s", action)
             self._injector._dispatch_menu(action)
 
 
@@ -320,18 +342,29 @@ class AccountChipInjector:
             menu = AppKit.NSMenu.alloc().init()
             menu.setAutoenablesItems_(False)
 
-            # 菜单头（账号名 + 余额），禁用态展示，与 Windows 下拉一致
+            # 菜单头（账号名 + 余额），禁用态展示，与 Windows 下拉一致；
+            # 带 refresh_icon 标志时升级为「文字 + ⟳ 刷新按钮」视图化条目
+            # （NSMenuItem.setView_），构建失败回退普通禁用头行。
             header = menu_model.get("header") or {}
             htext = "  ".join(
                 part for part in (str(header.get("title") or "").strip(),
                                   str(header.get("sub") or "").strip()) if part
             )
             if htext:
-                hmi = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-                    htext, None, ""
-                )
-                hmi.setEnabled_(False)
-                menu.addItem_(hmi)
+                added = False
+                if (header.get("refresh_icon")
+                        and "refresh_user" in self._menu_actions):
+                    try:
+                        menu.addItem_(self._build_header_view_item(htext))
+                        added = True
+                    except Exception:  # noqa: BLE001
+                        log.exception("mac header view item failed; fallback")
+                if not added:
+                    hmi = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                        htext, None, ""
+                    )
+                    hmi.setEnabled_(False)
+                    menu.addItem_(hmi)
                 menu.addItem_(AppKit.NSMenuItem.separatorItem())
 
             for item in menu_items:
@@ -372,6 +405,73 @@ class AccountChipInjector:
         log.info("mac 壳账号 chip 点击：%d 个菜单项，弹出 NSMenu @ (%.0f, %.0f)",
                  len(menu_items), loc.x, loc.y)
         AppKit.NSMenu.popUpMenuPositioningItem_atLocation_inView_(menu, None, loc, None)
+
+    # ---- 菜单头行视图化条目（主线程调用） --------------------------------- #
+    def _build_header_view_item(self, htext):
+        """「用户名 · 余额 ＋ ⟳ 刷新按钮」的视图化菜单头行。
+
+        NSMenuItem.setView_ 换成自定义 NSView：左侧 NSTextField 只读文本
+        （secondaryLabelColor 弱化成头行观感），右侧 borderless NSButton
+        挂 headerRefreshClicked:。刷新符号优先用系统 SF Symbol
+        ``arrow.clockwise``（macOS 11+），取不到回退 ⟳ 字符。
+        所有 AppKit 调用已处于主线程（NSMenu 弹出追踪循环内）。
+        """
+        import AppKit  # type: ignore
+
+        font = (AppKit.NSFont.menuFontOfSize_(13.0)
+                or AppKit.NSFont.systemFontOfSize_(13.0))
+        attrs = {AppKit.NSFontAttributeName: font}
+        text_w = float(
+            AppKit.NSAttributedString.alloc()
+            .initWithString_attributes_(htext, attrs).size().width
+        )
+        pad_l, gap, btn_w, pad_r = 12.0, 4.0, 24.0, 10.0
+        w = pad_l + text_w + gap + btn_w + pad_r
+        h = 22.0
+
+        container = AppKit.NSView.alloc().initWithFrame_(
+            AppKit.NSMakeRect(0, 0, w, h)
+        )
+
+        label = AppKit.NSTextField.alloc().initWithFrame_(
+            AppKit.NSMakeRect(pad_l, 3.0, text_w + 8.0, h - 6.0)
+        )
+        label.setStringValue_(htext)
+        label.setBezeled_(False)
+        label.setDrawsBackground_(False)
+        label.setEditable_(False)
+        label.setSelectable_(False)
+        label.setFont_(font)
+        try:
+            label.setTextColor_(AppKit.NSColor.secondaryLabelColor())
+        except Exception:  # noqa: BLE001  旧系统取不到弱化色则用默认
+            pass
+        container.addSubview_(label)
+
+        btn = AppKit.NSButton.alloc().initWithFrame_(
+            AppKit.NSMakeRect(pad_l + text_w + gap, 1.0, btn_w, h - 2.0)
+        )
+        btn.setBordered_(False)
+        img = None
+        try:
+            img = AppKit.NSImage.imageWithSystemSymbolName_accessibilityDescription_(
+                "arrow.clockwise", None
+            )
+        except Exception:  # noqa: BLE001  macOS <11 无系统符号图
+            img = None
+        if img is not None:
+            btn.setImage_(img)
+            btn.setImagePosition_(AppKit.NSImageOnly)
+        else:
+            btn.setTitle_("⟳")
+        btn.setTarget_(self._target)
+        btn.setAction_(AppKit.NSSelectorFromString("headerRefreshClicked:"))
+        btn.setRepresentedObject_("refresh_user")
+        container.addSubview_(btn)
+
+        item = AppKit.NSMenuItem.alloc().init()
+        item.setView_(container)
+        return item
 
     # ---- 模型推送（线程安全：主线程调度） ------------------------------- #
     def _update_chip(self) -> None:

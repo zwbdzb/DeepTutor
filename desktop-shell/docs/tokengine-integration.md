@@ -128,9 +128,12 @@ Content-Type: application/json
 
 ## 4. 配置与覆盖（联调期指向本地平台）
 
+**站点语义（2026-10-22 起）**：`https://thinkbuddy.hanyoai.com` 是产品**主站**；
+`https://tokengine.hanyoai.com` 只提供登录认证（OAuth）与 token（模型中继）服务。
+
 端点解析优先级：**环境变量 > `<ROOT>/endpoints.json` > 内置默认**
-（Tokengine 内置默认是 `https://tokengine.hanyoai.com`；thinkbuddy-website 内置
-默认是 `https://thinkbuddy.hanyoai.com`）。
+（主站内置默认 `api_base = https://thinkbuddy.hanyoai.com`；Tokengine 内置
+默认 `oauth_base = https://tokengine.hanyoai.com`）。
 
 `<ROOT>` = `%LOCALAPPDATA%\ThinkBuddy`（可用 `DEEPTUTOR_DESKTOP_ROOT` 改）。
 
@@ -138,28 +141,32 @@ Content-Type: application/json
 
 ```json
 {
-  "api_base": "http://127.0.0.1:3000",
-  "thinkbuddy_website_url": "http://127.0.0.1:8000"
+  "api_base": "http://127.0.0.1:8000",
+  "oauth_base": "http://127.0.0.1:3000"
 }
 ```
 
-可覆写的键：`api_base`、`authorize_url`、`token_url`、`userinfo_url`、`revoke_url`、
-`relay_base`、`thinkbuddy_website_url`。其余 Tokengine 端点由 `api_base` 派生。
+可覆写的键：主站 `api_base`；Tokengine 侧 `oauth_base`、`authorize_url`、
+`token_url`、`userinfo_url`、`revoke_url`、`relay_base`。OAuth 端点与中继由
+`oauth_base` 派生；**更新源（`<api_base>/update`）与遥测
+（`<api_base>/v1/events`）硬编码派生自主站，不占覆盖键位**。
+旧键 `thinkbuddy_website_url`/`update_url`/`telemetry_url` 已废弃（读到会告警并忽略）；
+旧语义 `api_base`（原指 Tokengine）请改写为 `oauth_base`。
 **这是给打包版准备的**——
 装好的客户端无需重新打包即可改指向（联调/私有化部署都用它）。
 
-Tokengine 环境变量使用 `TOKENGINE_` 前缀；thinkbuddy-website 使用独立变量：
+环境变量：主站 `THINKBUDDY_API_BASE`；Tokengine 用 `TOKENGINE_` 前缀：
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `TOKENGINE_API_BASE` | 联调构建 `http://127.0.0.1:3000`；发布为 `https://tokengine.hanyoai.com` | 平台根地址 |
-| `TOKENGINE_DEFAULT_API_BASE` | `https://tokengine.hanyoai.com` | 运行时覆盖 Tokengine 内置兜底地址 |
+| `TOKENGINE_OAUTH_BASE` | `https://tokengine.hanyoai.com` | Tokengine 认证+token 服务根地址（旧名 `TOKENGINE_API_BASE` 已废弃） |
+| `TOKENGINE_DEFAULT_OAUTH_BASE` | `https://tokengine.hanyoai.com` | 运行时覆盖 Tokengine 内置兜底地址 |
+| `THINKBUDDY_API_BASE` | `https://thinkbuddy.hanyoai.com` | ThinkBuddy 主站根地址（旧名 `THINKBUDDY_WEBSITE_URL` 已废弃） |
 | `TOKENGINE_CLIENT_ID` | `edubuddy-desktop` | 平台侧注册的客户端标识 |
 | `TOKENGINE_SCOPE` | `openid relay` | 授权范围 |
 | `TOKENGINE_CALLBACK_PORT` | `0`（随机） | 回环端口；设固定值便于比对平台日志 |
 | `TOKENGINE_LOGIN_TIMEOUT` | `900` | 单次登录等待上限（秒） |
 | `TOKENGINE_USERINFO_RELAY_FIELDS` | 见 §3 | 中继域名候选字段 |
-| `THINKBUDDY_WEBSITE_URL` | `https://thinkbuddy.hanyoai.com` | thinkbuddy-website 根地址；优先于 `endpoints.json` |
 | `DEEPTUTOR_DESKTOP_SKIP_LOGIN` | — | 设为 `1` 跳过登录门控（离线/开发用） |
 
 ## 5. 文件位置
