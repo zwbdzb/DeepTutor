@@ -36,7 +36,7 @@ def test_report_includes_environment_and_oauth_header_only():
     assert event["props"] == props
     assert event["name"] == "app_exit"
     assert event["ts"] > 0
-    assert event["lost_before"] == 0
+    assert "lost_before" not in event
     assert "oauth-secret" not in request.data.decode()
     assert "provider_user_id" not in event
     assert opener.open.call_args.kwargs == {"timeout": 0.5}
@@ -87,7 +87,7 @@ def test_reporting_does_not_wait_for_network():
     assert opener.open.call_args.args[0].get_header("Authorization") is None
 
 
-def test_failed_reports_preserve_loss_count_and_circuit_breaker():
+def test_failed_reports_keep_circuit_breaker_and_recover():
     reporter = TelemetryReporter("https://website.example/v1/events", BASE, fail_threshold=2)
     opener = Mock()
     opener.open.side_effect = OSError("offline")
@@ -101,7 +101,22 @@ def test_failed_reports_preserve_loss_count_and_circuit_breaker():
         opener.open.return_value = io.BytesIO(b"{}")
         reporter.flush_exit("app_exit")
     event = json.loads(opener.open.call_args.args[0].data)["events"][0]
-    assert event["lost_before"] == 3
+    assert event["name"] == "app_exit"
+    assert "lost_before" not in event
+    assert opener.open.call_count == 3
+    assert reporter._fails == 0
+
+
+def test_error_rate_limit_does_not_block_normal_events():
+    reporter = TelemetryReporter("https://website.example/v1/events", BASE, error_rate_limit=1)
+    opener = Mock()
+    opener.open.return_value = io.BytesIO(b"{}")
+    with patch("desktop.telemetry_reporter.urllib.request.build_opener", return_value=opener):
+        reporter.flush_exit("error_backend")
+        reporter.flush_exit("error_backend")
+        assert opener.open.call_count == 1
+        reporter.flush_exit("app_exit")
+    assert opener.open.call_count == 2
 
 
 def test_redirect_does_not_forward_credentials_or_payload():
