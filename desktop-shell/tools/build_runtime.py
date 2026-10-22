@@ -694,8 +694,8 @@ def build(make_zip: bool = False, source_root: Path | None = None,
         return
 
     # 打 zip 前强制重刷品牌（rebrand 幂等）。此前 rebrand 在本脚本之后才跑，
-    # zip 里装的是换牌前的旧内容——mac dmg 出现 EduBuddy/DeepTutor 的根因
-    # （2026-10-19）。必须在 zip 之前执行，失败即中止构建。
+    # zip 里装的是换牌前的旧内容——曾致 mac dmg 品牌混杂（2026-10-19）。
+    # 必须在 zip 之前执行，失败即中止构建。
     _rebrand_staging(_py_site_packages(STAGING_PY))
 
     out_zip = DIST / "runtime.zip"

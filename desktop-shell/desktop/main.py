@@ -209,7 +209,7 @@ class Api:
     def toast(self, msg: str, kind: str = "info",
               duration_ms: int = 2000) -> None:
         """在页面底部弹一条轻提示（kind: 'info' | 'success' | 'error'）。"""
-        js = "window.__edubuddyToast(%s, %d, %s)" % (
+        js = "window.__thinkbuddyToast(%s, %d, %s)" % (
             json.dumps(str(msg), ensure_ascii=False),
             duration_ms,
             json.dumps(kind, ensure_ascii=False),

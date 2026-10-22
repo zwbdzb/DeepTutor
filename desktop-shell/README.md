@@ -194,7 +194,8 @@ desktop/           桌面壳(Python，pywebview)
 tools/
   build_runtime.py 构建离线运行时
   make_portable.py 组装便携包
-  make_icon.py     生成图标
+  （图标更新：品牌资产事实源在仓库根 brand/logo/，
+    同步 cp brand/logo/thinkbuddy-icon.ico → assets/icon.ico）
 build/
   ThinkBuddyDesktop.spec   PyInstaller 配置
   installer.iss            Inno Setup 安装向导

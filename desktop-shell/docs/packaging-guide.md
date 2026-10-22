@@ -92,7 +92,7 @@ if runtime_zip.exists():            # 只有 zip 存在才内嵌
 2. **版本号自动注入**：build.ps1 编译前读 `deeptutor/__version__.py`，经
    `/DMyAppVersion=0.2.0+dt1.6.10` 传给 iss——安装包属性里的版本永远跟随后端，不用手改。
    裸跑 ISCC 会得到占位版本 `0.2.0+dtSET-BY-build.ps1`（故意难看，便于识别无效包）；
-3. **升级清扫**：`[InstallDelete]` 装新版时自动删 `%LOCALAPPDATA%\EduBuddy\runtime`
+3. **升级清扫**：`[InstallDelete]` 装新版时自动删 `%LOCALAPPDATA%\ThinkBuddy\runtime`
    旧托管缓存（ADR-005 遮蔽事故的修复）。
 
 ## 3. 流水线逐步（build.ps1 在做什么）
@@ -123,8 +123,8 @@ py -3.12 -m venv .venv
 | 位置 | 内容 | 生命周期 |
 |---|---|---|
 | `%LOCALAPPDATA%\Programs\ThinkBuddy\`（iss 里的 `{app}`） | `ThinkBuddyDesktop.exe` + `assets\` + `runtime\`（完整运行时树） | 随安装/卸载增删 |
-| `%LOCALAPPDATA%\EduBuddy\runtime\` | 旧版（EduBuddy 时代）runtime.zip 自解压的托管缓存 | **新版安装时 `[InstallDelete]` 自动清除**；卸载时也删 |
-| `%USERPROFILE%\ThinkBuddy\` | 学习数据/工作区：知识库、对话、记忆（旧版 `%USERPROFILE%\EduBuddy` 首启自动改名迁移） | **卸载也保留**，与程序分离 |
+| `%LOCALAPPDATA%\ThinkBuddy\`（其余部分） | 壳日志 `logs\app.log`、更新下载缓存 `updates\` | 升级清扫清 runtime；卸载时清 updates |
+| `%USERPROFILE%\ThinkBuddy\` | 学习数据/工作区：知识库、对话、记忆 | **卸载也保留**，与程序分离 |
 | 开始菜单 + 桌面（可选勾选） | 快捷方式 → `{app}\ThinkBuddyDesktop.exe` | 随安装/卸载增删 |
 
 要点：**程序和数据分离**。重装/升级只动前两行；用户数据在第三行，永不丢。

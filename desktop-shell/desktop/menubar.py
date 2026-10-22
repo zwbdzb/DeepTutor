@@ -25,7 +25,7 @@ from webview.menu import Menu, MenuAction, MenuSeparator
 
 from desktop import APP_NAME, __version__, updater
 from desktop.auth import config as auth_config
-from desktop.runtime import ROOT
+from desktop.runtime import ROOT, default_workspace
 
 log = logging.getLogger("dt.menubar")
 
@@ -48,7 +48,7 @@ def _toast(msg: str, kind: str = "info", duration_ms: int = 2000) -> None:
         return
     try:
         window.evaluate_js(
-            "window.__edubuddyToast && window.__edubuddyToast(%s, %d, %s)"
+            "window.__thinkbuddyToast && window.__thinkbuddyToast(%s, %d, %s)"
             % (
                 json.dumps(str(msg), ensure_ascii=False),
                 duration_ms,
@@ -449,9 +449,16 @@ def _open_docs() -> None:
 
 
 def _open_log_dir() -> None:
-    """在系统文件管理器中打开日志目录（帮助菜单）。"""
+    r"""在系统文件管理器中打开日志目录（帮助菜单）。
+
+    打开 <工作区>/logs（thinkbuddy.log 所在目录）而非壳日志目录
+    %LOCALAPPDATA%\ThinkBuddy\logs：用户点本菜单的意图几乎总是排查
+    后端问题，后端原样输出在工作区树内；且它与引擎结构化日志
+    （<工作区>/data/user/logs）同属一棵目录树，资源管理器往上一级即可达。
+    壳日志只在「窗口起不来」场景需要，而那时菜单本身也点不动。
+    """
     try:
-        log_dir = ROOT / "logs"
+        log_dir = default_workspace() / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         if sys.platform == "darwin":
             import subprocess

@@ -6,15 +6,15 @@
   调用侧必须先 ``% {"id": TOAST_ID, ...}`` 格式化再 ``evaluate_js``；
   本测试用与生产一致的格式化产物喂给 harness。
 * ensure 幂等：首次 'created'、再次 'exists'，且只建一个 DOM 节点。
-* 隐藏计时器存在 ``window.__edubuddyToastTimer`` 单一槽位：再次弹 toast
+* 隐藏计时器存在 ``window.__thinkbuddyToastTimer`` 单一槽位：再次弹 toast
   必须先 clearTimeout 旧计时器（不叠层）。
 * 文案经 ``textContent`` 写入，HTML 注入向量（<img onerror=...>）不产生子节点。
 * ``ToastInjector.show()`` 路径（TOAST_SHOW_JS）必须能找到 ensure 建立的
   同一元素（id 一致），否则 show 静默失效。
 * 语义圆点（2026-10 主题化改造）：ensure 幂等注入
-  ``<style id="edubuddy-toast-style">`` 到 head，圆点按 ``data-kind`` 变色
+  ``<style id="thinkbuddy-toast-style">`` 到 head，圆点按 ``data-kind`` 变色
   （info=蓝 / success=绿 / error=红，走页面 CSS 变量 + 内置 fallback）；
-  ``TOAST_SHOW_JS`` 与全局 ``__edubuddyToast`` 都把 kind 写进元素
+  ``TOAST_SHOW_JS`` 与全局 ``__thinkbuddyToast`` 都把 kind 写进元素
   ``dataset.kind``，两参旧调用缺省归 'info'。
 """
 from __future__ import annotations
@@ -69,11 +69,11 @@ global.clearTimeout = (id) => {{ cleared.push(id); timers.delete(id); }};
 
 const firstEnsure = eval(ensureScript);
 const secondEnsure = eval(ensureScript);
-window.__edubuddyToast('<img src=x onerror=alert(1)>');
-const toast = nodes.get('edubuddy-toast');
+window.__thinkbuddyToast('<img src=x onerror=alert(1)>');
+const toast = nodes.get('thinkbuddy-toast');
 const unsafeText = toast.textContent;
-const firstTimer = window.__edubuddyToastTimer;
-window.__edubuddyToast('second');
+const firstTimer = window.__thinkbuddyToastTimer;
+window.__thinkbuddyToast('second');
 const latestText = toast.textContent;
 eval(showScript);
 const showText = toast.textContent;
@@ -174,7 +174,7 @@ def test_toast_ensure_js_renders_kind_selectors_and_style_element() -> None:
     assert "%(id)s" not in rendered
     assert 'data-kind="success"' in rendered
     assert 'data-kind="error"' in rendered
-    assert "edubuddy-toast-style" in rendered
+    assert "thinkbuddy-toast-style" in rendered
     assert "display:flex" in rendered
     assert "max-width:min(520px, calc(100vw - 48px))" in rendered
     assert "var(--popover," in rendered
@@ -184,7 +184,7 @@ def test_toast_ensure_js_renders_kind_selectors_and_style_element() -> None:
         + """
 const firstEnsure = eval(ensureScript);
 const secondEnsure = eval(ensureScript);
-const styleEl = document.getElementById('edubuddy-toast-style');
+const styleEl = document.getElementById('thinkbuddy-toast-style');
 process.stdout.write(JSON.stringify({
   firstEnsure,
   secondEnsure,
@@ -200,9 +200,9 @@ process.stdout.write(JSON.stringify({
     # toast div + style 元素各建一次，二次 ensure 幂等不重复建
     assert state["created"] == 2
     assert state["nodeCount"] == 2
-    assert state["styleId"] == "edubuddy-toast-style"
+    assert state["styleId"] == "thinkbuddy-toast-style"
     # 语义圆点：info 默认蓝、success 绿、error 红（CSS 变量 + 内置 fallback）
-    assert "#edubuddy-toast::before" in state["styleText"]
+    assert "#thinkbuddy-toast::before" in state["styleText"]
     assert 'data-kind="success"' in state["styleText"]
     assert 'data-kind="error"' in state["styleText"]
     assert "--info" in state["styleText"]
@@ -226,7 +226,7 @@ def test_toast_show_js_sets_data_kind_on_element(kind: str) -> None:
         + """
 eval(ensureScript);
 eval(showScript);
-const toast = nodes.get('edubuddy-toast');
+const toast = nodes.get('thinkbuddy-toast');
 process.stdout.write(JSON.stringify({
   text: toast.textContent,
   kind: toast.dataset.kind,
@@ -242,18 +242,18 @@ process.stdout.write(JSON.stringify({
 
 
 def test_global_toast_two_arg_call_defaults_to_info() -> None:
-    """旧两参 window.__edubuddyToast(msg, duration) 兼容：kind 缺省归 'info'。"""
+    """旧两参 window.__thinkbuddyToast(msg, duration) 兼容：kind 缺省归 'info'。"""
     state = _run_node_js(
         "const ensureScript = "
         + json.dumps(TOAST_ENSURE_JS % {"id": TOAST_ID}) + ";\n"
         + """
 eval(ensureScript);
-window.__edubuddyToast('两参兼容调用', 2000);
-const toast = nodes.get('edubuddy-toast');
+window.__thinkbuddyToast('两参兼容调用', 2000);
+const toast = nodes.get('thinkbuddy-toast');
 const twoArgKind = toast.dataset.kind;
-window.__edubuddyToast('单参兜底调用');
+window.__thinkbuddyToast('单参兜底调用');
 process.stdout.write(JSON.stringify({
-  mounted: typeof window.__edubuddyToast,
+  mounted: typeof window.__thinkbuddyToast,
   twoArgKind,
   oneArgKind: toast.dataset.kind,
   oneArgText: toast.textContent,

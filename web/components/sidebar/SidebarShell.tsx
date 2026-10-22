@@ -190,12 +190,12 @@ export function SidebarShell({
           <Link
             href="/"
             prefetch={false}
-            aria-label="EduBuddy"
+            aria-label="ThinkBuddy"
             className="flex items-center justify-center transition-opacity duration-150 group-hover/sb:opacity-0"
           >
             <Image
               src="/logo.png"
-              alt="EduBuddy"
+              alt="ThinkBuddy"
               width={22}
               height={22}
               unoptimized
@@ -260,17 +260,17 @@ export function SidebarShell({
         <Link href="/" prefetch={false} className="group flex items-center gap-1.5">
           <Image
             src="/logo.png"
-            alt="EduBuddy"
+            alt="ThinkBuddy"
             width={22}
             height={22}
             unoptimized
             className="h-[22px] w-[22px] transition-transform duration-200 group-hover:scale-105"
           />
           <span
-            aria-label="EduBuddy"
+            aria-label="ThinkBuddy"
             className="text-[15px] font-semibold tracking-tight text-[var(--foreground)] transition-transform duration-200 group-hover:scale-105"
           >
-            EduBuddy
+            ThinkBuddy
           </span>
         </Link>
         {/* The rail is a desktop affordance; in the drawer the scrim and the

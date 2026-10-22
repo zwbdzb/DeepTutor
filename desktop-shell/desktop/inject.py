@@ -38,7 +38,7 @@ log = logging.getLogger("dt.inject")
 # --------------------------------------------------------------------------- #
 # toast 浮层（全平台）------------------------------------------------------ #
 # --------------------------------------------------------------------------- #
-TOAST_ID = "edubuddy-toast"
+TOAST_ID = "thinkbuddy-toast"
 
 # 确保 toast 浮层元素存在（幂等；SPA 路由/整页刷新后由定时器补挂）。
 # 样式主题化（2026-10）：颜色/阴影/字体全部走页面 CSS 变量（globals.css 的
@@ -73,28 +73,28 @@ TOAST_ENSURE_JS = """
   }
   // 语义圆点样式：幂等注入一次（style 元素与 toast div 生命周期一致，
   // SPA 整页刷新后 head 一并重建，由同一轮 ensure 补挂）。
-  if (document.head && !document.getElementById('edubuddy-toast-style')) {
+  if (document.head && !document.getElementById('thinkbuddy-toast-style')) {
     var s = document.createElement('style');
-    s.id = 'edubuddy-toast-style';
-    s.textContent = '#edubuddy-toast::before { content:""; width:8px; height:8px;' +
+    s.id = 'thinkbuddy-toast-style';
+    s.textContent = '#thinkbuddy-toast::before { content:""; width:8px; height:8px;' +
       'border-radius:50%%; background:var(--info, #2563eb); flex:none; }' +
-      '#edubuddy-toast[data-kind="success"]::before { background:var(--success, #237a4b); }' +
-      '#edubuddy-toast[data-kind="error"]::before { background:var(--destructive, #c53a2c); }';
+      '#thinkbuddy-toast[data-kind="success"]::before { background:var(--success, #237a4b); }' +
+      '#thinkbuddy-toast[data-kind="error"]::before { background:var(--destructive, #c53a2c); }';
     document.head.appendChild(s);
   }
   // 挂载全局 toast 函数，供 menubar._toast / main.toast 通过 evaluate_js 调用。
   // SPA 路由切换 / 整页刷新后 window 上下文重建，需由定时器重新挂载。
   // 第三参 kind 可选（'info' | 'success' | 'error'），缺省 'info'——
   // 旧两参调用（menubar/main 缓存的旧 JS 通道）依然有效。
-  if (!window.__edubuddyToast) {
-    window.__edubuddyToast = function (msg, duration, kind) {
+  if (!window.__thinkbuddyToast) {
+    window.__thinkbuddyToast = function (msg, duration, kind) {
       var el = document.getElementById('%(id)s');
       if (!el) { return; }
       el.textContent = msg;
       if (el.dataset) { el.dataset.kind = kind || 'info'; }
       el.style.opacity = '1';
-      clearTimeout(window.__edubuddyToastTimer);
-      window.__edubuddyToastTimer = setTimeout(function () {
+      clearTimeout(window.__thinkbuddyToastTimer);
+      window.__thinkbuddyToastTimer = setTimeout(function () {
         el.style.opacity = '0';
       }, duration || 2000);
     };
@@ -110,8 +110,8 @@ TOAST_SHOW_JS = """
   t.textContent = %(msg)s;
   if (t.dataset) { t.dataset.kind = %(kind)s; }
   t.style.opacity = '1';
-  clearTimeout(window.__edubuddyToastTimer);
-  window.__edubuddyToastTimer = setTimeout(function () {
+  clearTimeout(window.__thinkbuddyToastTimer);
+  window.__thinkbuddyToastTimer = setTimeout(function () {
     t.style.opacity = '0';
   }, %(duration)d);
 })();
