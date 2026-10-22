@@ -120,6 +120,6 @@ def checkin_message(result: dict[str, Any]) -> str:
         return str(result.get("message") or "签到失败，请稍后重试")
     suffix = _GRANT_MESSAGES.get(str(result.get("grant_status") or ""), "")
     if result.get("already_checked_in"):
-        return f"今日已签到，本次未重复增加积分{suffix}"
+        return "今日已签到"
     points = int(result.get("points_awarded") or 0)
     return f"签到成功，获得 {points} 积分{suffix}"
