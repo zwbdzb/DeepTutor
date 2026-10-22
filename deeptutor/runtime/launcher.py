@@ -35,6 +35,10 @@ from deeptutor.services.app_update import LAUNCHER_PID_ENV
 
 BACKEND_READY_TIMEOUT_ENV = "DEEPTUTOR_BACKEND_READY_TIMEOUT"
 FRONTEND_READY_TIMEOUT_ENV = "DEEPTUTOR_FRONTEND_READY_TIMEOUT"
+# Set by the desktop shell: the backend's only consumer is this machine's
+# frontend proxy, so the launcher lets the kernel assign an ephemeral port
+# instead of competing for a fixed one. See start() and _pick_ephemeral_port.
+SHELL_MANAGED_ENV = "DEEPTUTOR_SHELL_MANAGED"
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +142,30 @@ class DetachedLauncherPaths:
 
 def _log(message: str) -> None:
     print(message, flush=True)
+
+
+#: Abnormal exit-code prefixes → banner label key carrying the mechanism hint.
+#: Keys compare against the unsigned 32-bit view of the code. Forensic value:
+#: an external TerminateProcess kill exits 1 with zero output; a shutdown /
+#: console-control kill exits 0x40010004; an in-process crash exits 0xC0000005.
+_EXIT_HINT_KEYS: tuple[tuple[int, str], ...] = (
+    (0x00000001, "start.exit_hint.external"),
+    (0x40010004, "start.exit_hint.shutdown"),
+    (0xC000013A, "start.exit_hint.ctrl"),
+    (0xC0000005, "start.exit_hint.crash"),
+    (0xC0000409, "start.exit_hint.crash"),
+)
+
+
+def _exit_hint(code: object) -> str:
+    try:
+        normalized = int(code) & 0xFFFFFFFF  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return ""
+    for prefix, key in _EXIT_HINT_KEYS:
+        if normalized == prefix:
+            return _t(key)
+    return ""
 
 
 def _reset_runtime_singletons() -> None:
@@ -353,6 +381,82 @@ def _port_accepts_connection(port: int) -> bool:
     return any(_host_accepts_connection(host, port) for host in LOOPBACK_HOSTS)
 
 
+def _port_free(port: int) -> bool:
+    """True when a server could listen on ``port`` right now (bind probe).
+
+    A connect probe answers "is somebody accepting"; this answers "can a
+    listener bind here", which is the decision the launcher actually makes.
+    The nginx-on-8001 incident (2026-10-20) showed the gap: a foreign listener
+    on ``[::]:P`` does not block ``0.0.0.0:P`` on Windows (V6ONLY=1 default),
+    yet ``localhost`` prefers IPv6 and lands on the wrong server — so both
+    families must be free. The socket options mirror what asyncio's
+    ``create_server`` (uvicorn) sets per platform, so the probe predicts the
+    real bind outcome instead of a stricter or looser fiction.
+    """
+    probes: list[tuple[int, str]] = [(socket.AF_INET, "0.0.0.0")]
+    try:
+        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM):
+            pass
+        probes.append((socket.AF_INET6, "::"))
+    except OSError:
+        pass  # no IPv6 stack: the IPv4 verdict is authoritative
+    for family, host in probes:
+        sock = socket.socket(family, socket.SOCK_STREAM)
+        try:
+            if os.name == "nt":
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            else:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind((host, port))
+        except OSError:
+            return False
+        finally:
+            sock.close()
+    return True
+
+
+def _pick_ephemeral_port(*, avoid: set[int] | None = None, attempts: int = 8) -> int:
+    """Ask the kernel for a free TCP port by binding to port 0.
+
+    Shell-managed mode uses this for the backend, whose only consumer is the
+    frontend's proxy on the same machine (a one-shot env handshake) — nobody
+    needs the port to be stable, so the kernel allocator beats any probe: the
+    port is free *at bind time* by construction. The close-then-rebind window
+    before uvicorn starts remains, but it is strictly narrower than any
+    fixed-port scheme and uvicorn still fails loud if it loses the race.
+    """
+    avoid = avoid or set()
+    for _ in range(attempts):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("0.0.0.0", 0))
+            port = int(sock.getsockname()[1])
+        if port not in avoid and _port_free(port):
+            return port
+    raise SystemExit(
+        f"unable to obtain a free local port for the backend after {attempts} attempts"
+    )
+
+
+def _explicit_env_override(key: str) -> bool:
+    """True when ``key`` was set by the operator, not rendered by a launcher.
+
+    A relaunching launcher hands its rendered ``BACKEND_PORT``/``FRONTEND_PORT``
+    to the worker together with ``SETTINGS_DERIVED_ENV_KEYS`` (#1536); those are
+    derived values rather than deployment overrides and must not pin the port.
+    """
+    from deeptutor.services.config import SETTINGS_DERIVED_ENV_KEYS
+
+    value = os.environ.get(key, "").strip()
+    if not value:
+        return False
+    derived = {
+        part.strip()
+        for part in os.environ.get(SETTINGS_DERIVED_ENV_KEYS, "").split(",")
+        if part.strip()
+    }
+    return key not in derived
+
+
 def _port_listeners(port: int) -> list[tuple[int, str]]:
     """Best-effort list of ``(pid, command)`` for processes listening on ``port``."""
     if os.name == "nt":
@@ -439,7 +543,7 @@ def _port_listeners_windows(port: int) -> list[tuple[int, str]]:
 
 def _suggest_free_port(preferred: int, taken: set[int]) -> int:
     for candidate in range(preferred, min(preferred + 200, 65536)):
-        if candidate not in taken and not _port_accepts_connection(candidate):
+        if candidate not in taken and _port_free(candidate):
             return candidate
     return preferred
 
@@ -456,7 +560,7 @@ def _prompt_port(label: str, *, default: int, taken: set[int]) -> int:
             port = int(value)
         except ValueError:
             port = -1
-        if 1 <= port <= 65535 and port not in taken and not _port_accepts_connection(port):
+        if 1 <= port <= 65535 and port not in taken and _port_free(port):
             return port
         _log(_t("start.port_invalid", value=value))
 
@@ -494,7 +598,7 @@ def _prompt_new_ports(
     check_frontend: bool,
     settings_dir: Path,
 ) -> tuple[int, int]:
-    backend_occupied = _port_accepts_connection(backend_port)
+    backend_occupied = not _port_free(backend_port)
     new_backend = _prompt_port(
         _t("init.backend_port"),
         default=_suggest_free_port(backend_port + 1, {frontend_port})
@@ -504,7 +608,7 @@ def _prompt_new_ports(
     )
     new_frontend = frontend_port
     if check_frontend:
-        frontend_occupied = _port_accepts_connection(frontend_port)
+        frontend_occupied = not _port_free(frontend_port)
         new_frontend = _prompt_port(
             _t("init.frontend_port"),
             default=_suggest_free_port(frontend_port + 1, {new_backend})
@@ -613,18 +717,24 @@ def _resolve_port_conflicts(
     settings_dir: Path,
     runtime_home: Path | None = None,
     frontend_cwd: Path | None = None,
+    check_backend: bool = True,
 ) -> tuple[int, int]:
     """Return free ``(backend_port, frontend_port)``, resolving conflicts interactively.
 
     Without a TTY, reclaim verified orphaned children of this deployment once;
     unknown or foreign listeners retain the historical port-conflict failure.
+    ``check_backend=False`` skips the backend probe entirely: shell-managed
+    mode assigns the backend an OS-ephemeral port, which no pre-check can
+    usefully second-guess.
     """
     reclaimed = False
     while True:
-        roles = [("start.backend", backend_port)]
+        roles = []
+        if check_backend:
+            roles.append(("start.backend", backend_port))
         if check_frontend:
             roles.append(("start.frontend", frontend_port))
-        occupied = [(key, port) for key, port in roles if _port_accepts_connection(port)]
+        occupied = [(key, port) for key, port in roles if not _port_free(port)]
         if not occupied:
             return backend_port, frontend_port
 
@@ -1441,6 +1551,9 @@ def start(
 
     init_user_directories(runtime_home)
     ensure_runtime_settings_files()
+    # Snapshot deployment overrides before any settings export rewrites
+    # os.environ: an operator-pinned BACKEND_PORT must outlive that export.
+    explicit_backend_env = _explicit_env_override("BACKEND_PORT")
     settings = load_launch_settings(runtime_home)
     backend_workers = max(1, int(load_system_settings().get("backend_workers") or 1))
     runtime_env = export_runtime_settings_to_env(overwrite=True)
@@ -1448,16 +1561,36 @@ def start(
 
     backend_port = settings.backend_port
     frontend_port = settings.frontend_port
+    settings_backend_port = backend_port
+    # Shell-managed mode (desktop shell): the backend's only consumer is this
+    # machine's frontend proxy, which receives the port in its spawn env, so
+    # let the kernel assign it and port conflicts disappear. An operator-pinned
+    # BACKEND_PORT (Docker mapping, reverse proxy) still pins as before.
+    backend_ephemeral = (
+        os.environ.get(SHELL_MANAGED_ENV, "") == "1" and not explicit_backend_env
+    )
+    if backend_ephemeral:
+        backend_port = _pick_ephemeral_port(avoid={frontend_port})
+        _log(f"shell-managed mode: OS assigned backend port {backend_port}")
     backend_url = f"http://127.0.0.1:{backend_port}"
     api_base = (
         runtime_env.get("NEXT_PUBLIC_API_BASE_EXTERNAL")
         or runtime_env.get("NEXT_PUBLIC_API_BASE")
         or backend_url
     )
+    # Build-time baking (the packaged-web cache marker, the source-build
+    # fingerprint) must stay stable in shell-managed ephemeral mode, or every
+    # launch would recopy the web cache / force a rebuild. Nothing baked ever
+    # dials the backend — the client bundle uses relative paths and proxy.ts
+    # resolves the real backend from DEEPTUTOR_API_BASE_URL/BACKEND_PORT at
+    # request time — so the nominal settings port is a harmless placeholder.
+    bake_api_base = api_base
+    if backend_ephemeral and api_base == backend_url:
+        bake_api_base = f"http://127.0.0.1:{settings_backend_port}"
     frontend = _resolve_frontend(
         runtime_home,
         frontend_port,
-        api_base=api_base,
+        api_base=bake_api_base,
         auth_enabled=auth_enabled,
         dev=dev,
     )
@@ -1479,6 +1612,7 @@ def start(
         backend_port=backend_port,
         frontend_port=frontend_port,
         check_frontend=existing_frontend is None,
+        check_backend=not backend_ephemeral,
         settings_dir=settings.settings_dir,
         runtime_home=runtime_home,
         frontend_cwd=frontend.cwd,
@@ -1492,10 +1626,13 @@ def start(
             or runtime_env.get("NEXT_PUBLIC_API_BASE")
             or backend_url
         )
+        bake_api_base = api_base
+        if backend_ephemeral and api_base == backend_url:
+            bake_api_base = f"http://127.0.0.1:{settings_backend_port}"
         frontend = _resolve_frontend(
             runtime_home,
             frontend_port,
-            api_base=api_base,
+            api_base=bake_api_base,
             auth_enabled=auth_enabled,
             dev=dev,
         )
@@ -1698,7 +1835,11 @@ def start(
                 break
             for proc in processes:
                 if proc.process.poll() is not None:
-                    _log(_t("start.exited", name=proc.name, code=proc.process.returncode))
+                    code = proc.process.returncode
+                    _log(_t("start.exited", name=proc.name, code=code))
+                    hint = _exit_hint(code)
+                    if hint:
+                        _log(_t("start.exited_hint", code=code, hint=hint))
                     exit_code = 1
                     shutdown_requested = True
                     break

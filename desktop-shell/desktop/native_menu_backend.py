@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import ctypes
 import logging
+import math
 import os
 import threading
 import time
@@ -758,9 +759,21 @@ class AccountChip:
             p for p in (str(header.get("title") or ""), str(header.get("sub") or "")) if p
         )
         if head_text:
-            head = _WF.ToolStripMenuItem(head_text)
-            head.Enabled = False
-            dd.Items.Add(head)
+            if header.get("refresh_icon") and self._actions.get("refresh_user"):
+                # 头行升级为「文字 + ⟳ 刷新图标」（ToolStripMenuItem 自绘项，
+                # 见 _build_header_item）；构建失败回退普通禁用头行（菜单
+                # 结构不变，headless/headed 测试兼容）。
+                try:
+                    dd.Items.Add(self._build_header_item(dd, header))
+                except Exception:  # noqa: BLE001
+                    log.exception("header item build failed; fallback plain")
+                    head = _WF.ToolStripMenuItem(head_text)
+                    head.Enabled = False
+                    dd.Items.Add(head)
+            else:
+                head = _WF.ToolStripMenuItem(head_text)
+                head.Enabled = False
+                dd.Items.Add(head)
             dd.Items.Add(_WF.ToolStripSeparator())
         for it in menu.get("items") or []:
             if not isinstance(it, dict):
@@ -788,6 +801,166 @@ class AccountChip:
         self._strip.Invalidate()
         # 菜单展开在账号区正下方（贴标题栏下缘），左缘对齐账号区
         dd.Show(self._strip, _Point(r[0], self._strip.Height))
+
+    def _build_header_item(self, dd, header):
+        """菜单头行升级版：「用户名 · 余额」＋ 右侧 ⟳ 刷新图标（可点击）。
+
+        实现选型（三轮实证后的定稿）：pythonnet 3.1.0 CLR 子类化失效，
+        不能派生 Control/Item；首版 ToolStripControlHost 承载 Panel 在实机
+        菜单里 Paint 不上屏（截图实证渲染为空白条）；二版 AutoSize=False
+        固定宽度又撞上 ToolStripDropDownMenu 整体尺寸按 item 文字
+        GetPreferredSize 计算的规则——固定宽度对它不可见，glyph 右缘被
+        dd 裁掉（probe 实证 dd 186 < item 188）。定稿回到本模块已实证的
+        原语——普通 ToolStripMenuItem + item.Paint 全量自绘（与悬停药丸
+        同一管线），并以「文字尾部垫 en-space」把 glyph 区留进 item 自然
+        宽度（probe 实证：8 个 en-space 使 GetPreferredSize/dd 宽同步
+        +32px，ASCII 空格同样计入；显式加宽 dd 会让其余行不拉伸，弃）。
+        要点：
+          * Paint 全量重绘：先铺菜单底色盖掉渲染器默认文本/悬停底色，再画
+            「标题 · 副文本」与 ⟳（280° 圆弧 + 切向箭头，免字体缺字风险）；
+          * 命中：仅 glyph 区可点（文字区维持头行惰性观感）。ToolStripItem
+            没有 MouseClick 事件且 Click 不带坐标，用全局光标位置换算 item
+            本地坐标做矩形命中；0.5s 去重兜底防双事件路径重复触发；
+          * glyph 矩形随 Paint 刷进 ``item.Tag``（宽度由 dd 布局最终决定，
+            构建期不可知），供 headed 冒烟测试程序化命中；
+          * 点击 ⟳ → 收起下拉 + 触发 refresh_user。
+        """
+        s = self._scale()
+        font = self._font
+        title = str(header.get("title") or "")
+        sub = str(header.get("sub") or "")
+        pad_l, gap, box, pad_r = round(10 * s), round(8 * s), round(20 * s), round(8 * s)
+        text = " · ".join(p for p in (title, sub) if p)
+        en_w = max(2, int(_WF.TextRenderer.MeasureText("\u2002", font).Width))
+        n_pad = max(2, math.ceil((gap + box + pad_r) / en_w))
+        state = {"hover": False, "last_fire": 0.0}
+
+        def _resolve_bg(it):
+            try:
+                return it.Owner.Renderer.ColorTable.ToolStripDropDownBackground
+            except Exception:  # noqa: BLE001  渲染器取色失败退通用菜单底色
+                return _Color.FromArgb(0xF0, 0xF0, 0xF0)
+
+        def glyph_rect(it):
+            iw, ih = int(it.Width), int(it.Height)
+            # glyph 盒不超行高-4（s=1.5 时 30px 盒在 28px 行里会被上下裁边）
+            box_eff = max(12, min(box, ih - 4))
+            return (iw - pad_r - box, (ih - box_eff) // 2, box_eff, box_eff)
+
+        def _draw_seg(g, it, text_seg, x, color):
+            size = _WF.TextRenderer.MeasureText(text_seg, font)
+            y = (int(it.Height) - int(size.Height)) // 2
+            _WF.TextRenderer.DrawText(g, text_seg, font, _Point(x, y), color)
+            return int(size.Width)
+
+        def local_pos(it):
+            """全局光标 → item 本地坐标（Click 事件不带坐标参数）。"""
+            try:
+                p = it.Owner.PointToClient(_WF.Cursor.Position)
+                b = it.Bounds
+                return (int(p.X) - int(b.X), int(p.Y) - int(b.Y))
+            except Exception:  # noqa: BLE001
+                return (-1, -1)
+
+        def _in_glyph(it, x, y) -> bool:
+            gl, gt, gw, gh = glyph_rect(it)
+            return gl <= x < gl + gw and gt <= y < gt + gh
+
+        def on_paint(sender, e) -> None:
+            try:
+                it = sender
+                g = e.Graphics
+                g.SmoothingMode = _SmoothingMode.AntiAlias
+                iw, ih = int(it.Width), int(it.Height)
+                # 全量重绘：先铺菜单底色，盖掉渲染器默认文本与悬停底色
+                g.FillRectangle(_SolidBrush(_resolve_bg(it)), 0, 0, iw + 1, ih + 1)
+                x = pad_l
+                if title:
+                    x += _draw_seg(g, it, title, x, _Color.FromArgb(0x11, 0x11, 0x11))
+                if sub:
+                    _draw_seg(g, it, (" · " if title else "") + sub, x,
+                              _Color.FromArgb(0x8A, 0x8A, 0x8A))
+                gl, gt, gw, gh = glyph_rect(it)
+                it.Tag = (gl, gt, gw, gh)   # 活几何外露（宽度由 dd 布局定）
+                if state["hover"]:
+                    g.FillEllipse(
+                        _SolidBrush(_Color.FromArgb(0xE9, 0xE9, 0xE9)),
+                        gl, gt, gw - 1, gh - 1,
+                    )
+                # ⟳ 自绘：280° 圆弧 + 切向箭头三角（免字体缺字风险，与
+                # 窗口按钮 ─□✕ 同一自绘路线）
+                col = (_Color.FromArgb(0x33, 0x33, 0x33) if state["hover"]
+                       else _Color.FromArgb(0x70, 0x70, 0x70))
+                pen = _Pen(col, max(1.0, 1.5 * s))
+                r = min(gw, gh) * 0.30
+                cx, cy = gl + gw / 2.0, gt + gh / 2.0
+                start_deg, sweep_deg = -50.0, 280.0
+                g.DrawArc(pen, int(cx - r), int(cy - r),
+                          int(2 * r), int(2 * r), int(start_deg), int(sweep_deg))
+                end_deg = math.radians(start_deg + sweep_deg)
+                ex, ey = cx + r * math.cos(end_deg), cy + r * math.sin(end_deg)
+                # GDI 角度顺时针（y 轴向下）：θ 增大方向的切向量
+                tx, ty = -math.sin(end_deg), math.cos(end_deg)
+                nx, ny = math.cos(end_deg), math.sin(end_deg)
+                ah, aw = 4.2 * s, 2.2 * s
+                g.FillPolygon(
+                    _SolidBrush(col),
+                    (
+                        _Point(int(ex + tx * ah), int(ey + ty * ah)),
+                        _Point(int(ex + nx * aw), int(ey + ny * aw)),
+                        _Point(int(ex - nx * aw), int(ey - ny * aw)),
+                    ),
+                )
+            except Exception:  # noqa: BLE001  头行绘制异常不外抛进 WinForms
+                log.exception("account header item paint failed")
+
+        def on_move(sender, e) -> None:
+            try:
+                it = sender
+                hot = _in_glyph(it, int(e.X), int(e.Y))
+                if hot != state["hover"]:
+                    state["hover"] = hot
+                    try:
+                        it.Cursor = _WF.Cursors.Hand if hot else _WF.Cursors.Default
+                    except Exception:  # noqa: BLE001  光标失败不影响命中
+                        pass
+                    it.Invalidate()
+            except Exception:  # noqa: BLE001
+                pass
+
+        def on_leave(sender, e) -> None:
+            try:
+                it = sender
+                if state["hover"]:
+                    state["hover"] = False
+                    it.Invalidate()
+            except Exception:  # noqa: BLE001
+                pass
+
+        def on_click(sender, e) -> None:
+            try:
+                it = sender
+                # 仅 glyph 区触发；文字区维持头行「惰性」观感，不关菜单
+                if not _in_glyph(it, *local_pos(it)):
+                    return
+                now = time.monotonic()
+                if now - state["last_fire"] < 0.5:
+                    return  # 去重兜底：防多事件路径重复触发刷新
+                state["last_fire"] = now
+                self.close_dropdown()
+                handler = self._actions.get("refresh_user")
+                if handler is not None:
+                    self._run(handler)
+            except Exception:  # noqa: BLE001
+                log.exception("header refresh click failed")
+
+        head = _WF.ToolStripMenuItem(text + "\u2002" * n_pad)
+        head.Enabled = True   # 需启用才有 Click；观感由上面自绘全权接管
+        head.Paint += on_paint
+        head.MouseMove += on_move
+        head.MouseLeave += on_leave
+        head.Click += on_click
+        return head
 
     def _on_dd_opened(self, sender, e) -> None:
         try:

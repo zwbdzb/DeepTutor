@@ -109,6 +109,10 @@ https://thinkbuddy.hanyoai.com/update/ThinkBuddySetup-0.2.0_dt1.6.11.exe
 - 版本判定唯一锚点（DisplayVersion），不再困惑于壳版本/引擎版本哪来的。
 - 更新源可覆盖（`THINKBUDDY_UPDATE_URL` / `endpoints.json#update_url` / 默认
   `https://thinkbuddy.hanyoai.com/update`），内网/灰度/本地联调都能指过去。
+  **2026-10-22 更新**：随 endpoints 键值语义重定位（`api_base` 归主站、新增
+  `oauth_base`），`THINKBUDDY_UPDATE_URL` 与 `endpoints.json#update_url` 已废弃，
+  更新源改为**硬编码派生自主站** `<api_base>/update`（联调主站时自动跟随本地，
+  不会误弹生产更新）。
 - `build.ps1` 一键产出"安装包 + manifest"，上传即发布，无手工步骤。
 
 ### 变难 / 需要小心的

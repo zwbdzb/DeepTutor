@@ -223,7 +223,8 @@ OpenAI 兼容响应；每个条目自带 `model_type`，桌面端据此把模型
 | 退出登录（logout） | 平台侧吊销 + 清空本地存储 |
 
 > 强制跳过登录开发开关：`DEEPTUTOR_DESKTOP_SKIP_LOGIN=1`。
-> 平台地址均可用环境变量覆盖（`TOKENGINE_API_BASE` 等），便于联调 mock。
+> 平台地址均可用环境变量覆盖（`TOKENGINE_OAUTH_BASE` 等，旧名
+> `TOKENGINE_API_BASE` 已废弃），便于联调 mock。
 
 ---
 
@@ -239,7 +240,7 @@ OpenAI 兼容响应；每个条目自带 `model_type`，桌面端据此把模型
 
 1. 平台本地起 mock `/oauth/authorize` + `/oauth/token`。
 2. `curl` 走通 code→token（手动 PKCE 生成）验证服务端校验。
-3. ThinkBuddy 设 `TOKENGINE_API_BASE=http://127.0.0.1:8000` 启动 → 点登录 → 浏览器 mock 页回调 → 桌面端注入成功 → 首条消息调 `/v1`。
+3. ThinkBuddy 设 `TOKENGINE_OAUTH_BASE=http://127.0.0.1:8000` 启动 → 点登录 → 浏览器 mock 页回调 → 桌面端注入成功 → 首条消息调 `/v1`。
 4. 验证：启动页登录态、`auth.json` 加密、model_catalog api_key 更新、退出登录吊销。
 
 ---

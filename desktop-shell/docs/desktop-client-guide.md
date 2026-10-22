@@ -223,14 +223,18 @@ Get-ChildItem dist\*.exe | Select-Object Name, Length, LastWriteTime
 ```powershell
 # 方式一（推荐，装好的包也能改）：写配置文件
 # %LOCALAPPDATA%\ThinkBuddy\endpoints.json
-{ "api_base": "http://127.0.0.1:3000" }        # 本地联调
-{ "api_base": "https://tokengine.hanyoai.com" } # 线上
+{ "oauth_base": "http://127.0.0.1:3000" }         # Tokengine 认证/token 服务 → 本地联调
+{ "oauth_base": "https://tokengine.hanyoai.com" } # 线上
+{ "api_base": "http://127.0.0.1:8000" }           # ThinkBuddy 主站 → 本地联调（可选）
 
-# 方式二：环境变量
-$env:TOKENGINE_API_BASE = "http://127.0.0.1:3000"
+# 方式二：环境变量（临时单次）
+$env:TOKENGINE_OAUTH_BASE = "http://127.0.0.1:3000"   # Tokengine
+$env:THINKBUDDY_API_BASE = "http://127.0.0.1:8000"    # ThinkBuddy 主站
 ```
 
 **不要**为了换平台地址重新打包——配置文件优先级高于内置默认值。
+（2026-10-22 键值语义迁移：旧 `api_base`（原指 Tokengine）已改名 `oauth_base`，
+`api_base` 现指 ThinkBuddy 主站。）
 
 ### 5.4 登录后的账号菜单（ADR-004：原生标题栏账号区）
 
@@ -242,7 +246,7 @@ $env:TOKENGINE_API_BASE = "http://127.0.0.1:3000"
 |---|---|---|
 | splash 启动中 | 隐藏 | — |
 | 登录门控页（未登录/已配置令牌/登录中） | 隐藏 | 登录走页面中间按钮 |
-| 应用页（已登录） | 显示用户名 | 点击弹菜单：账号头行（用户名 · 余额 · 模型数）／**刷新可用模型**／打开 Tokengine 平台／切换账号／**退出登录**（MessageBox 确认）／关于 ThinkBuddy |
+| 应用页（已登录） | 显示用户名 | 点击弹菜单：账号头行（用户名 · 余额，右侧 ⟳ 点击重拉 /v1/userinfo，只更新用户名/余额，不动模型目录、不刷新页面）／邀请好友赢积分／签到得积分／**刷新可用模型**（重拉模型目录并刷新页面）／打开 Tokengine 平台／切换账号／**退出登录**（MessageBox 确认）／关于 ThinkBuddy |
 
 点击路由与菜单内容由状态模型决定（`desktop/titlebar_account.py` 的
 `chip_model` / `account_menu_model`），动作接线在 `main.py` 的

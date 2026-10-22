@@ -49,7 +49,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Optional
 
-DEFAULT_PLATFORM = os.environ.get("TOKENGINE_API_BASE", "https://tokengine.hanyoai.com")
+DEFAULT_PLATFORM = os.environ.get("TOKENGINE_OAUTH_BASE", "https://tokengine.hanyoai.com")
 DEFAULT_CLIENT_ID = os.environ.get("TOKENGINE_CLIENT_ID", "edubuddy-desktop")
 DEFAULT_SCOPE = os.environ.get("TOKENGINE_SCOPE", "openid relay")
 DEFAULT_PATH = "/authorize"

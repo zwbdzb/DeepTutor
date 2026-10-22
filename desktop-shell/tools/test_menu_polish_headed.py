@@ -88,6 +88,28 @@ def clear_hover(ctrl) -> None:
         mi.Invoke(ctrl, [MouseEventArgs(none_btn, 0, 1, 1, 0)])
 
 
+def _a8_plain_header_ok(chip, open_chip_dropdown, chip_dd_visible, pump):
+    """A8.0：无 refresh_icon 标志的头行走旧路径（禁用 ToolStripMenuItem）。
+
+    兼容性回归——headed 测试/任何旧调用方传入的 header dict 不带
+    refresh_icon 时，菜单结构必须与改动前逐字节一致。
+    返回 (ok, detail)：detail 供 flake 归因（打开失败 vs 类型/状态不符）。
+    """
+    if not open_chip_dropdown():
+        return False, "dropdown open failed"
+    try:
+        it0 = chip._dd.Items[0]
+        name = str(it0.GetType().Name)
+        enabled = bool(it0.Enabled)
+        return (name == "ToolStripMenuItem" and not enabled,
+                f"type={name} enabled={enabled}")
+    except Exception as exc:  # noqa: BLE001
+        return False, f"exception: {exc}"
+    finally:
+        chip.close_dropdown()
+        pump(0.15)
+
+
 
 
 
@@ -129,11 +151,13 @@ def main() -> int:
     from System.Windows.Forms import Application
     from System.Windows.Forms import MouseEventArgs, MouseButtons
 
+    fired = {"n": 0}   # A8 用：refresh_user 动作触发计数
     nmb.configure_account_chip(
         on_login=lambda: None,
         actions={
             "platform": lambda: None, "about": lambda: None,
             "refresh": lambda: None, "logout": lambda: None,
+            "refresh_user": lambda: fired.__setitem__("n", fired["n"] + 1),
         },
     )
 
@@ -521,6 +545,83 @@ def main() -> int:
             pump(0.15)
     else:
         print("[INFO] T2 real-render checks skipped (window occluded by host overlay)")
+
+    # ---- A8: 菜单头行刷新图标（⟳ 自绘项，2026-10-21 新交互）------------------
+    # logged_in 菜单头行 = 文字 + ⟳ 自绘刷新图标；点击只重拉 /v1/userinfo
+    # （用户名/余额），不动模型目录、不刷新页面。程序化取证四件套：
+    # 旧模型回退 / item 类型 / glyph 命中几何 / 点击触发动作并收起下拉。
+    _a8_ok, _a8_detail = _a8_plain_header_ok(
+        chip, open_chip_dropdown, chip_dd_visible, pump)
+    check("A8.0 plain header stays disabled ToolStripMenuItem",
+          _a8_ok, _a8_detail)
+
+    chip.set_model({
+        "label": "paidaxing", "title": "", "logged_in": True,
+        "menu": {
+            "header": {"title": "paidaxing", "sub": "余额 ¥16.77",
+                       "refresh_icon": True},
+            "items": [
+                {"label": "个人中心", "action": "platform"},
+                {"label": "关于", "action": "about"},
+            ],
+        },
+    })
+    pump(0.2)
+
+    if open_chip_dropdown():
+        it0 = chip._dd.Items[0]   # [0]=头行自绘项 [1]=sep [2]=个人中心
+        try:
+            shot(form, ROOT / "assets" / "menu-polish-chip-refresh.png")
+        except Exception as exc:  # noqa: BLE001
+            print(f"    screenshot skipped: {exc}")
+        name = str(it0.GetType().Name)
+        check("A8.1 refresh header is enabled ToolStripMenuItem",
+              name == "ToolStripMenuItem" and bool(it0.Enabled),
+              f"type={name} enabled={bool(it0.Enabled)}")
+        glyph = it0.Tag
+        ok_tag = False
+        gx = []
+        end = time.monotonic() + 1.0
+        while time.monotonic() < end:
+            # Tag 由头行 Paint 按活几何刷新（宽度由 dd 布局最终决定）
+            try:
+                gx = [int(v) for v in glyph] if glyph is not None else []
+                ok_tag = len(gx) == 4
+            except Exception:  # noqa: BLE001
+                gx = []
+            if ok_tag:
+                break
+            pump(0.05)
+            glyph = it0.Tag
+        check("A8.2 glyph rect in item.Tag", ok_tag, str(gx))
+        if ok_tag:
+            gl, gt, gw, gh = gx
+            # 光标挪到 glyph 中心（屏幕坐标）再走公共 API PerformClick 触发
+            # Click：命中判定读全局光标位置，与真实点击同一条代码路径
+            scr = chip._dd.RectangleToScreen(it0.Bounds)
+            user32.SetCursorPos(int(scr.X) + gl + gw // 2,
+                                int(scr.Y) + gt + gh // 2)
+            pump(0.05)
+            it0.PerformClick()
+            pump(0.15)
+            check("A8.3 glyph click closes dropdown", not chip_dd_visible())
+            ok_fire = False
+            end = time.monotonic() + 1.0
+            while time.monotonic() < end:
+                if fired["n"] >= 1:
+                    ok_fire = True
+                    break
+                pump(0.05)
+            check("A8.4 glyph click fires refresh_user action", ok_fire,
+                  f"fired={fired['n']}")
+        chip.close_dropdown()
+        pump(0.15)
+    else:
+        check("A8.1 refresh header is enabled ToolStripMenuItem", False, "open failed")
+        check("A8.2 glyph rect in item.Tag", False, "open failed")
+        check("A8.3 glyph click closes dropdown", False, "open failed")
+        check("A8.4 glyph click fires refresh_user action", False, "open failed")
+
     user32.SetCursorPos(int(far_pt.X), int(far_pt.Y))
     clear_hover(strip)
     pump(0.1)

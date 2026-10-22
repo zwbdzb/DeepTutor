@@ -28,7 +28,8 @@ log = logging.getLogger("dt.titlebar")
 
 # 菜单动作名（与 main.py 的分发表对齐，便于一眼核对）
 MENU_ACTIONS = (
-    "invite", "checkin", "switch", "platform", "refresh", "copy", "logout", "about",
+    "invite", "checkin", "switch", "platform", "refresh", "refresh_user",
+    "copy", "logout", "about",
 )
 
 
@@ -127,12 +128,17 @@ def account_menu_model(status: dict) -> dict:
         models = acct.get("models") or []
         # 菜单头只放余额：模型数量是维护性信息（「刷新可用模型」动作本身
         # 就在菜单里），用户反馈数字展示无价值，砍掉（2026-09-28）。
+        # refresh_icon：余额右侧画一枚 ⟳ 刷新图标，点击只重拉
+        # /v1/userinfo 更新用户名/余额（不动模型目录、不刷新页面）；
+        # 各平台渲染端（Windows AccountChip / mac AccountChipInjector）
+        # 见到该标志才画图标，缺省走普通禁用头行（测试模型兼容）。
         amount = _fmt_balance(acct.get("balance"))
         sub = f"余额 ¥{amount}" if amount else ""
         return {
             **base,
             "header": {"title": _display_name(acct),
-                       "sub": sub},
+                       "sub": sub,
+                       "refresh_icon": True},
             "items": [
                 {"action": "invite", "label": "邀请好友赢积分"},
                 {"action": "checkin", "label": "签到得积分"},

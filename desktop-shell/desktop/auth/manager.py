@@ -49,7 +49,8 @@ class AuthManager:
             userinfo_url=self._ep["userinfo_url"],
             revoke_url=self._ep["revoke_url"],
         )
-        self._api_base = self._ep["api_base"]
+        # Tokengine 根地址（oauth 侧）：open_platform 与回环派生中继的基准。
+        self._oauth_base = self._ep["oauth_base"]
         self._fallback_relay = self._ep["relay_base"]
         self._lock = threading.Lock()
 
@@ -127,7 +128,7 @@ class AuthManager:
         """
         phone = str(account.get(cfg.USERINFO_PHONE_FIELD) or "") or ""
         relay_base, relay_source = cfg.resolve_relay(
-            api_base=self._api_base,
+            api_base=self._oauth_base,
             userinfo=account,
             fallback=self._fallback_relay,
             local_override=self._local_relay_override,
@@ -269,7 +270,9 @@ class AuthManager:
                 acc["model_types"] = model_types
             if not acc.get("phone") and phone:
                 acc["phone"] = phone
-            if acc.get("balance") is None and account.get("balance") is not None:
+            # 余额用平台最新值覆盖（曾只在缺值时回写，菜单头永远显示旧
+            # 余额——2026-10-21 修复；fresh 为空的键已在上面 update 过滤）。
+            if account.get("balance") is not None:
                 acc["balance"] = account.get("balance")
             payload["account"] = acc
             payload["relay_base"] = relay_base
@@ -284,13 +287,68 @@ class AuthManager:
                 "path": str(path),
             }
 
+    def refresh_user_info(self) -> dict[str, Any]:
+        """轻量刷新：只重拉 /v1/userinfo，更新用户名/余额/手机号等展示字段。
+
+        供账号菜单头行的「⟳ 刷新」图标调用，与 refresh_models 的分工：
+          * 不拉 /v1/models、不重写 model_catalog、不需要 reload 页面——
+            改动经 store 落盘后由 AccountStatusSync 轮询自动推到菜单头行；
+          * 余额总是用平台最新值覆盖；
+          * 不轮换业务令牌（ai_token 换发须同步 catalog，走完整刷新链路）。
+
+        access_token 过期时先用 refresh_token 轮换（与 refresh_models 同一
+        兜底，长会话也能刷）。未登录 / 无 access_token / 拉取失败一律
+        ``ok=False`` + 用户可读 message。
+        """
+        with self._lock:
+            payload = self._store.load()
+            if not str(payload.get("token") or ""):
+                return {"ok": False, "error": "not_logged_in",
+                        "message": "尚未登录，无法刷新用户信息"}
+            if self._refresh_access_token(payload):
+                self._store.save(payload)
+            access = str(payload.get("access_token") or "")
+            if not (access and self._client.userinfo_url):
+                return {"ok": False, "error": "no_access_token",
+                        "message": "缺少平台访问令牌，请重新登录后重试"}
+            try:
+                fresh = self._client.userinfo(access)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("刷新用户信息失败：%s", exc)
+                return {"ok": False, "error": "fetch_failed",
+                        "message": f"用户信息拉取失败：{exc}"}
+            if not fresh:
+                return {"ok": False, "error": "empty_userinfo",
+                        "message": "平台未返回用户信息"}
+
+            acc = dict(payload.get("account") or {})
+            raw = dict(acc.get("raw") or {})
+            for k, v in fresh.items():
+                if v in (None, "") or k == cfg.USERINFO_AI_TOKEN_FIELD:
+                    continue  # 业务令牌不在轻刷新里轮换（见 docstring）
+                if k == "balance":
+                    acc["balance"] = v
+                else:
+                    raw[k] = v
+            acc["raw"] = raw
+            phone = str(fresh.get(cfg.USERINFO_PHONE_FIELD) or "")
+            if phone:
+                acc["phone"] = phone
+            payload["account"] = acc
+            self._store.save(payload)
+            log.info("user info refreshed: username=%s balance=%s",
+                     raw.get("username") or "?", acc.get("balance"))
+            return {"ok": True,
+                    "username": str(raw.get("username") or ""),
+                    "balance": acc.get("balance")}
+
     def open_platform(self) -> dict[str, Any]:
         """用系统浏览器打开 Tokengine 平台首页。"""
         try:
             import webbrowser
         except ImportError:  # pragma: no cover  环境异常时才可能走到
             return {"ok": False, "error": "no_webbrowser"}
-        url = (self._api_base or self._fallback_relay or "").strip()
+        url = (self._oauth_base or self._fallback_relay or "").strip()
         if not url:
             return {"ok": False, "error": "no_platform_url", "message": "未配置平台地址"}
         webbrowser.open(url)

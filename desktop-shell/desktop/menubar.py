@@ -415,7 +415,7 @@ def _win_close() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 帮助：打开官网 / 使用文档 / 日志目录 -------------------------------------------- #
+# 帮助：打开官网 / 配置使用指南 / 日志目录 ---------------------------------------- #
 def _open_website() -> None:
     """打开 ThinkBuddy 官网（文件菜单；URL 走 endpoints 覆盖链，默认官网首页）。"""
     try:
@@ -423,20 +423,20 @@ def _open_website() -> None:
 
         from desktop.auth import config as auth_config
 
-        url = auth_config.thinkbuddy_website_url(ROOT) or "https://thinkbuddy.hanyoai.com"
+        url = auth_config.thinkbuddy_api_base(ROOT) or "https://thinkbuddy.hanyoai.com"
         webbrowser.open(url)
     except Exception:  # noqa: BLE001
         log.exception("open website failed")
 
 
 def _open_docs() -> None:
-    """打开 ThinkBuddy 使用文档（帮助菜单；官网域名 + ``/docs``）。"""
+    """打开 ThinkBuddy 配置使用指南（帮助菜单；官网域名 + ``/docs``）。"""
     try:
         import webbrowser
 
         from desktop.auth import config as auth_config
 
-        base = auth_config.thinkbuddy_website_url(ROOT) or "https://thinkbuddy.hanyoai.com"
+        base = auth_config.thinkbuddy_api_base(ROOT) or "https://thinkbuddy.hanyoai.com"
         webbrowser.open(f"{base}/docs")
     except Exception:  # noqa: BLE001
         log.exception("open docs failed")
@@ -504,7 +504,7 @@ def build_native_menu(api) -> list[Menu]:
         Menu(
             "帮助",
             [
-                MenuAction("使用文档", lambda: _open_docs()),
+                MenuAction("配置使用指南", lambda: _open_docs()),
                 MenuAction("打开日志目录", lambda: _open_log_dir()),
                 MenuSeparator(),
                 MenuAction(f"关于 {APP_NAME}", lambda: _menu_about(api)),
