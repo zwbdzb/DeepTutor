@@ -497,6 +497,7 @@ def bootstrap(window, api: Api, auth: AuthManager) -> None:
                         120,
                     ),
                 },
+                occurred_at=entry.get("timestamp"),
             )
 
         tail = EngineLogTail(

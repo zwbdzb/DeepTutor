@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import datetime
 import json
 import logging
 import platform
@@ -91,18 +92,26 @@ class TelemetryReporter:
 
     # ------------------------------------------------------------------ #
     def report(
-        self, name: str, props: dict[str, Any] | None = None, *, access_token: str | None = None
+        self, name: str, props: dict[str, Any] | None = None, *,
+        access_token: str | None = None, occurred_at: str | None = None,
     ) -> None:
         """Fire-and-forget 上报；任何路径都不抛异常、不阻塞调用方。"""
         if not self.enabled:
             return
         try:
+            # Capture before scheduling; log events keep their original timestamp.
+            ts = int(time.time())
+            if occurred_at:
+                try:
+                    ts = int(datetime.fromisoformat(occurred_at).timestamp())
+                except (TypeError, ValueError, OverflowError, OSError):
+                    pass
             # Snapshot identity before scheduling: switching accounts must not
             # attribute an older event to the new account.
             token = self._access_token() if access_token is None else access_token
             thread = threading.Thread(
                 target=self._post,
-                args=(name, dict(props or {}), token),
+                args=(name, dict(props or {}), token, ts),
                 daemon=True,
                 name="dt-telemetry",
             )
@@ -116,22 +125,23 @@ class TelemetryReporter:
         if not self.enabled:
             return
         try:
-            self._post(name, dict(props or {}), self._access_token(), timeout=self._flush_timeout)
+            ts = int(time.time())
+            self._post(name, dict(props or {}), self._access_token(), ts, timeout=self._flush_timeout)
         except Exception:  # noqa: BLE001
             log.debug("telemetry exit report failed")
 
     # ------------------------------------------------------------------ #
     def _post(
-        self, name: str, props: dict[str, Any], token: str, *, timeout: float | None = None
+        self, name: str, props: dict[str, Any], token: str, ts: int, *, timeout: float | None = None
     ) -> None:
         try:
-            self._post_sync(name, props, token, timeout=timeout)
+            self._post_sync(name, props, token, ts, timeout=timeout)
         except Exception:  # noqa: BLE001 — fire-and-forget 铁律：绝不外泄异常
             log.debug("telemetry post raised unexpectedly")
 
     # ------------------------------------------------------------------ #
     def _post_sync(
-        self, name: str, props: dict[str, Any], token: str, *, timeout: float | None = None
+        self, name: str, props: dict[str, Any], token: str, ts: int, *, timeout: float | None = None
     ) -> None:
         now = time.monotonic()
         with self._lock:
@@ -145,7 +155,7 @@ class TelemetryReporter:
                 self._error_count += 1
         event: dict[str, Any] = {
             "name": name,
-            "ts": int(time.time()),
+            "ts": ts,
             "props": props,
             **self._base,
         }

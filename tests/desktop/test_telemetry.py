@@ -201,11 +201,11 @@ def test_consecutive_failures_trip_circuit_breaker(monkeypatch) -> None:
         "https://t.example/events", {}, fail_threshold=3, mute_seconds=600.0
     )
     for _ in range(3):
-        reporter._post_sync("error_backend", {}, "")
+        reporter._post_sync("error_backend", {}, "", 1792576514)
     assert calls["n"] == 3
     assert reporter._muted_until > 0
     # 熔断窗口内：同步与异步路径都静默丢弃，不再打网络
-    reporter._post_sync("app_exit", {}, "")
+    reporter._post_sync("app_exit", {}, "", 1792576514)
     reporter.flush_exit("error_backend", {})
     assert calls["n"] == 3
 
@@ -224,10 +224,10 @@ def test_error_rate_limit_drops_excess(monkeypatch) -> None:
         "https://t.example/events", {}, error_rate_limit=2, fail_threshold=100
     )
     for i in range(4):
-        reporter._post_sync("error_backend", {"i": i}, "")
+        reporter._post_sync("error_backend", {"i": i}, "", 1792576514)
     assert calls["n"] == 2  # 前两条真实发出（失败），后两条被限速丢弃
     # 非 error 前缀不受 error 限速影响
-    reporter._post_sync("app_exit", {}, "")
+    reporter._post_sync("app_exit", {}, "", 1792576514)
     assert calls["n"] == 3
 
 

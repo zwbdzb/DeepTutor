@@ -64,6 +64,33 @@ def test_identity_is_snapshotted_before_background_thread_runs():
     assert opener.open.call_args.args[0].get_header("Authorization") == "Bearer account-a"
 
 
+@pytest.mark.parametrize("occurred_at, expected", [
+    (None, 1792576514),
+    ("2026-10-21T07:03:19.264560+00:00", 1792566199),
+    ("2026-10-21T15:03:19.264560+08:00", 1792566199),
+    ("invalid", 1792576514),
+])
+def test_occurrence_time_is_captured_before_background_send(occurred_at, expected):
+    reporter = TelemetryReporter("https://website.example/v1/events", BASE)
+    opener = Mock()
+    opener.open.return_value = io.BytesIO(b"{}")
+    scheduled = []
+
+    def defer_thread(*, target, args, **kwargs):
+        scheduled.append((target, args))
+        return Mock()
+
+    with patch("desktop.telemetry_reporter.threading.Thread", side_effect=defer_thread), patch(
+        "desktop.telemetry_reporter.urllib.request.build_opener", return_value=opener
+    ), patch("desktop.telemetry_reporter.time.time", return_value=1792576514) as clock:
+        reporter.report("error_backend", occurred_at=occurred_at)
+        clock.return_value = 1792576614
+        target, args = scheduled.pop()
+        target(*args)
+    event = json.loads(opener.open.call_args.args[0].data)["events"][0]
+    assert event["ts"] == expected
+
+
 def test_reporting_does_not_wait_for_network():
     reporter = TelemetryReporter("https://website.example/v1/events", BASE)
     entered, release, completed = threading.Event(), threading.Event(), threading.Event()
