@@ -74,6 +74,9 @@ class AuthManager:
     def home(self) -> Path:
         return self._home
 
+    def machine_id(self) -> str:
+        return self._store.machine_id()
+
     def is_logged_in(self) -> bool:
         return bool((self._store.load() or {}).get("token"))
 

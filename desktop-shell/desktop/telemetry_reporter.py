@@ -22,17 +22,14 @@ from __future__ import annotations
 from collections.abc import Callable
 import json
 import logging
-from pathlib import Path
 import platform
 import threading
 import time
 from typing import Any
 import urllib.request
-import uuid
 
 log = logging.getLogger("dt.telemetry")
 
-_DEVICE_ID_FILE = "telemetry_device_id"
 _MESSAGE_MAX_CHARS = 200
 
 
@@ -50,29 +47,6 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         # Never forward OAuth credentials or report contents to a redirect target.
         return None
-
-
-def load_or_create_device_id(home: Path) -> str:
-    """安装级匿名 ID：``<home>/telemetry_device_id`` 存随机 UUID。
-
-    与账户完全无关（不含硬件指纹/MAC/用户名），首次生成后永久复用；
-    文件损坏/被删则重新生成（只影响事件连续性，无安全影响）。
-    编码铁律：显式 ``encoding="utf-8"``（zh-CN Windows 默认 cp936）。
-    """
-    path = Path(home) / _DEVICE_ID_FILE
-    try:
-        text = path.read_text(encoding="utf-8").strip()
-        if text:
-            return text
-    except (OSError, ValueError):
-        pass
-    device_id = str(uuid.uuid4())
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(device_id + "\n", encoding="utf-8")
-    except OSError:
-        log.debug("device id persist failed; using ephemeral id")
-    return device_id
 
 
 def truncate_message(value: Any, limit: int = _MESSAGE_MAX_CHARS) -> str:

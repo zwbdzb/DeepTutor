@@ -11,10 +11,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "desktop-shell"))
 
-from desktop.telemetry_reporter import TelemetryReporter, load_or_create_device_id, os_description
+from desktop.telemetry_reporter import TelemetryReporter, os_description
 
 BASE = {
-    "device_id": "device-1", "session_id": "session-1", "app_ver": "1.2.3",
+    "machine_id": "device-1", "session_id": "session-1", "app_ver": "1.2.3",
     "os": "Windows 11 10.0.26100",
 }
 
@@ -173,7 +173,3 @@ def test_combined_os_description(system, release, version, mac, want):
         "desktop.telemetry_reporter.platform.mac_ver", return_value=(mac, (), "")
     ):
         assert os_description() == want
-
-
-def test_device_id_is_reused(tmp_path):
-    assert load_or_create_device_id(tmp_path) == load_or_create_device_id(tmp_path)

@@ -53,7 +53,6 @@ import desktop.runtime as rt
 from desktop.splash import splash_html
 from desktop.telemetry_reporter import (
     TelemetryReporter,
-    load_or_create_device_id,
     os_description,
     truncate_message,
 )
@@ -475,7 +474,7 @@ def bootstrap(window, api: Api, auth: AuthManager) -> None:
         reporter = TelemetryReporter(
             auth_config.telemetry_url(rt.ROOT),
             {
-                "device_id": load_or_create_device_id(home),
+                "machine_id": auth.machine_id(),
                 "session_id": str(uuid.uuid4()),
                 "app_ver": __version__,
                 "os": os_description(),

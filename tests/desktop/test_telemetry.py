@@ -22,7 +22,7 @@ DESKTOP_SHELL = Path(__file__).resolve().parents[2] / "desktop-shell"
 sys.path.insert(0, str(DESKTOP_SHELL))
 
 from desktop.engine_log_tail import EngineLogTail
-from desktop.telemetry_reporter import TelemetryReporter, load_or_create_device_id
+from desktop.telemetry_reporter import TelemetryReporter
 
 
 # --------------------------------------------------------------------------- #
@@ -170,7 +170,7 @@ def make_reporter(monkeypatch, endpoint="https://t.example/events", **kwargs):
     monkeypatch.setattr(
         urllib.request, "build_opener", lambda *args: SimpleNamespace(open=fake_urlopen)
     )
-    reporter = TelemetryReporter(endpoint, {"device_id": "d", "os": "test"}, **kwargs)
+    reporter = TelemetryReporter(endpoint, {"machine_id": "d", "os": "test"}, **kwargs)
     return reporter, sent
 
 
@@ -181,7 +181,7 @@ def test_report_sends_batch_envelope_with_base_props(monkeypatch) -> None:
     assert len(sent) == 2
     event = sent[0]["events"][0]
     assert event["name"] == "error_backend"
-    assert event["device_id"] == "d"
+    assert event["machine_id"] == "d"
     assert event["props"] == {"logger": "m"}
     assert "lost_before" not in event
     assert sent[1]["events"][0]["name"] == "app_exit"
@@ -232,15 +232,7 @@ def test_error_rate_limit_drops_excess(monkeypatch) -> None:
 
 
 def test_disabled_reporter_is_noop() -> None:
-    reporter = TelemetryReporter("", {"device_id": "d"})
+    reporter = TelemetryReporter("", {"machine_id": "d"})
     reporter.report("error_backend", {})  # 不应抛异常、不应发请求
     reporter.flush_exit("app_exit", {})
     assert reporter.enabled is False
-
-
-def test_device_id_persists_and_reuses(tmp_path: Path) -> None:
-    first = load_or_create_device_id(tmp_path)
-    assert len(first) == 36
-    assert load_or_create_device_id(tmp_path) == first
-    stored = (tmp_path / "telemetry_device_id").read_text(encoding="utf-8").strip()
-    assert stored == first
