@@ -386,7 +386,7 @@ def run_installer(setup_path: str | os.PathLike) -> None:
            bootloader 若在安装器 Exec 后立刻 LoadLibrary(python312.dll)
            可能拿到 ERROR 126，手动延迟启动则正常，2026-10-14 实测）；
         4) 从注册表 InstallLocation 读安装目录，拉起新壳。
-    bat 全程 CREATE_NO_WINDOW 隐藏运行；安装器带 CloseApplications=yes 兜底。
+    bat 全程 CREATE_NO_WINDOW 隐藏运行；安装器带 CloseApplications=force 兜底。
     不能指望 Restart Manager 关本进程：RM 对 GUI 壳常失败（事件 10006），
     Inno 静默模式会把被抑制的「无法关闭应用」框按「取消」处理直接中止。
 

@@ -362,6 +362,11 @@ def _attach_strip_behaviors(form, strip, caption_hit=None) -> None:
 _CAPTION_H_DIP = 36     # 标题栏高度（逻辑像素，96 DPI 基准）
 _BTN_W_DIP = 46         # 单个按钮宽度（逻辑像素）
 _GLYPH_BOX_DIP = 10.0   # 符号盒边长（─ □ ✕ 共用）
+# 顶栏 / 账号区 / 下拉菜单统一字号（96 DPI 基准 pt）。WinForms 缺省 8.25pt
+# 的 MS Sans Serif 无 CJK 字形会回退宋体；9pt 雅黑在 125% 缩放下约 15 物理
+# 像素，与 Web 页正文（~15 CSS px ≈ 18.75 物理像素）并排明显偏小，故取
+# 10.5pt（≈17.5 物理像素），与页面文字视觉齐平。
+_CHROME_FONT_PT = 10.5
 
 _BTN_ORDER = ("min", "max", "close")
 
@@ -578,7 +583,7 @@ class AccountChip:
         self._strip = strip
         self._on_login = on_login
         self._actions = dict(actions or {})
-        self._font = _Font("Microsoft YaHei UI", 9.0)
+        self._font = _Font("Microsoft YaHei UI", _CHROME_FONT_PT)
         self._model: dict = {"label": "登录", "title": "登录 Tokengine 账号",
                              "logged_in": False, "menu": None}
         self._hover = False
@@ -1377,6 +1382,30 @@ def _chip_right_pad() -> int:
     return _ACCOUNT_CHIP.extra_right_padding() if _ACCOUNT_CHIP else 0
 
 
+def _apply_dropdown_font(item, font):
+    """给菜单项的下拉（含嵌套子菜单）统一设置字体。
+
+    ToolStripDropDownMenu 不显式设 ``Font`` 时继承 WinForms 默认
+    8.25pt「Microsoft Sans Serif」——该字体无中文字形，GDI 回退宋体渲染，
+    比顶栏 9pt 雅黑明显小一圈且发虚。账号区下拉（ContextMenuStrip）一直
+    显式设了字体，所以只有菜单栏下拉观感异常。
+
+    分隔线等没有 ``DropDown`` 属性的项直接跳过；任何失败都不拦构建。
+    """
+    try:
+        dd = item.DropDown
+    except Exception:  # noqa: BLE001  ToolStripSeparator 无该属性
+        return
+    if dd is None:
+        return
+    try:
+        dd.Font = font
+        for child in item.DropDownItems:
+            _apply_dropdown_font(child, font)
+    except Exception:  # noqa: BLE001  字体兜底不拦构建
+        log.exception("dropdown font apply failed")
+
+
 def _build_menu_strip(form, menu_list):
     scale = _dpi_scale(form)
     cap_h = max(1, round(_CAPTION_H_DIP * scale))
@@ -1391,7 +1420,10 @@ def _build_menu_strip(form, menu_list):
     strip.Height = cap_h
     strip.ShowItemToolTips = False
     strip.BackColor = _Color.White
-    strip.Font = _Font("Microsoft YaHei UI", 9.0)
+    # 顶栏与全部下拉共用一份字体实例（WinForms 控件不拥有赋值的 Font，
+    # 共享是标准做法）：下拉不显式设字体会继承默认 8.25pt 宋体回退观感。
+    menu_font = _Font("Microsoft YaHei UI", _CHROME_FONT_PT)
+    strip.Font = menu_font
     # 右侧让出 3 个按钮宽度，菜单项永远不会钻到按钮下面
     strip.Padding = _WF.Padding(round(6 * scale), 0, 3 * btn_w, 0)
 
@@ -1418,6 +1450,8 @@ def _build_menu_strip(form, menu_list):
                 dd.Opened += _make_dropdown_shape_handler(dd, scale)
         except Exception:  # noqa: BLE001  圆角失败退回原生方角，不拦构建
             log.exception("dropdown rounding wire failed")
+        # 下拉（含嵌套子菜单）与顶栏同字号同字体——分隔线会在此静默跳过
+        _apply_dropdown_font(converted, menu_font)
 
     # 绘制顺序 = 订阅顺序：白底 → 窗口按钮 → 底部分隔线（最后覆盖保证连贯）
     brush = _SolidBrush(_Color.White)

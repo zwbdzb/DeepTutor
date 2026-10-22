@@ -62,7 +62,22 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-CloseApplications=yes
+; CloseApplications 用 force 而非 yes：
+; Restart Manager 能关掉有消息循环的壳（ThinkBuddyDesktop.exe），却关不掉无
+; 消息循环的后端子进程（安装目录 runtime\python\python.exe 的 launcher/
+; uvicorn、runtime\node\node.exe 的 next standalone）——它们继续占用安装目录
+; 文件，yes 模式下 Inno 会弹「无法自动关闭所有应用程序（重试/忽略/取消）」
+; 框卡住交互安装（用户截图实证）。force 兜底强杀所有占用安装目录下文件的
+; 进程；按「文件占用安装目录」精确匹配，不会误杀系统里其他无关的
+; python.exe / node.exe。
+; 静默更新链路（desktop/updater.py run_installer）一直用命令行开关
+; /FORCECLOSEAPPLICATIONS（语义等价 force）覆盖本指令，此处统一为同一语义，
+; 两条链路行为一致。
+CloseApplications=force
+; 被 RM/force 关闭的应用不自动重启：装后拉起统一归 updater.bat（静默更新，
+; 延迟约 15s 等杀软扫描完新 DLL 再拉起，防 PyInstaller bootloader 报 126）
+; 与 Finish 页复选框（交互安装）负责，避免双拉起。
+RestartApplications=no
 
 [Languages]
 ; 简体中文放第一位：[Languages] 的第一项是 Inno 的 fallback 默认语言。
@@ -110,3 +125,103 @@ Type: filesandordirs; Name: "{localappdata}\EduBuddy\runtime"
 ; copy) and the version-locked runtime cache are removed.
 Type: filesandordirs; Name: "{localappdata}\ThinkBuddy\runtime"
 Type: filesandordirs; Name: "{app}"
+
+[Code]
+(* ===== 交互安装前的旧实例抢先清理（InitializeSetup） =====================
+   背景：双击 setup.exe 交互安装新版时若旧版还在运行，Inno 的 Restart Manager
+   能关掉有消息循环的壳（ThinkBuddyDesktop.exe），却关不掉无消息循环的后端
+   子进程（安装目录 runtime\python\python.exe 的 launcher/uvicorn、
+   runtime\node\node.exe 的 next standalone）——它们继续占用安装目录文件，
+   Inno 会弹「无法自动关闭所有应用程序（重试/忽略/取消）」框卡住安装。
+   壳还有 supervise() 自愈（后端死了有界重启）：若 RM 先杀后端后杀壳，壳会把
+   后端再拉起来继续占文件——所以必须先杀壳、再清子进程，顺序不能反。
+
+   修复：复刻静默更新链路 desktop/updater.py run_installer（updater.bat）的
+   已验证顺序，在 InitializeSetup 抢先清理：
+     1) taskkill 先杀壳，终结 supervise 自愈源；
+     2) PowerShell 按「可执行文件路径位于旧安装目录下」精确清理 runtime
+        子进程——严禁 taskkill /IM python.exe / node.exe（会误杀系统里其他
+        无关进程），必须按 ExecutablePath 匹配；
+     3) 睡约 1.5s 等文件句柄释放。
+
+   与 updater.bat 的对应关系（顺序一致性）：bat 先
+   taskkill /F /FI "IMAGENAME eq ThinkBuddyDesktop.exe"，再跑
+   /VERYSILENT /FORCECLOSEAPPLICATIONS 安装——本函数在交互路径做同样的
+   先壳后子进程清理；静默链路跑到这里时壳已被 bat 杀掉，第 1 步是幂等
+   空操作，第 2 步与 force 语义一致（目标本就要被关），零冲突零破坏。
+
+   分层设计：本函数只清「安装启动时刻已存在的旧实例」；向导空窗期
+   （InitializeSetup 返回后到复制文件之间）用户再启动的实例，由 [Setup]
+   段 CloseApplications=force 在复制文件阶段兜底强杀。
+
+   幂等与容错：旧版未装/未运行时三步全部静默通过（taskkill 报无匹配、
+   注册表读不到走回退、目录不存在跳过 PowerShell）；任何一步失败都不阻断
+   安装——InitializeSetup 恒返回 True，复制文件阶段还有 force 兜底。
+   ====================================================================== *)
+
+// kernel32.Sleep 导入：精确毫秒级等待，无窗口、无子进程（比 ping -n 干净）。
+// Inno 的 DLL 导入语法；setuponly 表示仅安装器进程加载。
+procedure SleepMs(Milliseconds: Longint);
+  external 'Sleep@kernel32.dll stdcall setuponly';
+
+function InitializeSetup(): Boolean;
+var
+  ErrorCode: Integer;  // Exec 返回码占位：全程只看成败，不判具体值
+  AppDir: string;      // 旧版安装目录（HKCU InstallLocation，回退默认目录）
+  Pattern: string;     // PowerShell -like 匹配模式：安装目录\*
+  PsPath: string;      // powershell.exe 全路径
+  PsParams: string;    // powershell.exe 参数串
+begin
+  Result := True;
+  try
+    // ---- 第 1 步：先杀壳，终结 supervise() 自愈源（顺序不能反） ----
+    // 无实例在跑时 taskkill 报「没有找到进程」(128)，属正常，忽略返回码。
+    Exec(ExpandConstant('{sys}\taskkill.exe'),
+      '/F /FI "IMAGENAME eq ThinkBuddyDesktop.exe"',
+      '', SW_HIDE, ewWaitUntilTerminated, ErrorCode);
+
+    // ---- 第 2 步：按安装目录路径精确清理 runtime 子进程 ----
+    // per-user 安装（PrivilegesRequired=lowest）的卸载项在 HKCU；键名里的
+    // GUID 即 AppId 字面值（iss 值字段的双花括号转义不适用于 Pascal 字符
+    // 串，这里直接写单层花括号即可）。读不到则回退默认安装目录。
+    AppDir := '';
+    if not RegQueryStringValue(HKEY_CURRENT_USER,
+         '{3B4FC0AE-E3E3-491F-B3B6-59BBBF1D6305}_is1',
+         'InstallLocation', AppDir) then
+      AppDir := ExpandConstant('{autopf}\ThinkBuddy');
+    // 规范化：注册表 InstallLocation 常带尾反斜杠，去掉，避免拼出双反斜杠。
+    if (Length(AppDir) > 0) and (AppDir[Length(AppDir)] = '\') then
+      SetLength(AppDir, Length(AppDir) - 1);
+    // 目录不存在（旧版从未安装/已被删）直接跳过，省一次 PowerShell 冷启动。
+    if (AppDir <> '') and DirExists(AppDir) then
+    begin
+      Pattern := AppDir + '\*';
+      // 罕见边界：路径含单引号（如用户名 O'Brien）时按 PowerShell 单引号
+      // 字符串规则翻倍，防止命令被截断。
+      StringChange(Pattern, '''', '''''');
+      PsPath := ExpandConstant(
+        '{sd}\Windows\System32\WindowsPowerShell\v1.0\powershell.exe');
+      // 引号层级：Pascal 串里两个连续单引号即一个单引号；-like 模式用
+      // PowerShell 单引号串包住（路径含空格也安全）；整条 -Command 再用
+      // 双引号包住直接交给 powershell.exe——不经 cmd，无 OEM 代码页乱码
+      // 与重定向干扰；SW_HIDE 保证不闪黑框。
+      PsParams :=
+        '-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ' +
+        '"Get-CimInstance Win32_Process | Where-Object { ' +
+        '$_.ExecutablePath -like ''' + Pattern + ''' } | ' +
+        'ForEach-Object { Stop-Process -Id $_.ProcessId -Force ' +
+        '-ErrorAction SilentlyContinue }"';
+      if not Exec(PsPath, PsParams, '', SW_HIDE,
+           ewWaitUntilTerminated, ErrorCode) then
+        // 兜底：全路径不可用时走 PATH 里的 powershell.exe。
+        Exec('powershell.exe', PsParams, '', SW_HIDE,
+          ewWaitUntilTerminated, ErrorCode);
+    end;
+
+    // ---- 第 3 步：等约 1.5s，让被杀进程释放安装目录文件句柄 ----
+    SleepMs(1500);
+  except
+    // 任何一步异常都不阻断安装：复制文件阶段还有 CloseApplications=force 兜底。
+    Result := True;
+  end;
+end;

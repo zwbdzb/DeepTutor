@@ -206,9 +206,14 @@ class Api:
             "relay": str(self._auth.status().get("relay_base") or ""),
         }
 
-    def toast(self, msg: str) -> None:
-        """在页面底部弹一条轻提示（右键菜单操作反馈用）。"""
-        js = "window.__edubuddyToast(%s)" % json.dumps(str(msg), ensure_ascii=False)
+    def toast(self, msg: str, kind: str = "info",
+              duration_ms: int = 2000) -> None:
+        """在页面底部弹一条轻提示（kind: 'info' | 'success' | 'error'）。"""
+        js = "window.__edubuddyToast(%s, %d, %s)" % (
+            json.dumps(str(msg), ensure_ascii=False),
+            duration_ms,
+            json.dumps(kind, ensure_ascii=False),
+        )
         for w in webview_windows:
             try:
                 w.evaluate_js(js)
@@ -269,10 +274,11 @@ def _chip_actions(api: Api) -> dict:
     def refresh() -> None:
         res = api.refresh_models()
         if res.get("ok"):
-            api.toast("模型已刷新 ✓")
+            api.toast("模型已刷新", kind="success")
             _reload_page()
         else:
-            api.toast(res.get("message") or res.get("error") or "刷新失败")
+            api.toast(res.get("message") or res.get("error") or "刷新失败",
+                      kind="error", duration_ms=3500)
 
     def refresh_user() -> None:
         """菜单头 ⟳ 图标：轻量刷新用户名/余额（/v1/userinfo）。
@@ -283,14 +289,22 @@ def _chip_actions(api: Api) -> dict:
         res = api.refresh_user_info()
         if res.get("ok"):
             amount = _fmt_balance(res.get("balance"))
-            api.toast("用户信息已刷新" + (f"，余额 ¥{amount}" if amount else ""))
+            api.toast("用户信息已刷新" + (f"，余额 ¥{amount}" if amount else ""),
+                      kind="success")
         else:
-            api.toast(res.get("message") or res.get("error") or "刷新失败")
+            api.toast(res.get("message") or res.get("error") or "刷新失败",
+                      kind="error", duration_ms=3500)
 
     def checkin() -> None:
-        api.toast("正在签到...")
+        api.toast("正在签到…")
         result = api.checkin_points()
-        api.toast(checkin_message(result))
+        # 结果 toast 按成功/失败区分语义圆点与停留时长（成功 2s / 失败 3.5s）。
+        ok = bool(result.get("ok"))
+        api.toast(
+            checkin_message(result),
+            kind="success" if ok else "error",
+            duration_ms=2000 if ok else 3500,
+        )
 
     def logout() -> None:
         # MB_OKCANCEL | MB_ICONWARNING；IDOK == 1
@@ -298,12 +312,12 @@ def _chip_actions(api: Api) -> dict:
             return
         res = api.logout()
         if res.get("ok"):
-            api.toast("已退出登录")
+            api.toast("已退出登录", kind="success")
             evt = _shared.get("logout_requested")
             if isinstance(evt, threading.Event):
                 evt.set()  # 会话主循环将导航回登录门控页
         else:
-            api.toast("退出登录失败，请查看日志")
+            api.toast("退出登录失败，请查看日志", kind="error", duration_ms=3500)
 
     def about() -> None:
         info = api.about()

@@ -41,6 +41,10 @@ log = logging.getLogger("dt.inject")
 TOAST_ID = "edubuddy-toast"
 
 # 确保 toast 浮层元素存在（幂等；SPA 路由/整页刷新后由定时器补挂）。
+# 样式主题化（2026-10）：颜色/阴影/字体全部走页面 CSS 变量（globals.css 的
+# Cream/Dark/glass 等四套主题 token），自动跟随前端主题；变量未定义时回退
+# 内置深色值。语义圆点用 ::before 按 data-kind 变色：info=蓝 / success=绿 /
+# error=红。注意：本模板经 Python % 格式化下发，JS 里的字面 % 必须写成 %%。
 TOAST_ENSURE_JS = """
 (function () {
   if (!document.body) { return 'no-body'; }
@@ -50,20 +54,44 @@ TOAST_ENSURE_JS = """
     t = document.createElement('div');
     t.id = '%(id)s';
     t.textContent = '';
-    t.style.cssText = 'position:fixed;bottom:24px;left:50%%;transform:translateX(-50%%);' +
-      'background:rgba(40,40,40,0.88);color:#fff;padding:8px 18px;border-radius:8px;' +
-      'font:500 14px/1.4 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;' +
-      'z-index:2147483000;pointer-events:none;opacity:0;transition:opacity .2s ease;';
+    // cssText 用双引号 JS 字符串：内含单引号字体名，避免转义地狱。
+    t.style.cssText = "position:fixed; bottom:24px; left:50%%;" +
+      "transform:translateX(-50%%);" +
+      "display:flex; align-items:center; gap:8px;" +
+      "max-width:min(520px, calc(100vw - 48px));" +
+      "padding:9px 16px 9px 14px;" +
+      "background:var(--popover, rgba(36,34,32,0.92));" +
+      "color:var(--popover-foreground, #fff);" +
+      "border:1px solid var(--border, rgba(127,127,127,0.25));" +
+      "border-radius:8px;" +
+      "box-shadow:var(--shadow-raised, 0 8px 24px rgba(0,0,0,0.18));" +
+      "font:500 14px/1.5 var(--font-sans, -apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif);" +
+      "z-index:2147483000; pointer-events:none;" +
+      "opacity:0; transition:opacity .18s ease;";
     document.body.appendChild(t);
     result = 'created';
   }
+  // 语义圆点样式：幂等注入一次（style 元素与 toast div 生命周期一致，
+  // SPA 整页刷新后 head 一并重建，由同一轮 ensure 补挂）。
+  if (document.head && !document.getElementById('edubuddy-toast-style')) {
+    var s = document.createElement('style');
+    s.id = 'edubuddy-toast-style';
+    s.textContent = '#edubuddy-toast::before { content:""; width:8px; height:8px;' +
+      'border-radius:50%%; background:var(--info, #2563eb); flex:none; }' +
+      '#edubuddy-toast[data-kind="success"]::before { background:var(--success, #237a4b); }' +
+      '#edubuddy-toast[data-kind="error"]::before { background:var(--destructive, #c53a2c); }';
+    document.head.appendChild(s);
+  }
   // 挂载全局 toast 函数，供 menubar._toast / main.toast 通过 evaluate_js 调用。
   // SPA 路由切换 / 整页刷新后 window 上下文重建，需由定时器重新挂载。
+  // 第三参 kind 可选（'info' | 'success' | 'error'），缺省 'info'——
+  // 旧两参调用（menubar/main 缓存的旧 JS 通道）依然有效。
   if (!window.__edubuddyToast) {
-    window.__edubuddyToast = function (msg, duration) {
+    window.__edubuddyToast = function (msg, duration, kind) {
       var el = document.getElementById('%(id)s');
       if (!el) { return; }
       el.textContent = msg;
+      if (el.dataset) { el.dataset.kind = kind || 'info'; }
       el.style.opacity = '1';
       clearTimeout(window.__edubuddyToastTimer);
       window.__edubuddyToastTimer = setTimeout(function () {
@@ -80,6 +108,7 @@ TOAST_SHOW_JS = """
   var t = document.getElementById('%(id)s');
   if (!t) return;
   t.textContent = %(msg)s;
+  if (t.dataset) { t.dataset.kind = %(kind)s; }
   t.style.opacity = '1';
   clearTimeout(window.__edubuddyToastTimer);
   window.__edubuddyToastTimer = setTimeout(function () {
@@ -114,13 +143,16 @@ class ToastInjector:
     def stop(self) -> None:
         self._stop.set()
 
-    def show(self, message: str, duration_ms: int = 2000) -> None:
+    def show(self, message: str, duration_ms: int = 2000,
+             kind: str = "info") -> None:
+        """直接驱动 toast 显示（kind: 'info' | 'success' | 'error'）。"""
         try:
             self._w.evaluate_js(
                 TOAST_SHOW_JS % {
                     "id": TOAST_ID,
                     "msg": json.dumps(message, ensure_ascii=False),
                     "duration": duration_ms,
+                    "kind": json.dumps(kind, ensure_ascii=False),
                 }
             )
         except Exception:  # noqa: BLE001

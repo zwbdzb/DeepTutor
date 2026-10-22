@@ -41,14 +41,19 @@ def _main_window():
         return None
 
 
-def _toast(msg: str) -> None:
+def _toast(msg: str, kind: str = "info", duration_ms: int = 2000) -> None:
+    """弹页面底部 toast（kind: 'info' | 'success' | 'error' 控制语义圆点色）。"""
     window = _main_window()
     if window is None:
         return
     try:
         window.evaluate_js(
-            "window.__edubuddyToast && window.__edubuddyToast(%s)"
-            % json.dumps(str(msg), ensure_ascii=False)
+            "window.__edubuddyToast && window.__edubuddyToast(%s, %d, %s)"
+            % (
+                json.dumps(str(msg), ensure_ascii=False),
+                duration_ms,
+                json.dumps(kind, ensure_ascii=False),
+            )
         )
     except Exception:  # noqa: BLE001
         log.exception("toast failed")
@@ -104,7 +109,8 @@ def _probe_local_overwrite() -> bool:
             mtime = os.path.getmtime(exe)
             baseline = _load_baseline()
             if baseline and mtime > baseline + 60:  # 允许 1 分钟误差
-                _toast("发现新版本已就绪，重启 ThinkBuddy 后生效。")
+                _toast("发现新版本已就绪，重启 ThinkBuddy 后生效。",
+                       kind="info", duration_ms=4000)
                 return True
             if not baseline:
                 _save_baseline(mtime)
@@ -167,7 +173,7 @@ def _check_updates(api, manual: bool = True) -> None:
 
     if not getattr(sys, "frozen", False):
         if manual:
-            _toast(f"{APP_NAME} 已是最新版本 ✓（v{__version__}）")
+            _toast("已是最新版本", kind="success")
         return
 
     try:
@@ -176,7 +182,7 @@ def _check_updates(api, manual: bool = True) -> None:
         base = ""
     if not base:
         if manual and not _probe_local_overwrite():
-            _toast(f"{APP_NAME} 已是最新版本 ✓（v{__version__}）")
+            _toast("已是最新版本", kind="success")
         return
 
     if manual:
@@ -186,7 +192,8 @@ def _check_updates(api, manual: bool = True) -> None:
     except updater.UpdateError as exc:
         log.warning("update check failed: %s", exc)
         if manual and not _probe_local_overwrite():
-            _toast("检查更新失败，请检查网络后重试。")
+            _toast("检查更新失败，请检查网络后重试。",
+                   kind="error", duration_ms=3500)
         return
 
     # 当前版本优先取正在运行的 exe 版本（与「关于」页同源）：更新是为了让
@@ -205,8 +212,7 @@ def _check_updates(api, manual: bool = True) -> None:
             except Exception:  # noqa: BLE001  刷新失败不影响本次提示
                 pass
         if manual:
-            shown = installed or manifest["version"]
-            _toast(f"{APP_NAME} 已是最新版本 ✓（v{shown}）")
+            _toast("已是最新版本", kind="success")
         return
 
     # ---- 发现新版本（双平台同流程：询问 → 下载校验 → 再确认 → 静默安装）----
@@ -474,7 +480,12 @@ def build_native_menu(api) -> list[Menu]:
                 MenuSeparator(),
                 MenuAction("检查更新...", lambda: _check_updates(api)),
                 MenuSeparator(),
-                MenuAction(f"退出 {APP_NAME}\tAlt+F4", _win_close),
+                # 菜单文本不带快捷键提示：pywebview MenuAction 只有纯文本 label，
+                # WinForms ToolStripMenuItem 不支持「\t快捷键」右对齐语法，会渲染成
+                # 「退出 ThinkBuddyAlt+F4」粘连（用户实测）。Alt+F4 是系统级关窗
+                # 快捷键，与菜单文本无关，去掉提示零功能损失；mac 端同位置菜单
+                # （_item(f"退出 {APP_NAME}", "terminate:", "q")）本就是纯文本。
+                MenuAction(f"退出 {APP_NAME}", _win_close),
             ],
         ),
         Menu(
