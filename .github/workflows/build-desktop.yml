@@ -268,13 +268,14 @@ jobs:
       - name: Refresh deeptutor_web package
         run: python scripts/prepare_web_package.py --skip-build
 
-      # build_runtime.py 的硬性要求：desktop-shell/.venv 存在（pywebview/pillow/pyinstaller）。
+      # build_runtime.py 的硬性要求：desktop-shell/.venv 存在
+      # （pywebview/pystray/pillow/pyinstaller；pystray 是两端共用的托盘实现）。
       - name: Create shell venv
         working-directory: desktop-shell
         run: |
           python3 -m venv .venv
           .venv/bin/python -m pip install --upgrade pip
-          .venv/bin/pip install pywebview pillow pyinstaller
+          .venv/bin/pip install pywebview pystray pillow pyinstaller
 
       # build_runtime.py --arch：下载对应架构的 python-build-standalone + node darwin tarball。
       # **不带** --no-zip：mac 没有安装器（无 Inno），runtime.zip 必须内嵌进 .app，

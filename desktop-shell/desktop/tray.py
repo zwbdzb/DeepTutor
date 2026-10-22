@@ -1,6 +1,11 @@
-"""系统托盘 / 菜单栏常驻（Windows 通知区域 + macOS 菜单栏）。
+"""系统托盘（Windows 通知区域 / macOS 菜单栏）。
 
-两端行为一致：
+两端共用一套实现：pystray 在 macOS 上自带 AppKit 后端（NSStatusBar），
+``run_detached()`` 正是为「寄生在别人的主循环里」设计的——pywebview 已经
+跑着 NSApplication 的主循环，这里只要把图标挂上去即可，不需要自己碰
+NSStatusBar / NSMenu，macOS 也就没有单独的托盘代码要维护。
+
+行为（两端一致）：
 
 * 关闭窗口 = 收进托盘，进程和 DeepTutor 后端继续在后台跑；
 * 托盘「退出」（或文件菜单退出 / Cmd+Q）= **真正退出**：销毁窗口 ->
@@ -10,10 +15,9 @@
 * 托盘起不来时不进入「隐藏」状态——关窗退化为旧行为（直接退出），
   免得把窗口藏进一个没有图标的黑洞。
 
-实现：Windows 用 pystray；macOS 用系统原生 NSStatusBar（pyobjc 随
-pywebview 的 Cocoa 后端已在包里，不新增依赖），图标复用 assets/icon.png。
-macOS 还必须接管 NSApplication 的 delegate，否则 Cmd+Q 会被当成
-「关窗」而不是「退出」。
+macOS 只有两件 Windows 没有的事，用 pyobjc 补十几行（``_install_mac_hooks``）：
+Cmd+Q 走正常退出链、点 Dock 图标唤回窗口。pyobjc 随 pywebview 的 Cocoa
+后端已在包里，不新增依赖。
 """
 
 from __future__ import annotations
@@ -27,32 +31,27 @@ from desktop.runtime import APP_DIR
 
 log = logging.getLogger("dt.tray")
 
-# 第二个实例要求托盘把窗口叫回来的 macOS 分布式通知名。
-# 应用已经在前台、窗口收在菜单栏时，激活不会再触发 DidBecomeActive，
-# 只能靠这条通知（发送端见 single_instance.activate_existing_pid）。
+# macOS：第二个实例要求托盘把窗口叫回来的分布式通知名（发送端见
+# single_instance._ask_tray_to_show）。
 SHOW_NOTIFICATION = "com.thinkbuddy.desktop.show-window"
 
 
 class SystemTray:
-    """托盘门面：Windows 走 pystray，macOS 走原生 NSStatusBar。"""
+    """托盘门面：Windows 通知区域 / macOS 菜单栏，统一走 pystray。"""
 
     def __init__(self, window, on_quit: Callable[[], None]) -> None:
         self._window = window
         self._on_quit = on_quit
-        self._icon = None          # Windows: pystray.Icon
-        self._mac = None           # macOS: _MacTray
+        self._icon = None          # pystray.Icon
         self._exiting = False
+        self._mac = None           # macOS: (delegate, center, observer_token)
 
     # -- lifecycle ------------------------------------------------------- #
     def start(self) -> None:
-        if sys.platform == "win32":
-            self._start_windows()
-        elif sys.platform == "darwin":
-            self._start_mac()
-        else:
-            log.info("system tray is not enabled on %s", sys.platform)
-
-    def _start_windows(self) -> None:
+        # macOS 上 pystray 会直接操作 NSStatusBar，必须在主线程建图标：
+        # main() 里是在 webview.start() 之前调用，正好是主线程。
+        if sys.platform == "darwin":
+            self._install_mac_hooks()
         try:
             from PIL import Image
             import pystray
@@ -69,25 +68,12 @@ class SystemTray:
                     pystray.MenuItem("退出", self.quit),
                 ),
             )
+            # 两端都是「寄生」到宿主主循环：macOS 是 pywebview 的
+            # NSApplication，Windows 是自带的 win32 消息循环。
             self._icon.run_detached(self._setup)
         except Exception:  # noqa: BLE001
             log.exception("system tray unavailable; closing the window will exit")
             self.stop()
-
-    def _start_mac(self) -> None:
-        tray = _MacTray(self)
-        self._mac = tray
-        try:
-            # start() 在 webview.start() 之前调用，Cocoa 事件循环还没跑。
-            # 主窗口 shown 事件在 Cocoa 主线程内触发、NSApp 已就绪，在那里装最稳。
-            shown = self._window.events.shown
-            if shown.is_set():
-                tray.start()                  # 热重启/测试：循环已经在跑
-            else:
-                shown += tray.start_once
-        except Exception:  # noqa: BLE001
-            log.exception("could not schedule macOS tray install")
-            tray.start()
 
     def _setup(self, icon) -> None:
         try:
@@ -99,9 +85,6 @@ class SystemTray:
     # -- window events --------------------------------------------------- #
     def _can_restore(self) -> bool:
         """托盘当前是否真能把窗口叫回来（决定关窗是隐藏还是退出）。"""
-        mac = self._mac
-        if mac is not None:
-            return mac.available
         return self._icon is not None and self._icon.visible
 
     def on_closing(self) -> bool:
@@ -134,199 +117,59 @@ class SystemTray:
         self.allow_exit()
         icon, self._icon = self._icon, None
         mac, self._mac = self._mac, None
+        if mac is not None:
+            try:
+                mac[1].removeObserver_(mac[2])
+            except Exception:  # noqa: BLE001
+                log.exception("could not remove macOS activation observer")
         if icon is not None:
             try:
                 icon.visible = False
-                icon.stop()
+                # pystray 的 darwin stop() 会调 NSApp.stop_()（它假设自己拥有
+                # 主循环）。这里的主循环归 pywebview，退不退出由关窗链决定。
+                if sys.platform != "darwin":
+                    icon.stop()
             except Exception:  # noqa: BLE001
                 log.exception("could not stop system tray")
-        if mac is not None:
-            try:
-                mac.stop()
-            except Exception:  # noqa: BLE001
-                log.exception("could not stop macOS tray")
 
+    # -- macOS only ------------------------------------------------------ #
+    def _install_mac_hooks(self) -> None:
+        """接管 Cmd+Q 与 Dock 唤回（其余托盘逻辑与 Windows 完全共用）。
 
-# --------------------------------------------------------------------------- #
-# macOS 菜单栏实现                                                             #
-# --------------------------------------------------------------------------- #
-class _MacTray:
-    """菜单栏状态项：NSStatusBar + NSMenu，所有操作都排到主线程执行。
-
-    ``available`` 为 True 才允许「关窗隐藏」——状态项装好之前关窗照旧退出。
-    """
-
-    def __init__(self, owner: SystemTray) -> None:
-        self._owner = owner
-        self._item = None
-        self._delegate = None
-        self._image = None
-        self._centers = []
-        self._install_requested = False
-
-    @property
-    def available(self) -> bool:
-        return self._item is not None
-
-    # -- 主线程调度 ------------------------------------------------------ #
-    def start_once(self, *_args) -> None:
-        """window.events.shown 回调：只装一次。"""
-        if self._install_requested:
-            return
-        self._install_requested = True
-        self.start()
-
-    def start(self) -> None:
-        try:
-            from PyObjCTools import AppHelper
-        except Exception:  # noqa: BLE001
-            log.exception("PyObjC unavailable; macOS tray disabled")
-            return
-        try:
-            AppHelper.callAfter(self._install)
-        except Exception:  # noqa: BLE001
-            log.exception("could not schedule macOS tray install")
-            self._install()
-
-    def stop(self) -> None:
-        try:
-            from PyObjCTools import AppHelper
-        except Exception:  # noqa: BLE001
-            return
-        try:
-            AppHelper.callAfter(self._uninstall)
-        except Exception:  # noqa: BLE001
-            log.exception("could not schedule macOS tray teardown")
-
-    # -- 主线程：安装 ---------------------------------------------------- #
-    def _install(self) -> None:
+        必须在主线程、pywebview 建完窗口之后调用：``create_window`` 里
+        pywebview 已装过自己的 delegate，这里在其之后覆盖。
+        """
         try:
             import AppKit
+            import Foundation
 
-            self._delegate = _mac_delegate_class().alloc().init()
-            self._delegate._owner = self._owner
-            # Cmd+Q / 应用菜单「退出」/ 注销必须放行真正退出（默认会被
-            # 当作关窗）。pywebview 在 create_window 里装过它自己的
-            # delegate，本函数在其之后执行（shown 事件后），以我们的为准。
-            AppKit.NSApplication.sharedApplication().setDelegate_(self._delegate)
+            delegate = _mac_delegate_class().alloc().init()
+            delegate._tray = self
+            AppKit.NSApplication.sharedApplication().setDelegate_(delegate)
 
-            item = AppKit.NSStatusBar.systemStatusBar().statusItemWithLength_(
-                AppKit.NSVariableStatusItemLength
+            # 应用已在前台、窗口收着时，激活不会触发 DidBecomeActive，
+            # 第二个实例改用显式通知（发送端见 single_instance）。
+            center = Foundation.NSDistributedNotificationCenter.defaultCenter()
+            token = center.addObserverForName_object_queue_usingBlock_(
+                SHOW_NOTIFICATION,
+                None,
+                Foundation.NSOperationQueue.mainQueue(),
+                lambda _note: self.show(),
             )
-            item.setMenu_(self._build_menu(AppKit))
-            button = item.button()
-            button.setToolTip_(APP_NAME)
-            self._apply_icon(AppKit, button)
-            self._item = item
-
-            self._observe_activation(AppKit)
-            log.info("macOS menu bar tray ready")
+            self._mac = (delegate, center, token)
+            log.info("macOS app hooks installed")
         except Exception:  # noqa: BLE001
-            log.exception("macOS tray init failed; closing the window will exit")
-            self._uninstall()
-
-    def _build_menu(self, AppKit):
-        menu = AppKit.NSMenu.alloc().init()
-        # 启用状态自己管：关掉自动校验，免得 target 判定把菜单项置灰。
-        menu.setAutoenablesItems_(False)
-
-        show_item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-            f"打开 {APP_NAME}", AppKit.NSSelectorFromString("thinkbuddyShow:"), ""
-        )
-        show_item.setTarget_(self._delegate)
-        show_item.setEnabled_(True)
-        menu.addItem_(show_item)
-
-        menu.addItem_(AppKit.NSMenuItem.separatorItem())
-
-        quit_item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-            f"退出 {APP_NAME}", AppKit.NSSelectorFromString("thinkbuddyQuit:"), "q"
-        )
-        quit_item.setTarget_(self._delegate)
-        quit_item.setEnabled_(True)
-        menu.addItem_(quit_item)
-        return menu
-
-    def _apply_icon(self, AppKit, button) -> None:
-        """菜单栏图标：直接用 Windows 通知区域那张 assets/icon.png。"""
-        import Foundation
-
-        image = None
-        path = APP_DIR / "assets" / "icon.png"
-        try:
-            if path.is_file():
-                image = AppKit.NSImage.alloc().initWithContentsOfFile_(str(path))
-        except Exception:  # noqa: BLE001
-            log.exception("could not load tray icon: %s", path)
-
-        if image is None:
-            button.setTitle_("ThinkBuddy")    # 资源缺失也别裸奔
-            log.warning("tray icon missing: %s", path)
-            return
-
-        image.setSize_(Foundation.NSMakeSize(18.0, 18.0))
-        button.setImage_(image)
-        self._image = image                   # 持有引用，避免被回收成空白
-
-    def _observe_activation(self, AppKit) -> None:
-        """应用被激活（Dock 点击 / Cmd+Tab / 再次启动）时把窗口叫回来。"""
-        import Foundation
-
-        center = Foundation.NSNotificationCenter.defaultCenter()
-        token = center.addObserverForName_object_queue_usingBlock_(
-            AppKit.NSApplicationDidBecomeActiveNotification,
-            None,
-            Foundation.NSOperationQueue.mainQueue(),
-            self._on_app_activated,
-        )
-        self._centers.append((center, token))
-
-        # 应用已在前台、窗口收着时激活不会发 DidBecomeActive，
-        # 第二个实例改用显式通知（发送端见 single_instance）。
-        distributed = Foundation.NSDistributedNotificationCenter.defaultCenter()
-        token = distributed.addObserverForName_object_queue_usingBlock_(
-            SHOW_NOTIFICATION,
-            None,
-            Foundation.NSOperationQueue.mainQueue(),
-            self._on_app_activated,
-        )
-        self._centers.append((distributed, token))
-
-    def _on_app_activated(self, _note=None) -> None:
-        try:
-            native = getattr(self._owner._window, "native", None)
-            if native is not None and not native.isVisible():
-                self._owner.show()
-        except Exception:  # noqa: BLE001
-            log.exception("could not restore window after activation")
-
-    # -- 主线程：卸载 ---------------------------------------------------- #
-    def _uninstall(self) -> None:
-        centers, self._centers = self._centers, []
-        for center, token in centers:
-            try:
-                center.removeObserver_(token)
-            except Exception:  # noqa: BLE001
-                pass
-
-        item, self._item = self._item, None
-        if item is not None:
-            try:
-                import AppKit
-
-                AppKit.NSStatusBar.systemStatusBar().removeStatusItem_(item)
-            except Exception:  # noqa: BLE001
-                log.exception("could not remove menu bar item")
+            log.exception("macOS app hooks unavailable; Cmd+Q will only hide the window")
 
 
 _MAC_DELEGATE_CLASS = None
 
 
 def _mac_delegate_class():
-    """构造（并缓存）接管 NSApplication 的 delegate 类。
+    """构造（并缓存）托盘用的 NSApplication delegate 类。
 
     pyobjc 在类定义时就注册 ObjC 类，重复定义会告警，所以进程内只建一次；
-    回调通过实例属性 ``_owner`` 指回 SystemTray。
+    回调通过实例属性 ``_tray`` 指回 SystemTray。
     """
     global _MAC_DELEGATE_CLASS
     if _MAC_DELEGATE_CLASS is not None:
@@ -335,42 +178,27 @@ def _mac_delegate_class():
     import AppKit
     import Foundation
 
-    class _ThinkBuddyAppDelegate(AppKit.NSObject):
-        # ---- NSApplicationDelegate ------------------------------------ #
+    class ThinkBuddyTrayDelegate(AppKit.NSObject):
         def applicationShouldTerminate_(self, app):  # noqa: N802
-            # 真正的退出：先标记 exiting，窗口的 closing 处理才不会把它收回去。
-            try:
-                self._owner.allow_exit()
-            except Exception:  # noqa: BLE001
-                log.exception("could not mark tray as exiting")
-            return Foundation.YES
+            # Cmd+Q / 应用菜单「退出」：pywebview 的 delegate 会把它当成一次
+            # 关窗（随后被 on_closing 收进托盘）。这里取消 AppKit 的硬退，
+            # 改成下一轮跑正常退出链：销毁窗口 -> closed -> 停后端进程树。
+            from PyObjCTools import AppHelper
+
+            AppHelper.callAfter(self._tray.quit)
+            return Foundation.NO
 
         def applicationShouldHandleReopen_hasVisibleWindows_(  # noqa: N802
             self, app, has_visible_windows
         ):
-            try:
-                self._owner.show()
-            except Exception:  # noqa: BLE001
-                log.exception("could not restore window from dock")
+            # 点 Dock 图标 / LaunchServices 再次打开时唤回窗口；pywebview 不实现。
+            self._tray.show()
             return Foundation.YES
 
         def applicationSupportsSecureRestorableState_(self, app):  # noqa: N802
             return Foundation.YES
 
-        # ---- NSMenuItem target / action ------------------------------- #
-        def thinkbuddyShow_(self, sender):  # noqa: N802
-            try:
-                self._owner.show()
-            except Exception:  # noqa: BLE001
-                log.exception("could not restore window from tray")
-
-        def thinkbuddyQuit_(self, sender):  # noqa: N802
-            try:
-                self._owner.quit()
-            except Exception:  # noqa: BLE001
-                log.exception("could not quit from tray")
-
-    _MAC_DELEGATE_CLASS = _ThinkBuddyAppDelegate
+    _MAC_DELEGATE_CLASS = ThinkBuddyTrayDelegate
     return _MAC_DELEGATE_CLASS
 
 

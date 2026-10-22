@@ -87,8 +87,9 @@ venv 里的 `pyvenv.cfg`/绝对路径搬迁即坏；embeddable 分发天生可�
   半小时能跑通；代价是自定义外壳能力弱一些。
 - **deeptutor 不打进 exe**：为的是跟上 `pip install -U deeptutor` 的版本；需要"随发版锁版本"
   可把 wheel 固化进 runtime 并定期重建。
-- 托盘常驻：Windows 用 pystray（通知区域），macOS 用原生 `NSStatusBar`（菜单栏，图标复用
-  `assets/icon.png`）。关闭窗口隐藏、打开恢复、退出沿用进程树清理链；托盘不可用则关窗退出。
-  macOS 还接管 `NSApplication` delegate：Cmd+Q / 应用菜单退出 / 注销才算真退出，
-  点 Dock 图标或再次启动客户端会把收起的窗口叫回来。
+- 托盘常驻：两端都用 pystray（Windows 通知区域 / macOS 菜单栏，pystray 自带 AppKit
+  后端，图标复用 `assets/icon.png`）。关闭窗口隐藏、打开恢复、退出沿用进程树清理链；
+  托盘不可用则关窗退出。macOS 额外只有两件小事（约 60 行 pyobjc，含注释与
+  delegate 类缓存）：Cmd+Q / 应用菜单退出走正常退出链（否则后端进程树可能留在
+  后台），点 Dock 图标或再次启动客户端把收起的窗口叫回来。
 - 后续可加：开机自启、多工作区切换、端口冲突时自动换端口。

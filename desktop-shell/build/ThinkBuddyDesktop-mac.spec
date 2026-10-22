@@ -56,6 +56,8 @@ a = Analysis(
     hiddenimports=[
         "webview",
         "webview.platforms.cocoa",
+        # pystray 的后端在运行时按 sys.platform 动态 import，静态分析扫不到。
+        "pystray._darwin",
     ],
     hookspath=[],
     runtime_hooks=[],

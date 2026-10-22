@@ -12,7 +12,8 @@ page shows live status; once 127.0.0.1:3782 answers, the window enters a
     应用内退出登录 → 吊销令牌、摘除模型配置 → 导航回登录门控页（功能不可用）
             → 再次登录后重新进入应用
 
-On Windows, closing hides to the tray; Quit stops the deeptutor process tree.
+Closing the window hides to the tray (Windows notification area / macOS menu
+bar); Quit stops the whole deeptutor process tree.
 
 开发旁路：环境变量 ``DEEPTUTOR_DESKTOP_SKIP_LOGIN=1`` 跳过登录门控（离线开发用）。
 """

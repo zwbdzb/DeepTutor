@@ -63,52 +63,44 @@ class TrayTests(unittest.TestCase):
 
 
 class MacTrayTests(unittest.TestCase):
-    """macOS 分支的状态机；用假 backend，不加载 AppKit。"""
+    """macOS 分支：只验证「多出来的那两件小事」与退出语义（不加载 AppKit）。"""
 
-    def _tray(self):
+    def test_start_installs_mac_hooks_and_reuses_pystray(self):
         tray = SystemTray(Mock(), Mock())
-        tray._mac = Mock(available=False)
-        return tray
-
-    def test_close_before_the_status_item_is_ready_exits(self):
-        tray = self._tray()
-        self.assertTrue(tray.on_closing())
-        tray._window.hide.assert_not_called()
-
-    def test_close_hides_once_the_status_item_is_ready(self):
-        tray = self._tray()
-        tray._mac.available = True
-        self.assertFalse(tray.on_closing())
-        tray._window.hide.assert_called_once()
+        icon = Mock()
+        fake = Mock(Icon=Mock(return_value=icon))
+        with patch("desktop.tray.sys.platform", "darwin"), patch.dict(
+            sys.modules, {"pystray": fake}
+        ), patch.object(tray, "_install_mac_hooks") as hooks:
+            tray.start()
+        hooks.assert_called_once()
+        icon.run_detached.assert_called_once_with(tray._setup)
 
     def test_menu_quit_allows_destroy_and_disposes_the_item(self):
-        tray = self._tray()
-        mac = tray._mac
+        tray = SystemTray(Mock(), Mock())
+        tray._icon = Mock(visible=True)
         tray.quit()
         tray._on_quit.assert_called_once()
         self.assertTrue(tray.on_closing())          # 退出后关窗不再拦截
         tray.stop()
-        mac.stop.assert_called_once()
+        self.assertIsNone(tray._icon)
         tray.stop()                                  # 幂等
-        mac.stop.assert_called_once()
 
     def test_show_restores_the_window(self):
-        tray = self._tray()
+        tray = SystemTray(Mock(), Mock())
         tray.show()
         tray._window.show.assert_called_once()
         tray._window.restore.assert_called_once()
 
-    def test_start_selects_the_native_backend_on_darwin(self):
-        window = Mock()
-        window.events.shown.is_set.return_value = True
-        tray = SystemTray(window, Mock())
-        fake = Mock()
-        with patch("desktop.tray.sys.platform", "darwin"), patch(
-            "desktop.tray._MacTray", return_value=fake
-        ):
-            tray.start()
-        fake.start.assert_called_once()
-        self.assertIs(tray._mac, fake)
+    def test_stop_hides_item_but_leaves_pywebviews_loop_alone(self):
+        tray = SystemTray(Mock(), Mock())
+        icon, center = Mock(visible=True), Mock()
+        tray._icon, tray._mac = icon, (Mock(), center, object())
+        with patch("desktop.tray.sys.platform", "darwin"):
+            tray.stop()
+        icon.stop.assert_not_called()               # 不向 NSApp 发退出信号
+        center.removeObserver_.assert_called_once()
+        self.assertIsNone(tray._mac)
 
 
 def headed() -> None:
@@ -191,7 +183,7 @@ def headed() -> None:
                 return False
 
         try:
-            wait_for(lambda: tray._mac is not None and tray._mac.available)
+            wait_for(lambda: tray._icon is not None and tray._icon.visible)
             wait_for(visible)
             print("PASS: menu bar item is installed", flush=True)
 
