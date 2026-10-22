@@ -51,6 +51,21 @@ DIST = ROOT / "dist"
 # PIP_INDEX_URL（或代理）时以用户为准（见 install_deeptutor 的 setdefault）。
 DEFAULT_PIP_INDEX_URL = "https://pypi.tuna.tsinghua.edu.cn/simple"
 
+# 打包时随本地源一起装进离线 runtime 的 pyproject extras。
+# math-animator → manim（数学动画/可视化）。刻意不带系统级依赖：
+# manim>=0.19 的视频编码走 PyAV（自带 ffmpeg 库，无需系统 ffmpeg）；
+# math_animator 的生成 prompt 默认禁用 Tex/MathTex（非 LaTeX 渲染路径），
+# 因此运行时无需捆绑 LaTeX 发行版。
+# 增删 extras 会改变 dependencies_signature() → 自动触发下次构建全量重装。
+PIP_EXTRAS: tuple[str, ...] = ("math-animator",)
+
+# 每个 extra 装进 runtime 后必须可 find_spec 的模块（smoke_test 门禁用）。
+# 键必须与 PIP_EXTRAS 一一对应：新增 extra 而不配门禁模块会在构建期直接报错，
+# 而不是静默漏装（scipy/av 是 manim>=0.19 的传递依赖，已核实 PyPI 元数据）。
+EXTRA_SMOKE_MODULES: dict[str, tuple[str, ...]] = {
+    "math-animator": ("manim", "scipy", "av"),
+}
+
 
 def _read_source_version(source_root: Path) -> str:
     """读本地源 deeptutor/__version__.py 的 __version__（版本门禁的基准值）。"""
@@ -270,7 +285,8 @@ def _staging_py_exe(target: Path) -> Path:
 
 
 def install_deeptutor(target: Path, source_root: Path, *,
-                      with_deps: bool = True) -> None:
+                      with_deps: bool = True,
+                      extras: tuple[str, ...] = PIP_EXTRAS) -> None:
     """pip install --target 把【本地源】的 deeptutor 装进 embeddable 的 site-packages。
 
     注意：刻意安装本地源路径而非 PyPI 包名——PyPI 版本滞后且不含自研修复。
@@ -278,6 +294,10 @@ def install_deeptutor(target: Path, source_root: Path, *,
 
     with_deps=False（快速路径）：依赖声明未变时只装我们自己的包，跳过 ~500MB
     第三方依赖树的重新解析/下载/复制。
+    extras：随本地源一起安装的 pyproject extras（默认 PIP_EXTRAS，即
+    math-animator → manim），pip 目标写成 `<source_root>[extra1,extra2]`；
+    传 () 则退化为纯本地源安装。--no-deps 快速路径下 extras 照传（--no-deps
+    不会装 extras 的依赖树，但两条路径命令保持一致，避免行为漂移）。
     """
     if BUILD_PY is None or not BUILD_PY.exists():
         raise SystemExit("no cp312 build interpreter found (set BUILD_PY=...py)")
@@ -292,6 +312,8 @@ def install_deeptutor(target: Path, source_root: Path, *,
     dest = _py_site_packages(target)
     dest.mkdir(parents=True, exist_ok=True)
     desc = "deeptutor + full deps" if with_deps else "deeptutor only (--no-deps fast path)"
+    if extras:
+        desc += f" + extras[{','.join(extras)}]"
     log(f"pip installing {desc} from LOCAL SOURCE {source_root} ...")
     env = dict(os.environ)
     # setdefault：用户已设置镜像/代理时尊重用户，没有才落默认国内镜像。
@@ -300,9 +322,13 @@ def install_deeptutor(target: Path, source_root: Path, *,
     env.setdefault("PIP_DEFAULT_TIMEOUT", "60")
     log(f"pip index: {env['PIP_INDEX_URL']}")
 
+    # pip 对本地目录的 extras 语法：D:\path\proj[extra1,extra2]（列表传参，
+    # 无 shell，无需引号转义）。
+    spec = f"{source_root}[{','.join(extras)}]" if extras else str(source_root)
+
     def _pip(extra: list[str]) -> subprocess.CompletedProcess:
         cmd = [str(BUILD_PY), "-m", "pip", "install", "--upgrade", "--no-compile",
-               "--target", str(dest), *extra, str(source_root)]
+               "--target", str(dest), *extra, spec]
         return subprocess.run(cmd, capture_output=True, text=True, env=env)
 
     # --no-build-isolation：BUILD_PY 里已有 setuptools 时跳过每次建临时
@@ -346,15 +372,67 @@ def version_gate(target: Path, expected: str) -> str:
     return actual
 
 
-def smoke_test(py_exe) -> None:
-    import importlib.util
+def smoke_test(py_exe: Path) -> None:
+    """staging 冒烟测试：自家包可 import + PIP_EXTRAS 关键模块存在。
 
+    extras 门禁用 importlib.util.find_spec 轻量探测（不真正 import manim——
+    它导入重且在无显示环境可能引入变数），缺任一声明模块即 SystemExit，
+    防止「extras 没装上但整条构建链路静默通过」。PIP_EXTRAS 为空时门禁
+    自然跳过（与安装逻辑联动）。
+    """
     code = (
         "import deeptutor_cli, deeptutor, deeptutor_web; "
         "print('runtime imports OK:', deeptutor_cli.__file__)"
     )
     res = subprocess.run([str(py_exe), "-c", code], capture_output=True, text=True, timeout=120)
     log("import check: " + (res.stdout.strip() or res.stderr.strip()))
+
+    if not PIP_EXTRAS:
+        return
+    # {模块: 所属 extra} 映射；extra 缺门禁声明属于配置错误，宁可构建失败，
+    # 不可静默跳过校验（与「防静默漏装」同一原则）。
+    mapping: dict[str, str] = {}
+    for extra in PIP_EXTRAS:
+        mods = EXTRA_SMOKE_MODULES.get(extra)
+        if not mods:
+            raise SystemExit(
+                f"EXTRAS GATE CONFIG ERROR: extra {extra!r} has no modules declared "
+                f"in EXTRA_SMOKE_MODULES; declare them or drop the extra."
+            )
+        for mod in mods:
+            mapping[mod] = extra
+    # find_spec 必须在 staging python 里跑（探测 runtime 的实际安装面）。
+    # mapping 以字面量内嵌进 -c 代码，避免命令行传参的引号/转义问题。
+    probe = (
+        "import importlib.util, json; "
+        f"mapping = {mapping!r}; "
+        "missing = {m: e for m, e in mapping.items() "
+        "if importlib.util.find_spec(m) is None}; "
+        "print(json.dumps(missing))"
+    )
+    res = subprocess.run([str(py_exe), "-c", probe],
+                         capture_output=True, text=True, timeout=120)
+    if res.returncode != 0:
+        raise SystemExit(
+            "EXTRAS GATE FAILED: probe script errored in staging python.\n"
+            f"{(res.stderr or '').strip()[-2000:]}"
+        )
+    try:
+        missing = json.loads((res.stdout or "").strip() or "{}")
+    except ValueError:
+        raise SystemExit(
+            f"EXTRAS GATE FAILED: cannot parse probe output {res.stdout!r}.\n"
+            f"{(res.stderr or '').strip()[-2000:]}"
+        )
+    if missing:
+        detail = "; ".join(f"{mod} (extra: {extra})"
+                           for mod, extra in sorted(missing.items()))
+        raise SystemExit(
+            f"EXTRAS GATE FAILED: modules missing from runtime: {detail}.\n"
+            f"extras {list(PIP_EXTRAS)} 未装进 runtime（漏装或被 prune 误删）；"
+            f"用 --clean 或 --force-deeptutor 触发全量重装。"
+        )
+    log(f"extras gate OK: {sorted(mapping)} present for extras {list(PIP_EXTRAS)}")
 
 
 # Runtime packages that are safe to drop from a packaged install:
@@ -462,11 +540,22 @@ def source_fingerprint(source_root: Path, *, strict: bool = False) -> str:
 
 
 def dependencies_signature(source_root: Path) -> str:
-    """pyproject.toml 内容哈希——区分「只改了代码」（--no-deps 快速路径）与「依赖声明变了」（全量安装）。"""
+    """pyproject.toml 内容 + pip extras 标识的哈希——区分「只改了代码」
+    （--no-deps 快速路径）与「依赖声明/安装面变了」（全量安装）。
+
+    extras 计入签名：PIP_EXTRAS 增删 → 签名变 → 旧 .source-state.json 失效 →
+    下次构建自动全量重装，extras 的依赖树随之装进 runtime（否则改了 extras
+    但签名不变，manim 等会被静默漏装）。尾部固定 marker 还保证：即使 extras
+    为空，新签名也与旧版「纯 pyproject 哈希」不同 → 升级本脚本后旧状态文件
+    必然失效一次（安全方向）。
+    """
     pyproject = source_root / "pyproject.toml"
     if not pyproject.is_file():
         return ""
-    return hashlib.sha256(pyproject.read_bytes()).hexdigest()
+    digest = hashlib.sha256()
+    digest.update(pyproject.read_bytes())
+    digest.update(b"\0extras=" + ",".join(PIP_EXTRAS).encode("utf-8"))
+    return digest.hexdigest()
 
 
 def _load_source_state() -> dict:

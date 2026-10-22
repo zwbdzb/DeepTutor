@@ -11,6 +11,11 @@
 * 文案经 ``textContent`` 写入，HTML 注入向量（<img onerror=...>）不产生子节点。
 * ``ToastInjector.show()`` 路径（TOAST_SHOW_JS）必须能找到 ensure 建立的
   同一元素（id 一致），否则 show 静默失效。
+* 语义圆点（2026-10 主题化改造）：ensure 幂等注入
+  ``<style id="edubuddy-toast-style">`` 到 head，圆点按 ``data-kind`` 变色
+  （info=蓝 / success=绿 / error=红，走页面 CSS 变量 + 内置 fallback）；
+  ``TOAST_SHOW_JS`` 与全局 ``__edubuddyToast`` 都把 kind 写进元素
+  ``dataset.kind``，两参旧调用缺省归 'info'。
 """
 from __future__ import annotations
 
@@ -38,6 +43,7 @@ def test_toast_script_is_idempotent_and_resets_hide_timer() -> None:
         "id": TOAST_ID,
         "msg": json.dumps("来自 show()", ensure_ascii=False),
         "duration": 2000,
+        "kind": json.dumps("info", ensure_ascii=False),
     }
 
     harness = f"""
@@ -91,6 +97,9 @@ process.stdout.write(JSON.stringify({{
         check=True,
         capture_output=True,
         text=True,
+        # node 的 stdin/stdout 均为 UTF-8；显式指定以免 Windows GBK locale
+        # 把中文断言（textContent 往返）解成乱码。
+        encoding="utf-8",
     )
     state = json.loads(result.stdout)
 
@@ -109,3 +118,151 @@ process.stdout.write(JSON.stringify({{
         "firstTimerCleared": True,
         "activeTimers": 1,
     }
+
+
+# --------------------------------------------------------------------------- #
+# data-kind 语义圆点（2026-10 主题化改造）----------------------------------- #
+# --------------------------------------------------------------------------- #
+
+# head-capable DOM harness：与真实 DOM 对齐（div.dataset 恒存在、head 可挂
+# style 元素），专供 data-kind / 样式注入断言使用。上面首条测试的极简
+# harness（元素无 dataset、无 head）继续覆盖「dataset 缺失不炸」的防御分支，
+# 两者互补。
+DOM_HARNESS_PREFIX = """
+const nodes = new Map();
+const timers = new Map();
+const cleared = [];
+let created = 0;
+let nextTimer = 0;
+const makeElement = () => ({ style: {}, dataset: {}, textContent: '' });
+global.document = {
+  body: { appendChild(node) { nodes.set(node.id, node); } },
+  head: { appendChild(node) { nodes.set(node.id, node); } },
+  getElementById(id) { return nodes.get(id) || null; },
+  createElement() { created += 1; return makeElement(); }
+};
+global.window = {};
+global.setTimeout = (fn, delay) => {
+  const id = ++nextTimer;
+  timers.set(id, { fn, delay });
+  return id;
+};
+global.clearTimeout = (id) => { cleared.push(id); timers.delete(id); };
+"""
+
+
+def _run_node_js(statements: str) -> dict:
+    """在 node 子进程执行 statements（自动前置 DOM harness），回传 JSON 状态。"""
+    if shutil.which("node") is None:
+        pytest.skip("Node.js is required to execute the desktop toast script")
+    result = subprocess.run(
+        ["node", "-"],
+        input=DOM_HARNESS_PREFIX + statements,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    return json.loads(result.stdout)
+
+
+def test_toast_ensure_js_renders_kind_selectors_and_style_element() -> None:
+    """ensure 渲染产物含语义选择器；style 元素幂等注入且按 kind 变色。"""
+    rendered = TOAST_ENSURE_JS % {"id": TOAST_ID}
+
+    # 渲染产物完整性：占位符已全部替换，主题化样式与语义选择器就位
+    assert "%(id)s" not in rendered
+    assert 'data-kind="success"' in rendered
+    assert 'data-kind="error"' in rendered
+    assert "edubuddy-toast-style" in rendered
+    assert "display:flex" in rendered
+    assert "max-width:min(520px, calc(100vw - 48px))" in rendered
+    assert "var(--popover," in rendered
+
+    state = _run_node_js(
+        "const ensureScript = " + json.dumps(rendered) + ";\n"
+        + """
+const firstEnsure = eval(ensureScript);
+const secondEnsure = eval(ensureScript);
+const styleEl = document.getElementById('edubuddy-toast-style');
+process.stdout.write(JSON.stringify({
+  firstEnsure,
+  secondEnsure,
+  created,
+  nodeCount: nodes.size,
+  styleId: styleEl ? styleEl.id : null,
+  styleText: styleEl ? styleEl.textContent : null
+}));
+"""
+    )
+    assert state["firstEnsure"] == "created"
+    assert state["secondEnsure"] == "exists"
+    # toast div + style 元素各建一次，二次 ensure 幂等不重复建
+    assert state["created"] == 2
+    assert state["nodeCount"] == 2
+    assert state["styleId"] == "edubuddy-toast-style"
+    # 语义圆点：info 默认蓝、success 绿、error 红（CSS 变量 + 内置 fallback）
+    assert "#edubuddy-toast::before" in state["styleText"]
+    assert 'data-kind="success"' in state["styleText"]
+    assert 'data-kind="error"' in state["styleText"]
+    assert "--info" in state["styleText"]
+    assert "--success" in state["styleText"]
+    assert "--destructive" in state["styleText"]
+
+
+@pytest.mark.parametrize("kind", ["info", "success", "error"])
+def test_toast_show_js_sets_data_kind_on_element(kind: str) -> None:
+    """TOAST_SHOW_JS 按 kind 贯通：dataset.kind 正确写入并驱动同一元素。"""
+    show_js = TOAST_SHOW_JS % {
+        "id": TOAST_ID,
+        "msg": json.dumps(f"kind={kind}", ensure_ascii=False),
+        "duration": 3500,
+        "kind": json.dumps(kind, ensure_ascii=False),
+    }
+    state = _run_node_js(
+        "const ensureScript = "
+        + json.dumps(TOAST_ENSURE_JS % {"id": TOAST_ID}) + ";\n"
+        + "const showScript = " + json.dumps(show_js) + ";\n"
+        + """
+eval(ensureScript);
+eval(showScript);
+const toast = nodes.get('edubuddy-toast');
+process.stdout.write(JSON.stringify({
+  text: toast.textContent,
+  kind: toast.dataset.kind,
+  opacity: toast.style.opacity,
+  created
+}));
+"""
+    )
+    assert state["text"] == f"kind={kind}"
+    assert state["kind"] == kind
+    assert state["opacity"] == "1"
+    assert state["created"] == 2
+
+
+def test_global_toast_two_arg_call_defaults_to_info() -> None:
+    """旧两参 window.__edubuddyToast(msg, duration) 兼容：kind 缺省归 'info'。"""
+    state = _run_node_js(
+        "const ensureScript = "
+        + json.dumps(TOAST_ENSURE_JS % {"id": TOAST_ID}) + ";\n"
+        + """
+eval(ensureScript);
+window.__edubuddyToast('两参兼容调用', 2000);
+const toast = nodes.get('edubuddy-toast');
+const twoArgKind = toast.dataset.kind;
+window.__edubuddyToast('单参兜底调用');
+process.stdout.write(JSON.stringify({
+  mounted: typeof window.__edubuddyToast,
+  twoArgKind,
+  oneArgKind: toast.dataset.kind,
+  oneArgText: toast.textContent,
+  opacity: toast.style.opacity
+}));
+"""
+    )
+    assert state["mounted"] == "function"
+    assert state["twoArgKind"] == "info"
+    assert state["oneArgKind"] == "info"
+    assert state["oneArgText"] == "单参兜底调用"
+    assert state["opacity"] == "1"
