@@ -426,6 +426,26 @@ def _pid_alive(pid: int) -> bool:
         return False
 
 
+def _ask_tray_to_show() -> None:
+    """macOS：让主实例的菜单栏托盘把窗口叫回来。
+
+    只激活应用不够——窗口可能已被收进菜单栏（orderOut），而应用本来就在
+    前台时 ``activateWithOptions_`` 不会再触发 DidBecomeActive。这里补一条
+    分布式通知，由 ``desktop.tray`` 在主线程上 ``show()``。
+    托盘没装/发送失败都只记日志：激活本身已经成功，不必把启动搞崩。
+    """
+    try:
+        from Foundation import NSDistributedNotificationCenter
+
+        from desktop.tray import SHOW_NOTIFICATION
+
+        NSDistributedNotificationCenter.defaultCenter().postNotificationName_object_(
+            SHOW_NOTIFICATION, None
+        )
+    except Exception:  # noqa: BLE001
+        log.debug("could not ask the running instance to show its window", exc_info=True)
+
+
 def activate_existing_pid(pid: int) -> bool:
     """macOS：用 AppKit 把 PID 对应的已运行实例带到前台（unhide + 激活）。
 
@@ -452,6 +472,8 @@ def activate_existing_pid(pid: int) -> bool:
         # NSApplicationActivateIgnoringOtherApps = 1 << 1：
         # 即便当前焦点在别的应用也强制激活成功
         ok = bool(app.activateWithOptions_(1 << 1))
+        # 窗口可能收在菜单栏里：激活不会让隐藏窗口自己回来，补一条通知。
+        _ask_tray_to_show()
         log.info("activate existing instance pid=%s via NSRunningApplication -> %s",
                  pid, ok)
         return ok

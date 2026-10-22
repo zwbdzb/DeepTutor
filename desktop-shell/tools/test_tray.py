@@ -1,4 +1,5 @@
-"""Tray checks; add --headed for a real Windows WebView2 + pystray smoke test."""
+"""Tray checks; add --headed for a real WebView + tray smoke test
+(Windows notification area, or the macOS menu bar)."""
 
 from __future__ import annotations
 
@@ -61,11 +62,61 @@ class TrayTests(unittest.TestCase):
         self.assertTrue(tray.on_closing())
 
 
+class MacTrayTests(unittest.TestCase):
+    """macOS 分支的状态机；用假 backend，不加载 AppKit。"""
+
+    def _tray(self):
+        tray = SystemTray(Mock(), Mock())
+        tray._mac = Mock(available=False)
+        return tray
+
+    def test_close_before_the_status_item_is_ready_exits(self):
+        tray = self._tray()
+        self.assertTrue(tray.on_closing())
+        tray._window.hide.assert_not_called()
+
+    def test_close_hides_once_the_status_item_is_ready(self):
+        tray = self._tray()
+        tray._mac.available = True
+        self.assertFalse(tray.on_closing())
+        tray._window.hide.assert_called_once()
+
+    def test_menu_quit_allows_destroy_and_disposes_the_item(self):
+        tray = self._tray()
+        mac = tray._mac
+        tray.quit()
+        tray._on_quit.assert_called_once()
+        self.assertTrue(tray.on_closing())          # 退出后关窗不再拦截
+        tray.stop()
+        mac.stop.assert_called_once()
+        tray.stop()                                  # 幂等
+        mac.stop.assert_called_once()
+
+    def test_show_restores_the_window(self):
+        tray = self._tray()
+        tray.show()
+        tray._window.show.assert_called_once()
+        tray._window.restore.assert_called_once()
+
+    def test_start_selects_the_native_backend_on_darwin(self):
+        window = Mock()
+        window.events.shown.is_set.return_value = True
+        tray = SystemTray(window, Mock())
+        fake = Mock()
+        with patch("desktop.tray.sys.platform", "darwin"), patch(
+            "desktop.tray._MacTray", return_value=fake
+        ):
+            tray.start()
+        fake.start.assert_called_once()
+        self.assertIs(tray._mac, fake)
+
+
 def headed() -> None:
     from desktop import main, single_instance
     import webview
 
-    main.install_windows_shell_menu()
+    if sys.platform == "win32":
+        main.install_windows_shell_menu()
     window = webview.create_window(
         "",
         html="<h1>Tray smoke test</h1>",
@@ -132,11 +183,39 @@ def headed() -> None:
             tray.allow_exit()
             window.destroy()
 
+    def check_window_mac():
+        def visible():
+            try:
+                return bool(window.native.isVisible())
+            except Exception:  # noqa: BLE001
+                return False
+
+        try:
+            wait_for(lambda: tray._mac is not None and tray._mac.available)
+            wait_for(visible)
+            print("PASS: menu bar item is installed", flush=True)
+
+            window.destroy()
+            wait_for(lambda: not visible())
+            assert not window.events.closed.is_set(), "close must keep the window alive"
+            proc.stop.assert_not_called()
+            print("PASS: close hides window and preserves backend", flush=True)
+
+            tray.show()
+            wait_for(visible)
+            print("PASS: tray open restores window", flush=True)
+
+            tray.quit()          # 与菜单「退出」同一条路径
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+            tray.allow_exit()
+            window.destroy()
+
     try:
         tray.start()
-        webview.start(check_window)
+        webview.start(check_window_mac if sys.platform == "darwin" else check_window)
         wait_for(lambda: proc.stop.call_count == 1)
-        assert tray._icon is None, "quit must dispose the tray"
+        assert tray._icon is None and tray._mac is None, "quit must dispose the tray"
         if errors:
             raise errors[0]
         print("PASS: tray exit destroys window and stops backend", flush=True)

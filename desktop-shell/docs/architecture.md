@@ -7,7 +7,7 @@
 把 DeepTutor 的 **CLI + 本地 Web 服务** 封装成"双击即用"的桌面应用：
 
 - 零命令行：不要求用户懂 `deeptutor start` 或安装 Python/Node。
-- 进程生命周期干净：Windows 关窗隐藏到托盘，选择退出才停掉后端+前端整棵进程树。
+- 进程生命周期干净：关窗隐藏到托盘（Windows 通知区域 / macOS 菜单栏），选择退出才停掉后端+前端整棵进程树。
 - 可离线分发：内置运行时，用户机器无需网络也能装/用（首次配 LLM 除外）。
 - 快速落地：优先 pywebview + PyInstaller + Inno 这套"壳"技术栈，不改 DeepTutor 本体。
 
@@ -87,5 +87,8 @@ venv 里的 `pyvenv.cfg`/绝对路径搬迁即坏；embeddable 分发天生可�
   半小时能跑通；代价是自定义外壳能力弱一些。
 - **deeptutor 不打进 exe**：为的是跟上 `pip install -U deeptutor` 的版本；需要"随发版锁版本"
   可把 wheel 固化进 runtime 并定期重建。
-- Windows 托盘常驻使用 pystray：关闭窗口隐藏，打开恢复，退出沿用进程树清理链；托盘不可用则关窗退出。
-- 后续可加：macOS 托盘、开机自启、多工作区切换、端口冲突时自动换端口。
+- 托盘常驻：Windows 用 pystray（通知区域），macOS 用原生 `NSStatusBar`（菜单栏，图标复用
+  `assets/icon.png`）。关闭窗口隐藏、打开恢复、退出沿用进程树清理链；托盘不可用则关窗退出。
+  macOS 还接管 `NSApplication` delegate：Cmd+Q / 应用菜单退出 / 注销才算真退出，
+  点 Dock 图标或再次启动客户端会把收起的窗口叫回来。
+- 后续可加：开机自启、多工作区切换、端口冲突时自动换端口。
