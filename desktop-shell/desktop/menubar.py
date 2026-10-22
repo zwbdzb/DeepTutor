@@ -492,7 +492,7 @@ def build_native_menu(api) -> list[Menu]:
                 # 「退出 ThinkBuddyAlt+F4」粘连（用户实测）。Alt+F4 是系统级关窗
                 # 快捷键，与菜单文本无关，去掉提示零功能损失；mac 端同位置菜单
                 # （_item(f"退出 {APP_NAME}", "terminate:", "q")）本就是纯文本。
-                MenuAction(f"退出 {APP_NAME}", _win_close),
+                MenuAction(f"退出 {APP_NAME}", api.quit),
             ],
         ),
         Menu(

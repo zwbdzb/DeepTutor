@@ -7,7 +7,7 @@
 把 DeepTutor 的 **CLI + 本地 Web 服务** 封装成"双击即用"的桌面应用：
 
 - 零命令行：不要求用户懂 `deeptutor start` 或安装 Python/Node。
-- 进程生命周期干净：关窗口 = 停掉后端+前端整棵进程树。
+- 进程生命周期干净：Windows 关窗隐藏到托盘，选择退出才停掉后端+前端整棵进程树。
 - 可离线分发：内置运行时，用户机器无需网络也能装/用（首次配 LLM 除外）。
 - 快速落地：优先 pywebview + PyInstaller + Inno 这套"壳"技术栈，不改 DeepTutor 本体。
 
@@ -18,7 +18,7 @@
 │  桌面壳  DeepTutorDesktop.exe  (PyInstaller onefile)         │
 │  pywebview(WebView2)  ←── 原生窗口，加载 127.0.0.1:3782      │
 │  引导线程: 运行时→spawn→健康检查→navigate                    │
-│  生命周期: 关闭窗口→taskkill /T 停整棵树                    │
+│  生命周期: 关窗隐藏到托盘；退出→taskkill /T 停整棵树         │
 ├────────────────────────────────────────────────────────────┤
 │  内部运行时(离线)  runtime/                                  │
 │   python/  ← python.org embeddable(relocatable)            │
@@ -53,7 +53,7 @@ venv 里的 `pyvenv.cfg`/绝对路径搬迁即坏；embeddable 分发天生可�
          4 wait_ready(): 轮询 GET 127.0.0.1:3782 (≤150s)
             run: proc 挂了 → 亮错误页 + 日志
          5 load_url(3782)          → 进入应用
- └─ window.events.closed
+ └─ window.events.closing → 隐藏到托盘；选择退出后才触发 closed
      └─ taskkill /PID <deeptutor> /T /F → 后端+前端一起停
 ```
 
@@ -62,7 +62,7 @@ venv 里的 `pyvenv.cfg`/绝对路径搬迁即坏；embeddable 分发天生可�
   `pywebview.api.status()` 轮询推到启动画面，避免跨线程直接操作 DOM。
 - `_as_cmd()` 把"deeptutor 可执行"归一成 argv 前缀：系统 exe 或
   `[embeddable python, run_deeptutor.py]` 皆可。
-- 关窗口的收尾放在 `webview.start()` 返回后的 `finally`，双保险。
+- 退出时的收尾也放在 `webview.start()` 返回后的 `finally`，双保险。
 
 ## 4. 打包
 
@@ -87,4 +87,5 @@ venv 里的 `pyvenv.cfg`/绝对路径搬迁即坏；embeddable 分发天生可�
   半小时能跑通；代价是自定义外壳能力弱一些。
 - **deeptutor 不打进 exe**：为的是跟上 `pip install -U deeptutor` 的版本；需要"随发版锁版本"
   可把 wheel 固化进 runtime 并定期重建。
-- 后续可加：托盘常驻 + 后台保活、开机自启、多工作区切换、端口冲突时自动换端口。
+- Windows 托盘常驻使用 pystray：关闭窗口隐藏，打开恢复，退出沿用进程树清理链；托盘不可用则关窗退出。
+- 后续可加：macOS 托盘、开机自启、多工作区切换、端口冲突时自动换端口。

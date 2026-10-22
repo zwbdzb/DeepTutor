@@ -12,7 +12,7 @@ page shows live status; once 127.0.0.1:3782 answers, the window enters a
     应用内退出登录 → 吊销令牌、摘除模型配置 → 导航回登录门控页（功能不可用）
             → 再次登录后重新进入应用
 
-Closing the window terminates the whole deeptutor process tree.
+On Windows, closing hides to the tray; Quit stops the deeptutor process tree.
 
 开发旁路：环境变量 ``DEEPTUTOR_DESKTOP_SKIP_LOGIN=1`` 跳过登录门控（离线开发用）。
 """
@@ -57,6 +57,7 @@ from desktop.telemetry_reporter import (
 import desktop.runtime as rt
 from desktop.splash import splash_html
 from desktop.titlebar_account import AccountStatusSync, _fmt_balance
+from desktop.tray import SystemTray
 
 log = logging.getLogger("dt.main")
 
@@ -223,6 +224,9 @@ class Api:
 
     @staticmethod
     def quit() -> None:
+        tray = _shared.get("tray")
+        if tray is not None:
+            tray.allow_exit()
         for w in webview_windows:
             try:
                 w.destroy()
@@ -687,6 +691,9 @@ def main() -> int:
     )
     webview_windows.append(window)
 
+    tray = SystemTray(window, api.quit)
+    _shared["tray"] = tray
+    window.events.closing += tray.on_closing
     window.events.closed += _on_closed
     # 标题栏图标与菜单位置由 native_menu_backend 的自定义标题栏方案在窗口
     # 创建期统一处理（ShowIcon=False + WM_NCCALCSIZE 抹掉标题栏，菜单条
@@ -708,6 +715,7 @@ def main() -> int:
                 name="dt-auto-update",
             ).start()
 
+        tray.start()
         webview.start(_on_window_ready, debug=False)
     except Exception as exc:  # noqa: BLE001
         # mac 打包 console=False，任何窗口创建/事件循环阶段的崩溃都会被
@@ -729,6 +737,9 @@ def main() -> int:
 
 def _on_closed() -> None:
     log.info("window closed; stopping deeptutor")
+    tray = _shared.pop("tray", None)
+    if tray is not None:
+        tray.stop()
     stop_evt = _shared.get("session_stop")
     if isinstance(stop_evt, threading.Event):
         stop_evt.set()

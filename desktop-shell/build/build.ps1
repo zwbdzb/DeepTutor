@@ -33,7 +33,7 @@ param(
 $ErrorActionPreference = "Stop"
 $Root   = Split-Path -Parent $PSScriptRoot
 $VenPy  = Join-Path $Root ".venv\Scripts\python.exe"
-if (-not (Test-Path $VenPy)) { Write-Host "venv missing. run:  python -m venv .venv && .\.venv\Scripts\pip install pywebview pillow pyinstaller" -ForegroundColor Red; exit 1 }
+if (-not (Test-Path $VenPy)) { Write-Host "venv missing. run:  python -m venv .venv && .\.venv\Scripts\pip install pywebview pystray pillow pyinstaller" -ForegroundColor Red; exit 1 }
 
 # 每阶段计时：优化/定位耗时靠数据，不靠猜。
 $script:StageStart = Get-Date

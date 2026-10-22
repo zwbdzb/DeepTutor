@@ -2,7 +2,7 @@
 
 把港大开源的学习工作区 **DeepTutor**（[deeptutor.info](https://deeptutor.info/zh-cn/)）一键装成桌面客户端 **ThinkBuddy**。
 以前要 `pip install -U deeptutor && deeptutor init && deeptutor start` 再开浏览器；
-现在双击 `ThinkBuddyDesktop.exe`，弹出原生窗口，本地服务自动静默拉起，关窗口即停止。
+现在双击 `ThinkBuddyDesktop.exe`，弹出原生窗口，本地服务自动静默拉起；Windows 关闭窗口后隐藏到系统托盘。
 
 ## 它做了什么
 
@@ -13,7 +13,7 @@
   DeepTutor 并进入应用。**退出登录即回到登录页，软件功能不可用**，重新登录后恢复
   （详见 [`docs/tokengine-integration.md`](docs/tokengine-integration.md) 与
   [`docs/adr/ADR-003-login-gate.md`](docs/adr/ADR-003-login-gate.md)）
-- `deeptutor start` 以**隐藏子进程**运行；关闭窗口用 `taskkill /T` 连后端(:8001)+前端(:3782)一起停
+- `deeptutor start` 以**隐藏子进程**运行；Windows 关闭窗口时后台服务继续运行，双击托盘图标或右键“打开”恢复窗口；托盘或文件菜单“退出”才停止服务。托盘不可用时关闭窗口直接退出。
 - **单实例**（再次启动不重复开窗，而是把已打开的窗口带到前台）
 - 工作区数据在 `~/ThinkBuddy`, 日志落盘 `%LOCALAPPDATA%\ThinkBuddy\logs\app.log`、
 
@@ -107,7 +107,7 @@
 
 ```powershell
 py -3.12 -m venv .venv
-.\.venv\Scripts\python -m pip install -U pip pywebview pillow pyinstaller
+.\.venv\Scripts\python -m pip install -U pip pywebview pystray pillow pyinstaller
 .\.venv\Scripts\python -m desktop.main        # 开发跑起来
 ```
 

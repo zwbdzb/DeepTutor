@@ -264,7 +264,7 @@ def _find_window_by_image(image: str) -> int:
     壳窗口文本恒为空串（见模块 docstring 历史 Bug ②），标题不可依赖；
     进程归属才是稳定判据。同一进程除主窗体外还可能有**微型辅助窗口**
     （实测 pywebview 激活瞬间会冒出 65x50 的可见小窗），且 Z 序不定——
-    因此不能命中即停，而是收集全部可见命中窗口，按**还原态面积**取最大
+    因此不能命中即停，而是收集全部命中窗口（包括隐藏到托盘的窗口），按**还原态面积**取最大
     （主窗体 1280x860 恒大于任何辅助窗口）。把本进程排除在外（守卫阶段
     本进程尚无窗口，纯属保险）。
     """
@@ -297,8 +297,6 @@ def _find_window_by_image(image: str) -> int:
         pid = owner_pid.value
         if not pid or pid == me:
             return True
-        if not u.IsWindowVisible(hwnd):
-            return True        # 跳过 .NET/WebView2 的隐藏辅助窗口
         proc = kernel32.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFO
         if not proc:
             return True        # 跨提权场景读不到镜像名，放弃该窗口
