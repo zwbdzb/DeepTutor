@@ -144,11 +144,11 @@ def account_menu_model(status: dict) -> dict:
                 {"action": "checkin", "label": "签到得积分"},
                 {"action": "refresh", "label": "刷新可用模型"},
                 {"type": "sep"},
-                {"action": "platform", "label": "打开 Tokengine 平台"},
+                {"action": "platform", "label": "打开Tokengine平台"},
                 {"action": "switch", "label": "切换账号"},
                 {"action": "logout", "label": "退出登录", "danger": True},
                 {"type": "sep"},
-                {"action": "about", "label": "关于 ThinkBuddy"},
+                {"action": "about", "label": "关于ThinkBuddy"},
             ],
         }
     if configured:
@@ -157,9 +157,9 @@ def account_menu_model(status: dict) -> dict:
             "header": {"title": "已配置令牌", "sub": "本机已配置令牌，可切换账号"},
             "items": [
                 {"action": "switch", "label": "登录 / 切换账号"},
-                {"action": "platform", "label": "打开 Tokengine 平台"},
+                {"action": "platform", "label": "打开Tokengine平台"},
                 {"type": "sep"},
-                {"action": "about", "label": "关于 ThinkBuddy"},
+                {"action": "about", "label": "关于ThinkBuddy"},
             ],
         }
     if status.get("in_progress"):
@@ -168,19 +168,19 @@ def account_menu_model(status: dict) -> dict:
             "header": {"title": "等待浏览器完成…", "sub": "请在浏览器中完成登录与授权"},
             "items": [
                 {"action": "switch", "label": "重新发起登录"},
-                {"action": "platform", "label": "打开 Tokengine 平台"},
+                {"action": "platform", "label": "打开Tokengine平台"},
                 {"type": "sep"},
-                {"action": "about", "label": "关于 ThinkBuddy"},
+                {"action": "about", "label": "关于ThinkBuddy"},
             ],
         }
     return {
         **base,
         "header": {"title": "ThinkBuddy", "sub": "未登录 Tokengine"},
         "items": [
-            {"action": "switch", "label": "登录 Tokengine"},
-            {"action": "platform", "label": "打开 Tokengine 平台"},
+            {"action": "switch", "label": "登录Tokengine"},
+            {"action": "platform", "label": "打开Tokengine平台"},
             {"type": "sep"},
-            {"action": "about", "label": "关于 ThinkBuddy"},
+            {"action": "about", "label": "关于ThinkBuddy"},
         ],
     }
 

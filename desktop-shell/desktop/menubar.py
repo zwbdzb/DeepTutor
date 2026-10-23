@@ -319,7 +319,7 @@ def localize_app_menu() -> None:
             return it
 
         sub = AppKit.NSMenu.alloc().initWithTitle_(app_item.title() or APP_NAME)
-        sub.addItem_(_item(f"关于 {APP_NAME}", "orderFrontStandardAboutPanel:"))
+        sub.addItem_(_item(f"关于{APP_NAME}", "orderFrontStandardAboutPanel:"))
         sub.addItem_(AppKit.NSMenuItem.separatorItem())
 
         services_item = _item("服务", None)
@@ -329,7 +329,7 @@ def localize_app_menu() -> None:
         app.setServicesMenu_(services_menu)
 
         sub.addItem_(AppKit.NSMenuItem.separatorItem())
-        hide = _item(f"隐藏 {APP_NAME}", "hide:", "h")
+        hide = _item(f"隐藏{APP_NAME}", "hide:", "h")
         sub.addItem_(hide)
         hide_others = _item("隐藏其他", "hideOtherApplications:", "h")
         hide_others.setKeyEquivalentModifierMask_(
@@ -338,7 +338,7 @@ def localize_app_menu() -> None:
         sub.addItem_(hide_others)
         sub.addItem_(_item("全部显示", "unhideAllApplications:"))
         sub.addItem_(AppKit.NSMenuItem.separatorItem())
-        sub.addItem_(_item(f"退出 {APP_NAME}", "terminate:", "q"))
+        sub.addItem_(_item(f"退出{APP_NAME}", "terminate:", "q"))
 
         app_item.setSubmenu_(sub)
         log.info("mac 应用菜单已中文化")
@@ -513,7 +513,7 @@ def build_native_menu(api) -> list[Menu]:
         Menu(
             "文件",
             [
-                MenuAction("打开 ThinkBuddy 网站", lambda: _open_website()),
+                MenuAction("打开ThinkBuddy网站", lambda: _open_website()),
                 MenuSeparator(),
                 # 仅 Windows：读写 HKCU Run 键，与安装器勾选同一来源；mac 暂无登录项支持
                 *([MenuCheck("开机自启动", _menu_autostart, autostart.is_enabled)]
@@ -522,10 +522,10 @@ def build_native_menu(api) -> list[Menu]:
                 MenuSeparator(),
                 # 菜单文本不带快捷键提示：pywebview MenuAction 只有纯文本 label，
                 # WinForms ToolStripMenuItem 不支持「\t快捷键」右对齐语法，会渲染成
-                # 「退出 ThinkBuddyAlt+F4」粘连（用户实测）。Alt+F4 是系统级关窗
+                # 「退出ThinkBuddyAlt+F4」粘连（用户实测）。Alt+F4 是系统级关窗
                 # 快捷键，与菜单文本无关，去掉提示零功能损失；mac 端同位置菜单
-                # （_item(f"退出 {APP_NAME}", "terminate:", "q")）本就是纯文本。
-                MenuAction(f"退出 {APP_NAME}", api.quit),
+                # （_item(f"退出{APP_NAME}", "terminate:", "q")）本就是纯文本。
+                MenuAction(f"退出{APP_NAME}", api.quit),
             ],
         ),
         Menu(
@@ -558,7 +558,7 @@ def build_native_menu(api) -> list[Menu]:
                 MenuAction("配置使用指南", lambda: _open_docs()),
                 MenuAction("打开日志目录", lambda: _open_log_dir()),
                 MenuSeparator(),
-                MenuAction(f"关于 {APP_NAME}", lambda: _menu_about(api)),
+                MenuAction(f"关于{APP_NAME}", lambda: _menu_about(api)),
             ],
         ),
     ]

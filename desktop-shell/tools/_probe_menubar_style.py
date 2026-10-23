@@ -28,7 +28,7 @@ def main() -> int:
     nmb.configure_account_chip(on_login=lambda: None, actions={})
 
     menu_list = [
-        Menu("文件", items=[MenuAction("打开 Tokengine 平台", noop)]),
+        Menu("文件", items=[MenuAction("打开Tokengine平台", noop)]),
         Menu("编辑", items=[MenuAction("复制", noop)]),
     ]
     form = nmb._WF.Form()

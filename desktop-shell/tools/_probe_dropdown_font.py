@@ -35,7 +35,7 @@ def noop() -> None:
 def build_menu():
     return [
         Menu("文件", items=[
-            MenuAction("打开 ThinkBuddy 网站", noop),
+            MenuAction("打开ThinkBuddy网站", noop),
             MenuSeparator(),
             MenuAction("检查更新...", noop),
         ]),
@@ -48,7 +48,7 @@ def build_menu():
             MenuAction("配置使用指南", noop),
             MenuAction("打开日志目录", noop),
             MenuSeparator(),
-            MenuAction("关于 ThinkBuddy", noop),
+            MenuAction("关于ThinkBuddy", noop),
         ]),
     ]
 
