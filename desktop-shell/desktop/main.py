@@ -43,7 +43,12 @@ from desktop.auth import config as auth_config
 from desktop.checkin import CheckinCoordinator, checkin_message
 from desktop.default_search import ensure_default_search
 from desktop.inject import ToastInjector, AccountChipInjector
-from desktop.menubar import _auto_check_updates_on_startup, build_native_menu
+from desktop.menubar import (
+    _auto_check_updates_on_startup,
+    build_native_menu,
+    dismiss_ready_update,
+    install_ready_update,
+)
 from desktop.native_menu_backend import (
     configure_account_chip,
     install_windows_shell_menu,
@@ -346,6 +351,9 @@ def _chip_actions(api: Api) -> dict:
         "copy": api.copy_relay,
         "logout": logout,
         "about": about,
+        # 更新角标（ADR-007）：角标主体 = 安装并重启；✕ = 收起继续用旧版
+        "update_restart": lambda: install_ready_update(api),
+        "update_dismiss": dismiss_ready_update,
     }
 
 
