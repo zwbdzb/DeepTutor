@@ -237,3 +237,96 @@ begin
     Result := True;
   end;
 end;
+
+// 卸载器侧的 Sleep 导入：external 声明的 setuponly 标志意味着上面的 SleepMs
+// 仅在安装器进程可用；卸载器是独立进程，必须单独声明 uninstallonly 版本
+// （两个声明指向同一个 kernel32.Sleep，名字错开即可，互不冲突）。
+procedure SleepMsUninstall(Milliseconds: Longint);
+  external 'Sleep@kernel32.dll stdcall uninstallonly';
+
+(* ===== 卸载开始前的进程抢先清理（CurUninstallStepChanged/usUninstall） ====
+   背景（本机实证 + Inno 机制）：Inno 的 Restart Manager 检测/关闭应用只
+   存在于安装阶段；卸载器没有 RM 检测，也从不尝试关闭或杀掉占用待删文件
+   的进程——它只删除未被占用的文件，被占用的直接跳过。实证：托盘版卸载
+   后卸载注册表键与快捷方式删净，但 {app}\ThinkBuddyDesktop.exe 与
+   {app}\runtime\ 因进程占用原样残留，壳与后端进程树继续存活，托盘图标
+   还在，用户只能手动从托盘退出。托盘功能放大了这个缺口：关窗不再退出
+   进程，「窗口收进托盘 → 直接卸载」成了常态路径。
+
+   为什么不能指望消息式关闭兜底（CloseApplications=force 仅对安装生效；
+   即便卸载阶段发消息也是死路）：
+   1) 壳的托盘设计把一切「关窗」语义吞掉转成隐藏（WM_CLOSE →
+      CloseReason.UserClosing → hide + Cancel；WinForms 层面无法区分用户
+      点 X 与外部投递的 WM_CLOSE，应用侧无从放行）；
+   2) 后端子进程（runtime\python\python.exe 的 launcher/uvicorn、
+      runtime\node\node.exe 的 next standalone）没有窗口，消息无处投递。
+   所以必须像 InitializeSetup 一样显式硬杀。
+
+   时机：usUninstall = 「卸载即将开始」——用户已在确认框点「是」、任何
+   文件尚未删除。挂在这里而非 InitializeUninstall：用户在确认框反悔取消
+   卸载时不会误杀正在运行的应用；静默卸载（unins000.exe /SILENT）同样
+   触发本回调。
+
+   顺序与 InitializeSetup 一致（先壳后子进程，顺序不能反——壳有
+   supervise() 自愈，必须先终结自愈源）：
+     1) taskkill 硬杀壳（ThinkBuddyDesktop.exe）；
+     2) PowerShell 按「可执行文件路径位于本安装目录下」精确清理 runtime
+        子进程与孤儿进程——严禁 taskkill /IM python.exe / node.exe（会误
+        杀系统里其他无关进程），必须按 ExecutablePath 匹配；同时排除
+        unins*.exe（卸载器自身的可执行文件就在 {app} 下运行，不排除会把
+        卸载器自己杀掉、卸载直接中断）；
+     3) 睡约 1.5s 等文件句柄释放。
+   与安装侧的差异：{app} 在卸载上下文直接可得（卸载器就装在 {app}），
+   无需读注册表 InstallLocation。
+
+   幂等与容错：应用未运行时 taskkill 报无匹配（返回码 128），属正常，
+   忽略返回码；PowerShell 全路径不可用时回退 PATH；任何一步失败都不阻断
+   卸载——最坏退化为修复前的现状（文件残留），不会更糟。
+   ====================================================================== *)
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  ErrorCode: Integer;  // Exec 返回码占位：全程只看成败，不判具体值
+  Pattern: string;     // PowerShell -like 匹配模式：安装目录\*
+  PsPath: string;      // powershell.exe 全路径
+  PsParams: string;    // powershell.exe 参数串
+begin
+  if CurUninstallStep <> usUninstall then
+    Exit;
+  try
+    // ---- 第 1 步：先杀壳，终结 supervise() 自愈源（顺序不能反） ----
+    Exec(ExpandConstant('{sys}\taskkill.exe'),
+      '/F /FI "IMAGENAME eq {#MyAppExeName}"',
+      '', SW_HIDE, ewWaitUntilTerminated, ErrorCode);
+
+    // ---- 第 2 步：按安装目录路径精确清理 runtime 子进程 ----
+    Pattern := ExpandConstant('{app}') + '\*';
+    // 罕见边界：路径含单引号（如用户名 O'Brien）时按 PowerShell 单引号
+    // 字符串规则翻倍，防止命令被截断。
+    StringChange(Pattern, '''', '''''');
+    PsPath := ExpandConstant(
+      '{sd}\Windows\System32\WindowsPowerShell\v1.0\powershell.exe');
+    // 引号层级：Pascal 串里两个连续单引号即一个单引号；-like 模式用
+    // PowerShell 单引号串包住（路径含空格也安全）；整条 -Command 再用
+    // 双引号包住直接交给 powershell.exe——不经 cmd，无 OEM 代码页乱码
+    // 与重定向干扰；SW_HIDE 保证不闪黑框。
+    // unins*.exe 排除见函数头注释：不排除 = 卸载器自杀。
+    PsParams :=
+      '-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ' +
+      '"Get-CimInstance Win32_Process | Where-Object { ' +
+      '$_.ExecutablePath -like ''' + Pattern + ''' -and ' +
+      '$_.Name -notlike ''unins*.exe'' } | ' +
+      'ForEach-Object { Stop-Process -Id $_.ProcessId -Force ' +
+      '-ErrorAction SilentlyContinue }"';
+    if not Exec(PsPath, PsParams, '', SW_HIDE,
+         ewWaitUntilTerminated, ErrorCode) then
+      // 兜底：全路径不可用时走 PATH 里的 powershell.exe。
+      Exec('powershell.exe', PsParams, '', SW_HIDE,
+        ewWaitUntilTerminated, ErrorCode);
+
+    // ---- 第 3 步：等约 1.5s，让被杀进程释放安装目录文件句柄 ----
+    SleepMsUninstall(1500);
+  except
+    // 任何一步异常都不阻断卸载：最坏退化为修复前的现状（文件残留）。
+  end;
+end;
