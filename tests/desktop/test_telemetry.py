@@ -4,15 +4,17 @@
 - EngineLogTail：启动不追旧账 / 追加触发回调 / 轮转重置 / 半行拼接 /
   非 JSON 行跳过 / 回调异常不杀死线程
 - TelemetryReporter：成功清零失败计数 / 连败熔断 / error 限速 /
-  lost_before 捎带 / flush_exit 传递 props
+  flush_exit 传递 props（不再上报事件丢失计数）
 """
+
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import sys
 import time
+from types import SimpleNamespace
 import urllib.request
-from pathlib import Path
 
 import pytest
 
@@ -20,7 +22,7 @@ DESKTOP_SHELL = Path(__file__).resolve().parents[2] / "desktop-shell"
 sys.path.insert(0, str(DESKTOP_SHELL))
 
 from desktop.engine_log_tail import EngineLogTail
-from desktop.telemetry_reporter import TelemetryReporter, load_or_create_device_id
+from desktop.telemetry_reporter import TelemetryReporter
 
 
 # --------------------------------------------------------------------------- #
@@ -48,19 +50,25 @@ def run_polls(tail: EngineLogTail, cycles: int = 2) -> None:
 
 def test_tail_skips_preexisting_content_and_reports_new_errors(tmp_path: Path) -> None:
     log_path = tmp_path / "deeptutor.jsonl"
-    write_jsonl(log_path, [
-        {"level": "ERROR", "logger": "old", "message": "历史错误，启动时不应被上报"},
-        {"level": "INFO", "logger": "x", "message": "hi"},
-    ])
+    write_jsonl(
+        log_path,
+        [
+            {"level": "ERROR", "logger": "old", "message": "历史错误，启动时不应被上报"},
+            {"level": "INFO", "logger": "x", "message": "hi"},
+        ],
+    )
     collector = ErrorCollector()
     tail = EngineLogTail(log_path, collector, poll_interval=0.05)
     tail.start()
     try:
         assert collector.errors == []  # 启动 offset=末尾，不追旧账
-        write_jsonl(log_path, [
-            {"level": "WARNING", "logger": "w", "message": "warn"},
-            {"level": "ERROR", "logger": "mod.a", "message": "boom"},
-        ])
+        write_jsonl(
+            log_path,
+            [
+                {"level": "WARNING", "logger": "w", "message": "warn"},
+                {"level": "ERROR", "logger": "mod.a", "message": "boom"},
+            ],
+        )
         run_polls(tail)
         assert [e["logger"] for e in collector.errors] == ["mod.a"]
         assert collector.errors[0]["message"] == "boom"
@@ -117,10 +125,13 @@ def test_tail_skips_non_json_and_survives_callback_errors(tmp_path: Path) -> Non
         calls["n"] += 1
         raise RuntimeError("callback must not kill the tail")
 
-    write_jsonl(log_path, [
-        {"level": "ERROR", "logger": "a", "message": "x"},
-        {"level": "ERROR", "logger": "b", "message": "y"},
-    ])
+    write_jsonl(
+        log_path,
+        [
+            {"level": "ERROR", "logger": "a", "message": "x"},
+            {"level": "ERROR", "logger": "b", "message": "y"},
+        ],
+    )
     tail = EngineLogTail(log_path, flaky, poll_interval=0.05)
     tail.start()
     try:
@@ -156,20 +167,23 @@ def make_reporter(monkeypatch, endpoint="https://t.example/events", **kwargs):
         sent.append(body)
         return FakeResponse()
 
-    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-    reporter = TelemetryReporter(endpoint, {"device_id": "d", "os": "test"}, **kwargs)
+    monkeypatch.setattr(
+        urllib.request, "build_opener", lambda *args: SimpleNamespace(open=fake_urlopen)
+    )
+    reporter = TelemetryReporter(endpoint, {"machine_id": "d", "os": "test"}, **kwargs)
     return reporter, sent
 
 
 def test_report_sends_batch_envelope_with_base_props(monkeypatch) -> None:
     reporter, sent = make_reporter(monkeypatch)
-    reporter.report("error_backend", {"logger": "m"})
+    reporter.flush_exit("error_backend", {"logger": "m"})
     reporter.flush_exit("app_exit", {"reason": "window_closed"})
     assert len(sent) == 2
     event = sent[0]["events"][0]
     assert event["name"] == "error_backend"
-    assert event["device_id"] == "d"
-    assert event["lost_before"] == 0
+    assert event["machine_id"] == "d"
+    assert event["props"] == {"logger": "m"}
+    assert "lost_before" not in event
     assert sent[1]["events"][0]["name"] == "app_exit"
 
 
@@ -180,17 +194,19 @@ def test_consecutive_failures_trip_circuit_breaker(monkeypatch) -> None:
         calls["n"] += 1
         raise OSError("connection refused")
 
-    monkeypatch.setattr(urllib.request, "urlopen", failing_urlopen)
+    monkeypatch.setattr(
+        urllib.request, "build_opener", lambda *args: SimpleNamespace(open=failing_urlopen)
+    )
     reporter = TelemetryReporter(
         "https://t.example/events", {}, fail_threshold=3, mute_seconds=600.0
     )
     for _ in range(3):
-        reporter._post_sync("error_backend", {})
+        reporter._post_sync("error_backend", {}, "", 1792576514)
     assert calls["n"] == 3
     assert reporter._muted_until > 0
     # 熔断窗口内：同步与异步路径都静默丢弃，不再打网络
-    reporter._post_sync("app_exit", {})
-    reporter.report("error_backend", {})
+    reporter._post_sync("app_exit", {}, "", 1792576514)
+    reporter.flush_exit("error_backend", {})
     assert calls["n"] == 3
 
 
@@ -201,65 +217,22 @@ def test_error_rate_limit_drops_excess(monkeypatch) -> None:
         calls["n"] += 1
         raise OSError("down")
 
-    monkeypatch.setattr(urllib.request, "urlopen", failing_urlopen)
+    monkeypatch.setattr(
+        urllib.request, "build_opener", lambda *args: SimpleNamespace(open=failing_urlopen)
+    )
     reporter = TelemetryReporter(
         "https://t.example/events", {}, error_rate_limit=2, fail_threshold=100
     )
     for i in range(4):
-        reporter._post_sync("error_backend", {"i": i})
-    assert calls["n"] == 2          # 前两条真实发出（失败），后两条被限速丢弃
-    # _lost 语义 = 自上次过闸事件以来的丢弃数（过闸事件清零并捎带旧值）：
-    # i=1 过闸时捎走了 i=0 的失败（lost_before=1），i=1 自身失败 +1，
-    # i=2/i=3 被限速丢弃 +2 → 共 3。
-    assert reporter._lost == 3
+        reporter._post_sync("error_backend", {"i": i}, "", 1792576514)
+    assert calls["n"] == 2  # 前两条真实发出（失败），后两条被限速丢弃
     # 非 error 前缀不受 error 限速影响
-    reporter._post_sync("app_exit", {})
+    reporter._post_sync("app_exit", {}, "", 1792576514)
     assert calls["n"] == 3
 
 
-def test_lost_before_piggybacks_on_success(monkeypatch) -> None:
-    state = {"fail": True}
-    bodies: list[dict] = []
-
-    def failing_then_ok(request, timeout=None):
-        if state["fail"]:
-            raise OSError("down")
-        bodies.append(json.loads(request.data.decode("utf-8")))
-        return FakeResponse()
-
-    monkeypatch.setattr(urllib.request, "urlopen", failing_then_ok)
-    reporter = TelemetryReporter("https://t.example/events", {}, fail_threshold=100)
-    reporter._post_sync("error_backend", {})   # 失败 → _lost=1
-    assert reporter._lost == 1
-    state["fail"] = False
-    reporter._post_sync("error_backend", {})   # 成功 → lost_before=1 捎带并清零
-    assert bodies and bodies[0]["events"][0]["lost_before"] == 1
-    assert reporter._lost == 0
-
-
-def test_lost_counter_skips_piggyback_when_zero(monkeypatch) -> None:
-    bodies: list[dict] = []
-
-    def ok(request, timeout=None):
-        bodies.append(json.loads(request.data.decode("utf-8")))
-        return FakeResponse()
-
-    monkeypatch.setattr(urllib.request, "urlopen", ok)
-    reporter = TelemetryReporter("https://t.example/events", {})
-    reporter._post_sync("error_backend", {})
-    assert bodies[0]["events"][0]["lost_before"] == 0
-
-
 def test_disabled_reporter_is_noop() -> None:
-    reporter = TelemetryReporter("", {"device_id": "d"})
+    reporter = TelemetryReporter("", {"machine_id": "d"})
     reporter.report("error_backend", {})  # 不应抛异常、不应发请求
     reporter.flush_exit("app_exit", {})
     assert reporter.enabled is False
-
-
-def test_device_id_persists_and_reuses(tmp_path: Path) -> None:
-    first = load_or_create_device_id(tmp_path)
-    assert len(first) == 36
-    assert load_or_create_device_id(tmp_path) == first
-    stored = (tmp_path / "telemetry_device_id").read_text(encoding="utf-8").strip()
-    assert stored == first
