@@ -29,8 +29,29 @@ log = logging.getLogger("dt.titlebar")
 # 菜单动作名（与 main.py 的分发表对齐，便于一眼核对）
 MENU_ACTIONS = (
     "invite", "checkin", "switch", "platform", "refresh", "refresh_user",
-    "copy", "logout", "about",
+    "copy", "logout", "about", "update_restart", "update_dismiss",
 )
+
+# 更新就绪状态（ADR-007）：menubar._check_updates 下载完成后设置，
+# chip_model 据此在下拉菜单顶部插入「有新版本，点击重启」项。
+_UPDATE_READY: dict = {}  # {version: str, path: str}
+UPDATE_BADGE_LABEL = "有新版本，点击重启"
+
+
+def set_update_ready(version: str = "") -> None:
+    """标记更新已下载就绪，标题栏账号区左侧亮起角标。"""
+    _UPDATE_READY["version"] = version
+    log.info("update ready: v%s", version or "?")
+
+
+def clear_update_ready() -> None:
+    """清除更新就绪标记（用户点 ✕ 收起角标）。"""
+    _UPDATE_READY.clear()
+
+
+def update_ready_version() -> str:
+    """返回当前就绪的版本号；无更新时返回空串。"""
+    return str(_UPDATE_READY.get("version") or "")
 
 
 # --------------------------------------------------------------------------- #
@@ -140,6 +161,7 @@ def account_menu_model(status: dict) -> dict:
                        "sub": sub,
                        "refresh_icon": True},
             "items": [
+                *_update_menu_items(),
                 {"action": "invite", "label": "邀请好友赢积分"},
                 {"action": "checkin", "label": "签到得积分"},
                 {"action": "refresh", "label": "刷新可用模型"},
@@ -185,8 +207,21 @@ def account_menu_model(status: dict) -> dict:
     }
 
 
+def _update_menu_items() -> list[dict]:
+    """更新就绪时在下拉菜单顶部插入「有新版本 vX，点击重启」项。
+
+    无更新时返回空列表（调用方用 ``*_update_menu_items()`` 展开即可）。
+    macOS 没有自绘标题栏，靠这一项触发重启；Windows 同时显示标题栏角标。
+    """
+    version = update_ready_version()
+    if not version:
+        return []
+    label = f"有新版本 v{version}，点击重启"
+    return [{"action": "update_restart", "label": label}]
+
+
 def chip_model(st: dict) -> dict:
-    """标题栏账号区完整模型：{label, title, logged_in, menu}。
+    """标题栏账号区完整模型：{label, title, logged_in, menu, update}。
 
     ``menu`` 为 None 时点击账号区 = 直接发起登录；否则点击弹下拉菜单。
     分支与 :func:`chip_label` 一一对应：
@@ -194,6 +229,11 @@ def chip_model(st: dict) -> dict:
       已配置令牌  → 无菜单，点击直发登录（与旧按钮行为一致）
       登录进行中  → 菜单（重新发起登录/平台/关于）
       未登录      → 无菜单，点击直发登录
+
+    ``update`` 非 None 时，账号区左侧多画一枚「有新版本，点击重启」角标
+    （Windows 自绘；见 native_menu_backend.AccountChip）。角标只在账号区
+    可见时露出，而账号区在登录门控页是隐藏的——所以它天然是「登录进去后
+    才出现」，不打扰登录流程。
     """
     st = st or {}
     label, title = chip_label(st)
@@ -204,8 +244,10 @@ def chip_model(st: dict) -> dict:
         menu = account_menu_model(st)
     else:
         menu = None
+    update = ({"label": UPDATE_BADGE_LABEL, "version": update_ready_version()}
+              if _UPDATE_READY else None)
     return {"label": label, "title": title,
-            "logged_in": logged, "menu": menu}
+            "logged_in": logged, "menu": menu, "update": update}
 
 
 # --------------------------------------------------------------------------- #
