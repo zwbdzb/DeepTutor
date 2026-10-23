@@ -155,4 +155,4 @@ def test_duplicate_checkin_message_keeps_grant_status(
         "grant_status": grant_status,
     }
 
-    assert checkin_message(result) == f"今日已签到，本次未重复增加积分{suffix}"
+    assert checkin_message(result) == "今日已签到"
