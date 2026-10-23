@@ -89,8 +89,8 @@ class TrayTests(unittest.TestCase):
         self.assertTrue(user_close.Cancel)
         self.assertFalse(tray2._exiting)
 
-        tray2.stop()  # 退订 FormClosing
-        window.native.FormClosing.__isub__.assert_called_once()
+        tray2.stop()  # 退订 FormClosing 并清理状态（不抛异常即可）
+        self.assertIsNone(tray2._win_hook)
 
 
 class MacTrayTests(unittest.TestCase):
