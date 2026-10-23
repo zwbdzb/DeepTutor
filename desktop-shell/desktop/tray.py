@@ -15,9 +15,15 @@ NSStatusBar / NSMenu，macOS 也就没有单独的托盘代码要维护。
 * 托盘起不来时不进入「隐藏」状态——关窗退化为旧行为（直接退出），
   免得把窗口藏进一个没有图标的黑洞。
 
-macOS 只有两件 Windows 没有的事，用 pyobjc 补十几行（``_install_mac_hooks``）：
-Cmd+Q 走正常退出链、点 Dock 图标唤回窗口。pyobjc 随 pywebview 的 Cocoa
-后端已在包里，不新增依赖。
+平台钩子统一在 ``on_window_ready()`` 里装（等 ``events.shown``，即
+pywebview 建完原生窗口之后），早了会白装或摸到空句柄：
+
+* macOS：替换 app delegate 接管 Cmd+Q（走正常退出链）与 Dock 唤回。
+  pywebview 建窗口时才装自己的 delegate（cocoa.py
+  ``BrowserView.app.setDelegate_``），在其之前 setDelegate_ 会被覆盖。
+* Windows：关机/注销/Restart Manager 触发的关窗（CloseReason 非
+  UserClosing）不收托盘，直接放行退出链——否则系统报「应用阻止关机」，
+  被 RM 强杀时后端进程树无人清理、残留占端口。
 """
 
 from __future__ import annotations
@@ -36,22 +42,52 @@ log = logging.getLogger("dt.tray")
 SHOW_NOTIFICATION = "com.thinkbuddy.desktop.show-window"
 
 
+if sys.platform == "darwin":
+    import AppKit
+    import Foundation
+
+    class TrayAppDelegate(AppKit.NSObject):
+        """托盘用的 NSApplication delegate（替换 pywebview 的）。
+
+        pyobjc 在类定义时就注册 ObjC 类，模块级定义一次即可；回调通过
+        实例属性 ``_tray`` 指回 SystemTray。
+        """
+
+        def applicationShouldTerminate_(self, app):  # noqa: N802
+            # Cmd+Q / 应用菜单「退出」：取消 AppKit 的硬退，改成下一轮跑
+            # 正常退出链：销毁窗口 -> closed -> 停后端进程树。
+            from PyObjCTools import AppHelper
+
+            AppHelper.callAfter(self._tray.quit)
+            return Foundation.NO
+
+        def applicationShouldHandleReopen_hasVisibleWindows_(  # noqa: N802
+            self, app, has_visible_windows
+        ):
+            # 点 Dock 图标 / LaunchServices 再次打开时唤回窗口；pywebview 不实现。
+            self._tray.show()
+            return Foundation.YES
+
+        def applicationSupportsSecureRestorableState_(self, app):  # noqa: N802
+            return Foundation.YES
+
+
 class SystemTray:
     """托盘门面：Windows 通知区域 / macOS 菜单栏，统一走 pystray。"""
 
     def __init__(self, window, on_quit: Callable[[], None]) -> None:
         self._window = window
         self._on_quit = on_quit
-        self._icon = None          # pystray.Icon
+        self._icon = None            # pystray.Icon
         self._exiting = False
-        self._mac = None           # macOS: (delegate, center, observer_token)
+        self._mac_delegate = None    # TrayAppDelegate 实例（防释放）
+        self._mac_observer = None    # (notification center, token)
+        self._win_hook = None        # (form, FormClosing handler)
 
     # -- lifecycle ------------------------------------------------------- #
     def start(self) -> None:
         # macOS 上 pystray 会直接操作 NSStatusBar，必须在主线程建图标：
         # main() 里是在 webview.start() 之前调用，正好是主线程。
-        if sys.platform == "darwin":
-            self._install_mac_hooks()
         try:
             from PIL import Image
             import pystray
@@ -74,6 +110,14 @@ class SystemTray:
         except Exception:  # noqa: BLE001
             log.exception("system tray unavailable; closing the window will exit")
             self.stop()
+
+    def on_window_ready(self) -> None:
+        """pywebview 建完原生窗口后安装平台钩子（见模块 docstring）。"""
+        self._window.events.shown.wait(10)
+        if sys.platform == "darwin":
+            self._install_mac_hooks()
+        elif sys.platform == "win32":
+            self._install_windows_hooks()
 
     def _setup(self, icon) -> None:
         try:
@@ -116,12 +160,19 @@ class SystemTray:
     def stop(self) -> None:
         self.allow_exit()
         icon, self._icon = self._icon, None
-        mac, self._mac = self._mac, None
-        if mac is not None:
+        observer, self._mac_observer = self._mac_observer, None
+        self._mac_delegate = None
+        win_hook, self._win_hook = self._win_hook, None
+        if observer is not None:
             try:
-                mac[1].removeObserver_(mac[2])
+                observer[0].removeObserver_(observer[1])
             except Exception:  # noqa: BLE001
                 log.exception("could not remove macOS activation observer")
+        if win_hook is not None:
+            try:
+                win_hook[0].FormClosing -= win_hook[1]
+            except Exception:  # noqa: BLE001
+                log.exception("could not remove windows session-close hook")
         if icon is not None:
             try:
                 icon.visible = False
@@ -134,72 +185,58 @@ class SystemTray:
 
     # -- macOS only ------------------------------------------------------ #
     def _install_mac_hooks(self) -> None:
-        """接管 Cmd+Q 与 Dock 唤回（其余托盘逻辑与 Windows 完全共用）。
+        """替换 app delegate（Cmd+Q / Dock 唤回）+ 注册第二实例唤回通知。
 
-        必须在主线程、pywebview 建完窗口之后调用：``create_window`` 里
-        pywebview 已装过自己的 delegate，这里在其之后覆盖。
+        AppKit 不是线程安全的，整段派发到主线程执行；等过 ``events.shown``
+        才调到这里，pywebview 自己的 delegate 已装完，不会被再覆盖。
         """
         try:
-            import AppKit
-            import Foundation
+            from PyObjCTools import AppHelper
 
-            delegate = _mac_delegate_class().alloc().init()
-            delegate._tray = self
-            AppKit.NSApplication.sharedApplication().setDelegate_(delegate)
+            def _install() -> None:
+                delegate = TrayAppDelegate.alloc().init()
+                delegate._tray = self
+                AppKit.NSApplication.sharedApplication().setDelegate_(delegate)
+                self._mac_delegate = delegate
 
-            # 应用已在前台、窗口收着时，激活不会触发 DidBecomeActive，
-            # 第二个实例改用显式通知（发送端见 single_instance）。
-            center = Foundation.NSDistributedNotificationCenter.defaultCenter()
-            token = center.addObserverForName_object_queue_usingBlock_(
-                SHOW_NOTIFICATION,
-                None,
-                Foundation.NSOperationQueue.mainQueue(),
-                lambda _note: self.show(),
-            )
-            self._mac = (delegate, center, token)
-            log.info("macOS app hooks installed")
+                # 应用已在前台、窗口收着时，激活不会触发 DidBecomeActive，
+                # 第二个实例改用显式通知（发送端见 single_instance）。
+                center = Foundation.NSDistributedNotificationCenter.defaultCenter()
+                token = center.addObserverForName_object_queue_usingBlock_(
+                    SHOW_NOTIFICATION,
+                    None,
+                    Foundation.NSOperationQueue.mainQueue(),
+                    lambda _note: self.show(),
+                )
+                self._mac_observer = (center, token)
+                log.info("macOS app hooks installed")
+
+            AppHelper.callAfter(_install)
         except Exception:  # noqa: BLE001
             log.exception("macOS app hooks unavailable; Cmd+Q will only hide the window")
 
+    # -- Windows only ---------------------------------------------------- #
+    def _install_windows_hooks(self) -> None:
+        """关机/注销/Restart Manager 关窗（非 UserClosing）不收托盘，放行退出。
 
-_MAC_DELEGATE_CLASS = None
+        pywebview 的 FormClosing 处理器先跑（一律 hide + Cancel）；本 handler
+        追加在其后，把系统级关窗改回放行，走正常退出链（FormClosed ->
+        events.closed -> 停后端进程树）。
+        """
+        try:
+            from System.Windows.Forms import CloseReason
 
+            def _pass_through(_sender, args) -> None:
+                if args.CloseReason != CloseReason.UserClosing:
+                    self.allow_exit()
+                    args.Cancel = False
 
-def _mac_delegate_class():
-    """构造（并缓存）托盘用的 NSApplication delegate 类。
-
-    pyobjc 在类定义时就注册 ObjC 类，重复定义会告警，所以进程内只建一次；
-    回调通过实例属性 ``_tray`` 指回 SystemTray。
-    """
-    global _MAC_DELEGATE_CLASS
-    if _MAC_DELEGATE_CLASS is not None:
-        return _MAC_DELEGATE_CLASS
-
-    import AppKit
-    import Foundation
-
-    class ThinkBuddyTrayDelegate(AppKit.NSObject):
-        def applicationShouldTerminate_(self, app):  # noqa: N802
-            # Cmd+Q / 应用菜单「退出」：pywebview 的 delegate 会把它当成一次
-            # 关窗（随后被 on_closing 收进托盘）。这里取消 AppKit 的硬退，
-            # 改成下一轮跑正常退出链：销毁窗口 -> closed -> 停后端进程树。
-            from PyObjCTools import AppHelper
-
-            AppHelper.callAfter(self._tray.quit)
-            return Foundation.NO
-
-        def applicationShouldHandleReopen_hasVisibleWindows_(  # noqa: N802
-            self, app, has_visible_windows
-        ):
-            # 点 Dock 图标 / LaunchServices 再次打开时唤回窗口；pywebview 不实现。
-            self._tray.show()
-            return Foundation.YES
-
-        def applicationSupportsSecureRestorableState_(self, app):  # noqa: N802
-            return Foundation.YES
-
-    _MAC_DELEGATE_CLASS = ThinkBuddyTrayDelegate
-    return _MAC_DELEGATE_CLASS
+            form = self._window.native
+            form.FormClosing += _pass_through
+            self._win_hook = (form, _pass_through)
+            log.info("windows session-close hook installed")
+        except Exception:  # noqa: BLE001
+            log.exception("windows session-close hook unavailable")
 
 
 __all__ = ["SHOW_NOTIFICATION", "SystemTray"]

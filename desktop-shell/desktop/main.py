@@ -702,8 +702,8 @@ def main() -> int:
     # 曾引发 Python 工作线程集体冻结（2026-09-23），那套代码已删除。
 
     try:
-        # webview.start(func) runs func after the event loop is ready →
-        # the bootstrap thread only starts once the window object exists.
+        # webview.start(func) 的 func 在独立线程跑，与原生窗口创建并发；
+        # bootstrap 内部有健康检查兜底，托盘平台钩子则等 events.shown。
         def _on_window_ready() -> None:
             threading.Thread(
                 target=bootstrap, args=(window, api, auth), daemon=True
@@ -715,6 +715,8 @@ def main() -> int:
                 daemon=True,
                 name="dt-auto-update",
             ).start()
+            # 平台钩子（mac delegate / 关机放行）须等 pywebview 建完窗口再装。
+            tray.on_window_ready()
 
         tray.start()
         webview.start(_on_window_ready, debug=False)
