@@ -82,6 +82,7 @@ a = Analysis(
         "webview",
         "webview.platforms.winforms",
         "webview.platforms.edgechromium",
+        "pystray._win32",
     ],
     hookspath=[],
     runtime_hooks=[],

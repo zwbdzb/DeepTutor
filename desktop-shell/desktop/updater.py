@@ -411,7 +411,7 @@ def run_installer(setup_path: str | os.PathLike) -> None:
         f"echo [%date% %time%] update-bat started >> \"{update_log}\"",
         f"taskkill /F /FI \"IMAGENAME eq {app_exe}\" >nul 2>&1",
         f"echo [%date% %time%] old instances killed >> \"{update_log}\"",
-        f"\"{setup}\" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /FORCECLOSEAPPLICATIONS /LOG=\"{install_log}\"",
+        f"\"{setup}\" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /FORCECLOSEAPPLICATIONS /MERGETASKS=\"!autostart\" /LOG=\"{install_log}\"",
         f"echo [%date% %time%] setup exit %%errorlevel%% >> \"{update_log}\"",
         "ping -n 16 127.0.0.1 >nul",
         f"for /f \"tokens=2*\" %%A in ('reg query \"{uninstall_key}\" /v InstallLocation 2^>nul ^| findstr InstallLocation') do set \"APPDIR=%%B\"",

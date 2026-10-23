@@ -104,7 +104,7 @@ cd D:\studio\DeepTutor\desktop-shell   # （迁移后：cd D:\studio\DeepTutor\d
 py -3.12 -m venv .venv
 
 # 装依赖
-.\.venv\Scripts\python -m pip install -U pip pywebview pillow pyinstaller
+.\.venv\Scripts\python -m pip install -U pip pywebview pystray pillow pyinstaller
 
 # 以后跑任何东西都是这个前缀：
 .\.venv\Scripts\python <你的命令>

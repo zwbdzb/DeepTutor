@@ -18,13 +18,11 @@ minify 不会拆开字符串字面量，"DeepTutor" 在 chunk 里永远连续完
 替换规则（安全边界）
 --------------------
 1. 只替换驼峰品牌名 ``DeepTutor`` → ``ThinkBuddy``；
-     - 同时把上一任发行版品牌 ``EduBuddy``（旧 staging 产物）升级为
-       ``ThinkBuddy``（见 LEGACY_BRANDS）；
      - ``deeptutor`` 小写（Python 包名 / import / 路径 / pip 包名 /
        indexedDB 库名 / docs.deeptutor.info 域名）不碰；
      - ``DEEPTUTOR_*`` 大写（环境变量）不碰；
-     - ``edubuddy-desktop``（OAuth client_id）、``__edubuddyToast``（前端
-       JS 契约）、``edubuddy_oauth``（服务端路由）等小写技术标识符不碰。
+     - ``edubuddy-desktop``（OAuth client_id，服务端注册契约，改名须服务端
+       同步）等小写技术标识符不碰。
 2. 品牌词必须带【标识符边界】：前后紧贴字母/数字/下划线时不替换。
    ``DeepTutorApp`` / ``DeepTutorParser`` / ``DeepTutorError`` 因此全部
    豁免，包括它们出现在字符串内部时（如 ``__all__``、
@@ -70,12 +68,6 @@ SKIP_SUFFIXES = {".pyc", ".pyo", ".map"}
 
 BRAND = "DeepTutor"
 NEW_BRAND = "ThinkBuddy"
-# 上一任发行版品牌：staging 是按 fingerprint 复用的（fingerprint 不含本脚本），
-# 上轮 rebrand 产物里的品牌名是它。升级重写把它也推向 NEW_BRAND，否则源码
-# 未变时 staging 复用旧产物，DeepTutor 已被换光、本轮替换 0 处，包里品牌
-# 停留在 EduBuddy。只匹配驼峰独立词，小写技术标识符（edubuddy-desktop
-# client_id、__edubuddyToast、edubuddy_oauth 路由）天然不受影响。
-LEGACY_BRANDS = ("EduBuddy",)
 
 # 含品牌名的 URL —— 仓库/官网等真实地址，必须原样保留。
 # 同时覆盖 JS 编译产物里的转义形式（https:\/\/... 斜杠前带反斜杠）。
@@ -119,15 +111,14 @@ def _restore_urls(text: str, stash: list[str]) -> str:
 
 
 def _brand_bounded(text: str) -> tuple[str, int]:
-    """带标识符边界的品牌替换（DeepTutor + 历任发行版品牌 → NEW_BRAND）。
+    """带标识符边界的品牌替换（DeepTutor → NEW_BRAND）。
 
     返回 (新文本, 替换次数)。
     """
     hits = 0
-    for brand in (BRAND, *LEGACY_BRANDS):
-        pat = re.compile(r"(?<![A-Za-z0-9_])" + brand + r"(?![A-Za-z0-9_])")
-        hits += len(pat.findall(text))
-        text = pat.sub(NEW_BRAND, text)
+    pat = re.compile(r"(?<![A-Za-z0-9_])" + BRAND + r"(?![A-Za-z0-9_])")
+    hits += len(pat.findall(text))
+    text = pat.sub(NEW_BRAND, text)
     return text, hits
 
 

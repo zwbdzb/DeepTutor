@@ -119,13 +119,13 @@ jobs:
       - name: Refresh deeptutor_web package
         run: python scripts/prepare_web_package.py --skip-build
 
-      # build.ps1 硬性要求 desktop-shell\.venv 存在（pywebview/pillow/pyinstaller）。
+      # build.ps1 硬性要求 desktop-shell\.venv 存在（pywebview/pystray/pillow/pyinstaller）。
       - name: Create shell venv
         working-directory: desktop-shell
         run: |
           python -m venv .venv
           .\.venv\Scripts\python -m pip install --upgrade pip
-          .\.venv\Scripts\pip install pywebview pillow pyinstaller
+          .\.venv\Scripts\pip install pywebview pystray pillow pyinstaller
 
       # choco 提供的是 Inno Setup 6（>=6.3），installer.iss 的语法全部兼容，
       # build.ps1 会自动探测 ISCC.exe 的安装路径。
@@ -268,13 +268,14 @@ jobs:
       - name: Refresh deeptutor_web package
         run: python scripts/prepare_web_package.py --skip-build
 
-      # build_runtime.py 的硬性要求：desktop-shell/.venv 存在（pywebview/pillow/pyinstaller）。
+      # build_runtime.py 的硬性要求：desktop-shell/.venv 存在
+      # （pywebview/pystray/pillow/pyinstaller；pystray 是两端共用的托盘实现）。
       - name: Create shell venv
         working-directory: desktop-shell
         run: |
           python3 -m venv .venv
           .venv/bin/python -m pip install --upgrade pip
-          .venv/bin/pip install pywebview pillow pyinstaller
+          .venv/bin/pip install pywebview pystray pillow pyinstaller
 
       # build_runtime.py --arch：下载对应架构的 python-build-standalone + node darwin tarball。
       # **不带** --no-zip：mac 没有安装器（无 Inno），runtime.zip 必须内嵌进 .app，

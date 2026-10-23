@@ -13,8 +13,6 @@
 ;
 ; End users double-click ThinkBuddySetup.exe -> Next/Next/Install -> the app
 ; launches on its own. Uninstall keeps ~\ThinkBuddy workspace (learning data).
-; Brand migration: the shell renames legacy %LOCALAPPDATA%\EduBuddy /
-; %USERPROFILE%\EduBuddy dirs to their ThinkBuddy counterparts on first run.
 
 #define MyAppName "ThinkBuddy"
 ; AppVersion is injected by build.ps1 via /DMyAppVersion=<engine_version.timestamp>,
@@ -28,8 +26,8 @@
 #define MyAppExeName "ThinkBuddyDesktop.exe"
 
 [Setup]
-; New AppId for the ThinkBuddy brand (the old EduBuddy entry, if any, stays
-; separately uninstallable; internal-test install base ~0, no upgrade path needed).
+; AppId for the ThinkBuddy brand; internal-test install base ~0, no upgrade
+; path needed.
 AppId={{3B4FC0AE-E3E3-491F-B3B6-59BBBF1D6305}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
@@ -86,8 +84,16 @@ RestartApplications=no
 Name: "chinesesimp"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
+[CustomMessages]
+; 附加任务页「开机自启动」勾选（中英双语；未定义的语言回退到第一项中文）。
+chinesesimp.StartAtBoot=开机时自动启动 ThinkBuddy
+english.StartAtBoot=Start ThinkBuddy at boot
+
 [Tasks]
+; 「开机自启动」默认勾选（不加 unchecked），排在桌面快捷方式下方；
+; desktopicon 保持原有默认（不勾选），升级时按上次选择复用。
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+Name: "autostart";   Description: "{cm:StartAtBoot}";       GroupDescription: "{cm:AdditionalIcons}"
 
 [Files]
 ; native shell + assets
@@ -109,15 +115,21 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilen
 ; bootloader 在 main 前 LoadLibrary 报 126，见 desktop/updater.py run_installer）
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 
+[Registry]
+; 开机自启动：写 HKCU Run 键（PrivilegesRequired=lowest 的 per-user 安装，无需管理员）。
+; 与桌面端「文件 → 开机自启动」读写同一键值，两处天然同步；卸载 uninsdeletevalue 清掉。
+; 静默升级时 updater.py 传 /MERGETASKS="!autostart"，避免复用旧勾选把用户关掉的自启写回。
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; \
+  ValueType: string; ValueName: "ThinkBuddy"; \
+  ValueData: """{app}\{#MyAppExeName}"""; \
+  Flags: uninsdeletevalue; Tasks: autostart
+
 [InstallDelete]
-; 安装新版时清掉本机遗留的托管运行时缓存（%LOCALAPPDATA%\ThinkBuddy\runtime，
-; 以及品牌迁移前的 %LOCALAPPDATA%\EduBuddy\runtime）。
+; 安装新版时清掉本机遗留的托管运行时缓存（%LOCALAPPDATA%\ThinkBuddy\runtime）。
 ; 它是旧版 runtime.zip 自解压的历史产物，版本可能停在任意旧版（曾以 1.6.9
 ; 遮蔽新装的 1.6.10，见 docs/adr/ADR-005）。本安装器自带完整 runtime/ 树，
-; 缓存纯属冗余，删除无任何用户数据损失（学习数据在 %USERPROFILE%\ThinkBuddy；
-; 壳首次启动会把 %USERPROFILE%\EduBuddy 整体改名迁移过去）。
+; 缓存纯属冗余，删除无任何用户数据损失（学习数据在 %USERPROFILE%\ThinkBuddy）。
 Type: filesandordirs; Name: "{localappdata}\ThinkBuddy\runtime"
-Type: filesandordirs; Name: "{localappdata}\EduBuddy\runtime"
 
 [UninstallDelete]
 ; 卸载时清掉托管缓存 + 应用目录；keep user data (workspace lives in

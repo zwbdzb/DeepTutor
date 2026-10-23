@@ -391,6 +391,15 @@ class DeepTutorProcess:
             env["PATH"] = str(self.node_dir) + os.pathsep + env.get("PATH", "")
         # DeepTutor respects DEEPTUTOR_HOME too; pass --home explicitly.
         env["DEEPTUTOR_HOME"] = str(self.home)
+        # 子进程 stdio 强制 UTF-8（2026-10-22）：zh-CN Windows 上 Python 子进程
+        # stdout 默认 cp936/GBK，thinkbuddy.log 会落成 GBK 字节——VS Code /
+        # Win11 记事本等 UTF-8 工具打开全是乱码（用户机实证：banner 十余次
+        # 会话全部 mojibake）。PYTHONIOENCODING 显式指定 stdio，PYTHONUTF8=1
+        # 兜底文件系统等其余编码面；_decode_line 本就 UTF-8 优先、GBK 回退，
+        # 新旧引擎输出都能正确转发。launcher.py common_env 的同名变量只覆盖
+        # deeptutor 再往下拉起的孙进程，这里才是壳直拉子进程的源头。
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUTF8"] = "1"
 
         # 启动前清场：别让上次异常退出留下的孤儿把端口冲突顶到子进程面前。
         self._kill_stale_listeners()
@@ -414,7 +423,10 @@ class DeepTutorProcess:
             "--no-browser",
         ]
         log.info("spawn: %s", " ".join(cmd))
-        self.child_log_path = self.home / "logs" / "deeptutor-child.log"
+        # 文件名用品牌名 thinkbuddy.log：本目录（<工作区>/logs）是「帮助 →
+        # 打开日志目录」菜单的落点，面向最终用户，不能暴露内部项目标识
+        # deeptutor（曾用名 deeptutor-child.log，2026-10-22 品牌化改名）。
+        self.child_log_path = self.home / "logs" / "thinkbuddy.log"
         self.child_log_path.parent.mkdir(parents=True, exist_ok=True)
         # 证据保全：追加而非截断（"wb" 曾把上一会话的临终输出连同崩溃取证
         # 一起抹掉）。超过 8MB 轮转成 .old，防止无限膨胀。
@@ -703,7 +715,7 @@ class DeepTutorProcess:
         # app.log 只记壳事件（2026-10-21）：子进程转发行降为 DEBUG。此前无条件
         # INFO 把"读到一行"这个动作标成了级别，导致 app.log 里 ERROR/WARNING
         # 全部伪装成 INFO（级别语义在转发链路上从未被传递）。子进程输出的
-        # 完整原样副本仍在 <home>/logs/deeptutor-child.log；结构化事实源是
+        # 完整原样副本仍在 <home>/logs/thinkbuddy.log；结构化事实源是
         # 引擎自己的 <home>/data/user/logs/deeptutor.jsonl（error 遥测走
         # EngineLogTail 增量读它，不依赖本行）。
         log.debug("deeptutor: %s", line)

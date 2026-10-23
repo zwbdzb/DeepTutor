@@ -67,39 +67,14 @@ else:
     LOCALAPPDATA = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
 
 
-def _migrate_legacy_dir(legacy: Path, target: Path) -> Path:
-    """品牌迁移（EduBuddy -> ThinkBuddy）：旧目录一次性改名到新目录。
-
-    - 旧目录不存在 / 新目录已存在 → 直接用新目录（新装或已迁移过）。
-    - rename 失败（被占用/权限）→ 沿用旧目录，行为与旧版一致，绝不丢数据。
-    - 同盘 rename 是元数据操作，瞬时完成；auth.json / runtime 缓存 /
-      工作区学习数据随目录整体迁移，登录态与数据无缝延续。
-    """
-    if not legacy.exists() or target.exists():
-        return target
-    try:
-        legacy.rename(target)
-        log.info("migrated legacy dir %s -> %s", legacy, target)
-        return target
-    except OSError:
-        log.warning("cannot migrate %s (locked?) — keeping legacy path", legacy)
-        return legacy
-
-
 # Overridable for tests / portable (USB) installs.
 _env_root = os.environ.get("DEEPTUTOR_DESKTOP_ROOT")
-ROOT = (
-    Path(_env_root) if _env_root
-    else _migrate_legacy_dir(LOCALAPPDATA / "EduBuddy", LOCALAPPDATA / "ThinkBuddy")
-)
+ROOT = Path(_env_root) if _env_root else LOCALAPPDATA / "ThinkBuddy"
 RUNTIME = ROOT / "runtime"
 MANAGED_VENV = RUNTIME / "venv"
 NODE_RUNTIME = RUNTIME / "node"
 _env_home = os.environ.get("DEEPTUTOR_DESKTOP_HOME")
-WORKSPACE_HOME = (
-    Path(_env_home) if _env_home
-    else _migrate_legacy_dir(Path.home() / "EduBuddy", Path.home() / "ThinkBuddy")
-)
+WORKSPACE_HOME = Path(_env_home) if _env_home else Path.home() / "ThinkBuddy"
 
 # Where the PyInstaller bundle keeps an embedded runtime.zip (onefile build)
 # or extracted tree (onedir build). sys._MEIPASS works for both.
