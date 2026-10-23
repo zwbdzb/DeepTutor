@@ -685,7 +685,7 @@ def main() -> int:
         html=splash_html(debug=DEBUG, version=__version__),
         width=1280,
         height=860,
-        min_size=(1024, 680),
+        min_size=(450, 450),
         js_api=api,
         background_color="#ffffff",
         menu=build_native_menu(api),

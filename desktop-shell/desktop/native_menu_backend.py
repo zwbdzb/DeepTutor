@@ -63,8 +63,10 @@ WM_NCHITTEST = 0x0084
 WM_NCLBUTTONDOWN = 0x00A1
 WM_NCLBUTTONDBLCLK = 0x00A3
 WM_SYSCOMMAND = 0x0112
+WM_GETMINMAXINFO = 0x0024
 HTCAPTION = 2
 HTCLIENT = 1
+HTTRANSPARENT = -1
 HTLEFT = 10
 HTRIGHT = 11
 HTTOP = 12
@@ -89,6 +91,16 @@ class _RECT(ctypes.Structure):
 
 class _POINT(ctypes.Structure):
     _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
+class _MINMAXINFO(ctypes.Structure):
+    _fields_ = [
+        ("ptReserved", _POINT),
+        ("ptMaxSize", _POINT),
+        ("ptMaxPosition", _POINT),
+        ("ptMinTrackSize", _POINT),
+        ("ptMaxTrackSize", _POINT),
+    ]
 
 
 _WNDPROC = None  # 延迟绑定：ctypes.WINFUNCTYPE 在 mac 上不存在，不能在模块顶层定义
@@ -127,6 +139,13 @@ def _bind_user32() -> None:
 
 # hwnd → (原窗口过程, 回调引用)；全局持有，防止 ctypes 回调被 GC
 _HOOKS: dict[int, tuple] = {}
+# hwnd → (min_w, min_h) 物理像素；WM_GETMINMAXINFO 钩子读取此表覆盖 ptMinTrackSize
+_HWND_MIN: dict[int, tuple] = {}
+
+
+def _get_target_min(hwnd: int) -> tuple[int, int] | None:
+    """返回 hwnd 对应窗口的目标最小尺寸（物理像素）。"""
+    return _HWND_MIN.get(hwnd)
 
 
 def _frame_thickness() -> int:
@@ -246,23 +265,66 @@ def _make_form_handler(hwnd: int):
     def handler(msg, wp, lp):
         if msg == WM_DESTROY:
             _unhook(hwnd)
+            _HWND_MIN.pop(hwnd, None)
             return None
-        if msg != WM_NCCALCSIZE or not wp:
-            return None
-        # 只抹掉标题栏（顶部内缩为 0），左右下三边保留系统缩放边框（非客户
-        # 区）：WebView2 子窗口盖满客户区，若客户区=整窗矩形，左右下边缘的
-        # WM_NCHITTEST 全部落进子窗口、永远到不了窗体，边缘拖拽缩放即失效。
-        # 保留边框后由系统原生接管缩放（含四个角），观感与普通窗口一致。
-        # 最大化时四边都按边框厚度内缩，避免内容溢出屏幕。
-        ins = _frame_thickness()
-        if ins > 0 and lp:
-            rect = ctypes.cast(lp, ctypes.POINTER(_RECT)).contents
-            rect.left += ins
-            rect.right -= ins
-            rect.bottom -= ins
-            if _user32.IsZoomed(hwnd):
-                rect.top += ins
-        return 0
+        if msg == WM_GETMINMAXINFO and lp:
+            # 先让 WinForms 默认处理跑一遍（把 Form.MinimumSize 写入 mmi），
+            # 然后覆盖 ptMinTrackSize 为真正想要的值（跳过 MenuStrip 自动叠加）
+            hook_entry = _HOOKS.get(hwnd)
+            if hook_entry:
+                _user32.CallWindowProcW(hook_entry[0], hwnd, msg, wp, lp)
+            mmi = ctypes.cast(lp, ctypes.POINTER(_MINMAXINFO)).contents
+            target = _get_target_min(hwnd)
+            if target is not None:
+                mmi.ptMinTrackSize.x = target[0]
+                mmi.ptMinTrackSize.y = target[1]
+            return 0
+        if msg == WM_NCHITTEST:
+            # 自己判断边缘，覆盖 WinForms 默认。关键：WM_NCCALCSIZE 返回 0
+            # 让系统用我们改后的 rect，WinForms 默认处理就按那个 rect 算，
+            # 可能把我们保留的边框区误判为客户区。这里手动算最靠谱。
+            cursor = _POINT()
+            if _user32.GetCursorPos(ctypes.byref(cursor)):
+                rect = _RECT()
+                if _user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                    m = _frame_thickness()
+                    x = cursor.x - rect.left
+                    y = cursor.y - rect.top
+                    w = rect.right - rect.left
+                    h = rect.bottom - rect.top
+                    if y < m or y >= h - m or x < m or x >= w - m:
+                        if y < m:
+                            if x < m:
+                                return HTTOPLEFT
+                            if x >= w - m:
+                                return HTTOPRIGHT
+                            return HTTOP
+                        if y >= h - m:
+                            if x < m:
+                                return HTBOTTOMLEFT
+                            if x >= w - m:
+                                return HTBOTTOMRIGHT
+                            return HTBOTTOM
+                        if x < m:
+                            return HTLEFT
+                        if x >= w - m:
+                            return HTRIGHT
+            return None  # 非边缘 → WinForms 默认
+        if msg == WM_NCCALCSIZE and wp:
+            # 只抹掉标题栏（顶部内缩为 0），左右下三边保留系统缩放边框（非客户
+            # 区）：WebView2 子窗口盖满客户区，若客户区=整窗矩形，左右下边缘的
+            # WM_NCHITTEST 全部落进子窗口、永远到不了窗体，边缘拖拽缩放即失效。
+            # 保留边框后由系统原生接管缩放（含四个角），观感与普通窗口一致。
+            # 最大化时四边都按边框厚度内缩，避免内容溢出屏幕。
+            ins = _frame_thickness()
+            if ins > 0 and lp:
+                rect = ctypes.cast(lp, ctypes.POINTER(_RECT)).contents
+                rect.left += ins
+                rect.right -= ins
+                rect.bottom -= ins
+                if _user32.IsZoomed(hwnd):
+                    rect.top += ins
+            return 0
 
     return handler
 
@@ -270,37 +332,87 @@ def _make_form_handler(hwnd: int):
 # --------------------------------------------------------------------------- #
 # 菜单条钩子：让被菜单条盖住的窗口边缘仍可缩放                                    #
 # --------------------------------------------------------------------------- #
-def _make_strip_handler(hwnd: int, caption_hit=None):
+def _make_strip_handler(strip_hwnd: int, parent_hwnd: int, strip_ref, caption_hit=None):
+    """菜单条钩子。关键：strip 是子窗口，在边缘区域必须返回 HTTRANSPARENT，
+    让系统继续向父窗口询问，父窗口返回 HT* 才能启动缩放循环。
+    但是，如果鼠标在菜单项上，必须返回 HTCLIENT 让菜单项可以点击。"""
     def handler(msg, wp, lp):
         if msg == WM_DESTROY:
-            _unhook(hwnd)
+            _unhook(strip_hwnd)
             return None
         if msg != WM_NCHITTEST:
             return None
         cursor = _POINT()
         if not _user32.GetCursorPos(ctypes.byref(cursor)):
             return None
+        # 先检查是否在菜单项上
+        if strip_ref is not None:
+            try:
+                strip_rect = _RECT()
+                if _user32.GetWindowRect(strip_hwnd, ctypes.byref(strip_rect)):
+                    sx = cursor.x - strip_rect.left
+                    sy = cursor.y - strip_rect.top
+                    item = strip_ref.GetItemAt(sx, sy)
+                    if item is not None:
+                        return HTCLIENT  # 在菜单项上，让菜单处理点击
+            except Exception:
+                pass
+        # 用父窗口 rect 判断是否在整窗边缘
         rect = _RECT()
-        if not _user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+        if not _user32.GetWindowRect(parent_hwnd, ctypes.byref(rect)):
             return None
         m = _frame_thickness()
         x = cursor.x - rect.left
         y = cursor.y - rect.top
-        width = rect.right - rect.left
-        # 标题栏按钮区优先于缩放带：整块按钮可点（原生标题栏同样如此）
-        if caption_hit is not None and caption_hit(x, y):
-            return HTCLIENT
+        w = rect.right - rect.left
+        h = rect.bottom - rect.top
+        # 按钮区优先：caption_hit 用 strip 自身坐标
+        if caption_hit is not None:
+            strip_rect = _RECT()
+            if _user32.GetWindowRect(strip_hwnd, ctypes.byref(strip_rect)):
+                sx = cursor.x - strip_rect.left
+                sy = cursor.y - strip_rect.top
+                if caption_hit(sx, sy):
+                    return HTCLIENT
+        # 整窗边缘 → 返回 HTTRANSPARENT，让系统向父窗口询问
         if y < m:
-            if x < m:
-                return HTTOPLEFT
-            if x >= width - m:
-                return HTTOPRIGHT
-            return HTTOP
+            return HTTRANSPARENT
+        if y >= h - m:
+            return HTTRANSPARENT
         if x < m:
-            return HTLEFT
-        if x >= width - m:
-            return HTRIGHT
-        return None
+            return HTTRANSPARENT
+        if x >= w - m:
+            return HTTRANSPARENT
+        return None  # 非边缘 → ToolStrip 默认处理
+
+    return handler
+
+
+def _make_webview_handler(form_hwnd: int):
+    """WebView2 钩子。WebView2 是 Dock=Fill 的子窗口，覆盖整个客户区。
+    在窗口边缘区域返回 HTTRANSPARENT，让系统继续向父窗口询问，
+    父窗口返回 HT* 才能启动缩放循环。"""
+    def handler(msg, wp, lp):
+        if msg == WM_DESTROY:
+            return None
+        if msg != WM_NCHITTEST:
+            return None
+        cursor = _POINT()
+        if not _user32.GetCursorPos(ctypes.byref(cursor)):
+            return None
+        # 用父窗口 rect 判断是否在整窗边缘
+        rect = _RECT()
+        if not _user32.GetWindowRect(form_hwnd, ctypes.byref(rect)):
+            return None
+        m = _frame_thickness()
+        x = cursor.x - rect.left
+        y = cursor.y - rect.top
+        w = rect.right - rect.left
+        h = rect.bottom - rect.top
+        # 整窗边缘 → 返回 HTTRANSPARENT，让系统向父窗口询问
+        if y < m or y >= h - m or x < m or x >= w - m:
+            return HTTRANSPARENT
+        return None  # 非边缘 → WebView2 默认处理
 
     return handler
 
@@ -1459,6 +1571,13 @@ def _build_menu_strip(form, menu_list):
     strip.Height = cap_h
     strip.ShowItemToolTips = False
     strip.BackColor = _Color.White
+    # 关键：WinForms 会把 Dock=Top 的 MenuStrip.Height 叠加到 Form.MinimumSize
+    # 上，导致哪怕 Form.MinimumSize=(0,0)，实际最小高度仍被推高到菜
+    # 单条高度+WebView2 最小高度。显式清零子控件 MinimumSize 阻断叠加链。
+    try:
+        strip.MinimumSize = _Size(0, 0)
+    except Exception:
+        pass
     # 顶栏与全部下拉共用一份字体实例（WinForms 控件不拥有赋值的 Font，
     # 共享是标准做法）：下拉不显式设字体会继承默认 8.25pt 宋体回退观感。
     menu_font = _Font("Microsoft YaHei UI", _CHROME_FONT_PT)
@@ -1550,8 +1669,9 @@ def _build_menu_strip(form, menu_list):
     # 菜单条自己的句柄钩子：顶边/左右边缘保持系统缩放（按钮区除外）
     try:
         hwnd_strip = int(strip.Handle.ToInt64())
+        hwnd_form = int(form.Handle.ToInt64())
         _install_hook(
-            hwnd_strip, _make_strip_handler(hwnd_strip, caption_hit)
+            hwnd_strip, _make_strip_handler(hwnd_strip, hwnd_form, strip, caption_hit)
         )
     except Exception:  # noqa: BLE001
         log.exception("strip hook failed (top-edge resize may be limited)")
@@ -1630,7 +1750,67 @@ def install_windows_shell_menu() -> bool:
             _install_hook(hwnd, _make_form_handler(hwnd))
             # 窗口可见前重算非客户区 → 标题栏无声消失，无闪烁
             _user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, SWP_FRAME_RECALC)
-            log.info("chrome: custom frame installed (hwnd=0x%X)", hwnd)
+
+            # 强制 MinimumSize：先让 WM_GETMINMAXINFO 钩子也知道目标值（物理像素），
+            # 再在 Load/Shown 事件里双重硬推，覆盖 MenuStrip 叠加、WebView2 自带
+            # 最小尺寸、WinForms layout pass 等一切后续覆盖源。
+            mn = form.pywebview_window.min_size
+            scale = form._scale
+            target = _Size(int(mn[0] * scale), int(mn[1] * scale))
+            _HWND_MIN[hwnd] = (target.Width, target.Height)
+
+            def _zero_min_children(ctrl):
+                """递归清零所有子控件 MinimumSize，阻断 WinForms 叠加链。"""
+                try:
+                    ctrl.MinimumSize = _Size(0, 0)
+                except Exception:
+                    pass
+                try:
+                    for c in ctrl.Controls:
+                        _zero_min_children(c)
+                except Exception:
+                    pass
+
+            def _apply_min(*_):
+                try:
+                    _zero_min_children(form)
+                    form.MinimumSize = target
+                except Exception:
+                    pass
+
+            def _install_webview_hook(*_):
+                """在 WebView2 控件上安装 WM_NCHITTEST 钩子。"""
+                try:
+                    # 递归查找 WebView2 控件
+                    def find_webview(ctrl):
+                        ctrl_type = str(type(ctrl).__name__)
+                        if 'WebView2' in ctrl_type or 'Edge' in ctrl_type or 'Chromium' in ctrl_type:
+                            return ctrl
+                        try:
+                            for c in ctrl.Controls:
+                                result = find_webview(c)
+                                if result:
+                                    return result
+                        except Exception:
+                            pass
+                        return None
+                    
+                    webview_ctrl = find_webview(form)
+                    if webview_ctrl:
+                        webview_hwnd = int(webview_ctrl.Handle.ToInt64())
+                        _install_hook(webview_hwnd, _make_webview_handler(hwnd))
+                        log.info("chrome: webview hook installed (hwnd=0x%X)", webview_hwnd)
+                except Exception:
+                    log.exception("webview hook install failed")
+
+            form.Load += _apply_min
+            form.Shown += _apply_min
+            form.Shown += _install_webview_hook
+
+            log.info(
+                "chrome: custom frame installed (hwnd=0x%X, min_size=%d×%d)",
+                hwnd, target.Width, target.Height,
+            )
         except Exception:  # noqa: BLE001  失败则退回系统标题栏，不影响启动
             log.exception("custom frame install failed; system title bar kept")
 
