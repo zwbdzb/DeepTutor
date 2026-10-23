@@ -631,6 +631,27 @@ def build(make_zip: bool = False, source_root: Path | None = None,
         log("dependency signature changed (or first build); full install")
 
     sp = _py_site_packages(STAGING_PY)
+
+    # 依赖签名变更 → 全量重装。此时先整体清空 site-packages：CI 缓存
+    # restore-keys 恢复的旧 staging 树里，被从 pyproject 移除的第三方依赖会残留
+    # （pip --target 覆盖式安装只增不删，残包会随运行时一起发到用户机器）。
+    # 全量安装本来就要装齐所有包，先删零成本——pip 下载缓存命中，重装远快于
+    # 冷装。仅源码变更（state_changed、deps 未变）走 --no-deps 快速路径时
+    # 【绝不】清空：旧树的第三方依赖正是快速路径秒装的本钱。
+    if deps_changed and sp.exists():
+        log("dependency signature changed: wiping stale site-packages "
+            "(deps removed from pyproject would otherwise ship as residue)")
+        try:
+            shutil.rmtree(sp)
+        except OSError as exc:
+            raise SystemExit(
+                f"cannot wipe stale site-packages {sp}: {exc}\n"
+                f"likely held by a running ThinkBuddy/deeptutor process or "
+                f"antivirus — close the app and retry."
+            ) from exc
+        # 显式重建空目录（install_deeptutor 内部 mkdir 兜底，这里让语义可见）。
+        sp.mkdir(parents=True, exist_ok=True)
+
     did_install = False
     if (sp / "deeptutor").exists():
         py_exe = _staging_py_exe(STAGING_PY)
@@ -664,7 +685,9 @@ def build(make_zip: bool = False, source_root: Path | None = None,
                             f"likely held by a running ThinkBuddy/deeptutor "
                             f"process or antivirus — close the app and retry."
                         ) from exc
-            # deps_changed=True → 依赖声明变了，全量安装；False → --no-deps 快速路径
+            # deps_changed=True 的场景已在上方清空 site-packages 并转入下方
+            # else 分支全量安装；能走到这里的 reinstall 都是 deps 未变的
+            # --no-deps 快速路径（只重装自家包，第三方树原样保留）。
             install_deeptutor(STAGING_PY, source_root, with_deps=deps_changed)
             did_install = True
     else:
@@ -700,7 +723,12 @@ def build(make_zip: bool = False, source_root: Path | None = None,
 
     out_zip = DIST / "runtime.zip"
     out_zip.unlink(missing_ok=True)
-    with zipfile.ZipFile(out_zip, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+    # compresslevel=1 而非 6：这个 zip 只存在于 mac .app 内部（Windows 的
+    # build.ps1 默认 --no-zip、CI 不产 zip），而 DMG 的 hdiutil -format UDZO
+    # 会对整个镜像再压一遍——zip 内的高级压缩纯属白费 CPU（双重压缩）。
+    # level 1 让 zip 步骤快 2-3 倍、首启解压也更快；最终 dmg 体积基本不变
+    # （UDZO 对低级别压缩/未压缩数据照样压得动）。
+    with zipfile.ZipFile(out_zip, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as zf:
         zf.writestr(
             "runtime-manifest.json",
             json.dumps({
