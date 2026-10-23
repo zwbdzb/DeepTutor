@@ -1174,25 +1174,25 @@ def _attach_menu_hover_paint(item) -> None:
         log.exception("menu hover paint attach failed")
 
 
-_CHECK_ON = "\u2713 "   # ✓ + 空格
-_CHECK_OFF = "   "      # 等宽占位：勾选态切换时文字不左右跳
+_CHECK_ON = " ✓"   # 空格 + ✓（跟在标题后面）
+_CHECK_OFF = ""      # 后缀方案文字起始位置不变，勾选态切换不会左右跳，无需占位
 
 
 def _menu_check_text(entry) -> str:
-    """按 state_provider 生成可勾选菜单项文字（✓ 前缀表示已勾选）。"""
+    """按 state_provider 生成可勾选菜单项文字（标题后跟 ✓ 表示已勾选）。"""
     try:
         on = bool(entry.state_provider())
     except Exception:  # noqa: BLE001  外部真相源失败按未勾选处理
         log.exception("menu check state read failed")
         on = False
-    return (_CHECK_ON if on else _CHECK_OFF) + entry.title
+    return entry.title + (_CHECK_ON if on else _CHECK_OFF)
 
 
 def _sync_checkable_items(dd) -> None:
-    """下拉展开前重读可勾选项状态（注册表等外部真相源），刷新文字 ✓ 前缀。
+    """下拉展开前重读可勾选项状态（注册表等外部真相源），刷新文字 ✓ 后缀。
 
     不用原生 Checked：下拉统一 ShowImageMargin=False，原生勾选列不渲染，
-    自绘 ✓ 需处理 DPI/悬停重绘；前缀方案零自绘，且随 item.Text 一起走
+    自绘 ✓ 需处理 DPI/悬停重绘；文本后缀方案零自绘，且随 item.Text 一起走
     默认渲染与悬停重绘两条路径。
     """
     try:
@@ -1386,7 +1386,7 @@ def _convert_entry(entry):
     """pywebview Menu 项 → WinForms ToolStripMenuItem（递归）。
 
     MenuAction 带 ``state_provider``（menubar.MenuCheck）时构建为可勾选项：
-    文字前缀「✓ 」表示勾选态，初始值读一次，之后每次下拉展开前由
+    文字后缀「 ✓」表示勾选态，初始值读一次，之后每次下拉展开前由
     _sync_checkable_items 重读（注册表等外部真相源），点击动作照常后台线程执行。
     """
     if entry is None or isinstance(entry, MenuSeparator):
@@ -1487,7 +1487,7 @@ def _build_menu_strip(form, menu_list):
                 dd.ShowImageMargin = False
                 dd.DropShadowEnabled = False
                 dd.Opened += _make_dropdown_shape_handler(dd, scale)
-                # 展开前同步可勾选项（如「开机自启动」）的 ✓ 前缀
+                # 展开前同步可勾选项（如「开机自启动」）的 ✓ 后缀
                 dd.Opening += (lambda _s, _e, _dd=dd: _sync_checkable_items(_dd))
         except Exception:  # noqa: BLE001  圆角失败退回原生方角，不拦构建
             log.exception("dropdown rounding wire failed")
