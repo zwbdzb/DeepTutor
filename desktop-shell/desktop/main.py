@@ -41,6 +41,7 @@ from desktop import (
 from desktop.auth import AuthManager
 from desktop.auth import config as auth_config
 from desktop.checkin import CheckinCoordinator, checkin_message
+from desktop.default_search import ensure_default_search
 from desktop.inject import ToastInjector, AccountChipInjector
 from desktop.menubar import _auto_check_updates_on_startup, build_native_menu
 from desktop.native_menu_backend import (
@@ -480,6 +481,10 @@ def bootstrap(window, api: Api, auth: AuthManager) -> None:
         # 2. workspace
         home = rt.default_workspace()
         home.mkdir(parents=True, exist_ok=True)
+        try:
+            ensure_default_search(home)
+        except (OSError, ValueError, TypeError, AttributeError):
+            log.exception("默认搜索配置初始化失败，保留现有设置")
         api.set_status("boot", "正在启动 ThinkBuddy 本地服务…", f"工作区：{home}")
 
         # 3. spawn hidden subprocess
