@@ -12,7 +12,8 @@ page shows live status; once 127.0.0.1:3782 answers, the window enters a
     应用内退出登录 → 吊销令牌、摘除模型配置 → 导航回登录门控页（功能不可用）
             → 再次登录后重新进入应用
 
-Closing the window terminates the whole deeptutor process tree.
+Closing the window hides to the tray (Windows notification area / macOS menu
+bar); Quit stops the whole deeptutor process tree.
 
 开发旁路：环境变量 ``DEEPTUTOR_DESKTOP_SKIP_LOGIN=1`` 跳过登录门控（离线开发用）。
 """
@@ -57,6 +58,7 @@ from desktop.telemetry_reporter import (
 import desktop.runtime as rt
 from desktop.splash import splash_html
 from desktop.titlebar_account import AccountStatusSync, _fmt_balance
+from desktop.tray import SystemTray
 
 log = logging.getLogger("dt.main")
 
@@ -223,6 +225,9 @@ class Api:
 
     @staticmethod
     def quit() -> None:
+        tray = _shared.get("tray")
+        if tray is not None:
+            tray.allow_exit()
         for w in webview_windows:
             try:
                 w.destroy()
@@ -687,6 +692,9 @@ def main() -> int:
     )
     webview_windows.append(window)
 
+    tray = SystemTray(window, api.quit)
+    _shared["tray"] = tray
+    window.events.closing += tray.on_closing
     window.events.closed += _on_closed
     # 标题栏图标与菜单位置由 native_menu_backend 的自定义标题栏方案在窗口
     # 创建期统一处理（ShowIcon=False + WM_NCCALCSIZE 抹掉标题栏，菜单条
@@ -694,8 +702,8 @@ def main() -> int:
     # 曾引发 Python 工作线程集体冻结（2026-09-23），那套代码已删除。
 
     try:
-        # webview.start(func) runs func after the event loop is ready →
-        # the bootstrap thread only starts once the window object exists.
+        # webview.start(func) 的 func 在独立线程跑，与原生窗口创建并发；
+        # bootstrap 内部有健康检查兜底，托盘平台钩子则等 events.shown。
         def _on_window_ready() -> None:
             threading.Thread(
                 target=bootstrap, args=(window, api, auth), daemon=True
@@ -707,7 +715,10 @@ def main() -> int:
                 daemon=True,
                 name="dt-auto-update",
             ).start()
+            # 平台钩子（mac delegate / 关机放行）须等 pywebview 建完窗口再装。
+            tray.on_window_ready()
 
+        tray.start()
         webview.start(_on_window_ready, debug=False)
     except Exception as exc:  # noqa: BLE001
         # mac 打包 console=False，任何窗口创建/事件循环阶段的崩溃都会被
@@ -729,6 +740,9 @@ def main() -> int:
 
 def _on_closed() -> None:
     log.info("window closed; stopping deeptutor")
+    tray = _shared.pop("tray", None)
+    if tray is not None:
+        tray.stop()
     stop_evt = _shared.get("session_stop")
     if isinstance(stop_evt, threading.Event):
         stop_evt.set()

@@ -111,7 +111,7 @@ if runtime_zip.exists():            # 只有 zip 存在才内嵌
 ```powershell
 # desktop-shell/.venv：壳的构建环境（PyInstaller 在这里）
 py -3.12 -m venv .venv
-.\.venv\Scripts\python -m pip install -U pip pywebview pillow pyinstaller
+.\.venv\Scripts\python -m pip install -U pip pywebview pystray pillow pyinstaller
 # Inno Setup 7：https://jrsoftware.org/isdl.php（默认安装路径即可被自动找到）
 # Node + npm：前端构建用
 ```

@@ -23,7 +23,7 @@ import urllib.parse
 import webview
 from webview.menu import Menu, MenuAction, MenuSeparator
 
-from desktop import APP_NAME, __version__, updater
+from desktop import APP_NAME, __version__, autostart, updater
 from desktop.auth import config as auth_config
 from desktop.runtime import ROOT, default_workspace
 
@@ -474,6 +474,36 @@ def _open_log_dir() -> None:
         log.exception("open log dir failed")
 
 
+class MenuCheck(MenuAction):
+    """带勾选态的菜单项（仅 Windows 原生菜单渲染，见 native_menu_backend）。
+
+    pywebview 的 MenuAction 没有勾选态，这里挂一个 state_provider（外部真相源，
+    如注册表），Windows 后端在下拉展开时重读并给菜单文字加「✓ 」前缀。
+    """
+
+    def __init__(self, title, function, state_provider=None):
+        super().__init__(title, function)
+        self.state_provider = state_provider
+
+
+def _menu_autostart() -> None:
+    """「文件 → 开机自启动」：切换 HKCU Run 键并给 toast 反馈。
+
+    勾选态由 state_provider（autostart.is_enabled）在下一次展开「文件」菜单时
+    重读注册表刷新——下拉项点击即收起，收起重开即见最新勾选态，无需跨线程改 UI。
+    """
+    try:
+        enabling = not autostart.is_enabled()
+        if autostart.set_enabled(enabling):
+            _toast("已开启开机自启动" if enabling else "已关闭开机自启动",
+                   kind="success")
+        else:
+            _toast("设置开机自启动失败", kind="error", duration_ms=3500)
+    except Exception:  # noqa: BLE001
+        log.exception("toggle autostart failed")
+        _toast("设置开机自启动失败", kind="error", duration_ms=3500)
+
+
 def build_native_menu(api) -> list[Menu]:
     """构造常规桌面菜单栏：文件 / 编辑 / 视图 / 帮助。
 
@@ -485,6 +515,9 @@ def build_native_menu(api) -> list[Menu]:
             [
                 MenuAction("打开 ThinkBuddy 网站", lambda: _open_website()),
                 MenuSeparator(),
+                # 仅 Windows：读写 HKCU Run 键，与安装器勾选同一来源；mac 暂无登录项支持
+                *([MenuCheck("开机自启动", _menu_autostart, autostart.is_enabled)]
+                  if os.name == "nt" else []),
                 MenuAction("检查更新...", lambda: _check_updates(api)),
                 MenuSeparator(),
                 # 菜单文本不带快捷键提示：pywebview MenuAction 只有纯文本 label，
@@ -492,7 +525,7 @@ def build_native_menu(api) -> list[Menu]:
                 # 「退出 ThinkBuddyAlt+F4」粘连（用户实测）。Alt+F4 是系统级关窗
                 # 快捷键，与菜单文本无关，去掉提示零功能损失；mac 端同位置菜单
                 # （_item(f"退出 {APP_NAME}", "terminate:", "q")）本就是纯文本。
-                MenuAction(f"退出 {APP_NAME}", _win_close),
+                MenuAction(f"退出 {APP_NAME}", api.quit),
             ],
         ),
         Menu(

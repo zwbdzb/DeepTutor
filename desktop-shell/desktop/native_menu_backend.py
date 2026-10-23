@@ -1174,6 +1174,37 @@ def _attach_menu_hover_paint(item) -> None:
         log.exception("menu hover paint attach failed")
 
 
+_CHECK_ON = " ✓"   # 空格 + ✓（跟在标题后面）
+_CHECK_OFF = ""      # 后缀方案文字起始位置不变，勾选态切换不会左右跳，无需占位
+
+
+def _menu_check_text(entry) -> str:
+    """按 state_provider 生成可勾选菜单项文字（标题后跟 ✓ 表示已勾选）。"""
+    try:
+        on = bool(entry.state_provider())
+    except Exception:  # noqa: BLE001  外部真相源失败按未勾选处理
+        log.exception("menu check state read failed")
+        on = False
+    return entry.title + (_CHECK_ON if on else _CHECK_OFF)
+
+
+def _sync_checkable_items(dd) -> None:
+    """下拉展开前重读可勾选项状态（注册表等外部真相源），刷新文字 ✓ 后缀。
+
+    不用原生 Checked：下拉统一 ShowImageMargin=False，原生勾选列不渲染，
+    自绘 ✓ 需处理 DPI/悬停重绘；文本后缀方案零自绘，且随 item.Text 一起走
+    默认渲染与悬停重绘两条路径。
+    """
+    try:
+        for item in dd.Items:
+            entry = getattr(item, "Tag", None)
+            if entry is None:
+                continue
+            item.Text = _menu_check_text(entry)
+    except Exception:  # noqa: BLE001
+        log.exception("check state sync failed")
+
+
 # --------------------------------------------------------------------------- #
 # 点页面收回下拉：WebView2 获焦兜底钩子                                          #
 # --------------------------------------------------------------------------- #
@@ -1352,11 +1383,19 @@ def _install_outside_click_filter() -> None:
 # 菜单条构建                                                                    #
 # --------------------------------------------------------------------------- #
 def _convert_entry(entry):
-    """pywebview Menu 项 → WinForms ToolStripMenuItem（递归）。"""
+    """pywebview Menu 项 → WinForms ToolStripMenuItem（递归）。
+
+    MenuAction 带 ``state_provider``（menubar.MenuCheck）时构建为可勾选项：
+    文字后缀「 ✓」表示勾选态，初始值读一次，之后每次下拉展开前由
+    _sync_checkable_items 重读（注册表等外部真相源），点击动作照常后台线程执行。
+    """
     if entry is None or isinstance(entry, MenuSeparator):
         return _WF.ToolStripSeparator()
     if isinstance(entry, MenuAction):
         item = _WF.ToolStripMenuItem(entry.title)
+        if callable(getattr(entry, "state_provider", None)):
+            item.Text = _menu_check_text(entry)
+            item.Tag = entry  # 供 _sync_checkable_items 识别
         item.Click += (
             lambda _s, _e, fn=entry.function: threading.Thread(
                 target=fn, daemon=True
@@ -1448,6 +1487,8 @@ def _build_menu_strip(form, menu_list):
                 dd.ShowImageMargin = False
                 dd.DropShadowEnabled = False
                 dd.Opened += _make_dropdown_shape_handler(dd, scale)
+                # 展开前同步可勾选项（如「开机自启动」）的 ✓ 后缀
+                dd.Opening += (lambda _s, _e, _dd=dd: _sync_checkable_items(_dd))
         except Exception:  # noqa: BLE001  圆角失败退回原生方角，不拦构建
             log.exception("dropdown rounding wire failed")
         # 下拉（含嵌套子菜单）与顶栏同字号同字体——分隔线会在此静默跳过
