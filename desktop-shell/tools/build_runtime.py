@@ -473,6 +473,39 @@ def prune_runtime(site_packages: Path) -> None:
     log(f"prune done, freed ~{removed_mb:.1f} MB")
 
 
+def precompile_site_packages(target: Path) -> None:
+    """打包期预编译 staging site-packages 全量 .pyc（2026-10-24 首启提速）。
+
+    背景：pip --no-compile 装出的是纯源码树，原样打进安装包后，用户机每次
+    首启（更新后尤甚）都要现场编译全部字节码——用户机 1.6.15 更新事故实证：
+    后端导入 4 分钟以上未监听，撞穿 launcher 60s 就绪超时，壳弹「启动失败」
+    横幅。改为构建期用 staging 自带解释器（cp312）编译，pyc 随包分发；
+    Inno / ditto 均保留文件 mtime，pyc 的 mtime+size 校验跨机依然有效，
+    用户机首启不再付编译成本。
+
+    幂等：compileall 对已是最新（mtime+size 匹配）的 pyc 直接跳过，增量
+    重跑只编译缺失/失效的文件，rebrand 改写后的二次调用成本可忽略。
+
+    个别文件编译失败只意味着它没有 pyc（运行时回退源码导入，与
+    --no-compile 现状等价），记录后继续，不让整个构建失败。
+    """
+    sp = _py_site_packages(target)
+    if not sp.is_dir():
+        log("precompile: site-packages missing, skip")
+        return
+    py_exe = _staging_py_exe(target)
+    log(f"precompiling bytecode for {sp} ...")
+    res = subprocess.run(
+        [str(py_exe), "-m", "compileall", "-q", "-j", "0", str(sp)],
+        capture_output=True, text=True, timeout=1800,
+    )
+    if res.returncode != 0:
+        log(f"precompile finished with errors (rc={res.returncode}); "
+            f"tail: {(res.stderr or res.stdout or '').strip()[-800:]}")
+    else:
+        log("precompile OK")
+
+
 def _prepared(py: Path, node: Path) -> bool:
     """True if staging already holds an extractable python + node of the right arch."""
     if IS_MAC:
@@ -709,6 +742,10 @@ def build(make_zip: bool = False, source_root: Path | None = None,
         else:
             log("runtime already pruned; skipping")
 
+    # 预编译字节码（no-zip 路径在此收口；Windows 的 build.ps1 随后跑
+    # rebrand.py 会改写部分 .py 使 pyc 失效，rebrand_root 末尾会增量重编译）。
+    precompile_site_packages(STAGING_PY)
+
     # The portable flow (make_portable.py) packs `runtime-build/staging` as-is,
     # so the zip below is OPT-IN. Deflating thousands of tiny files is slow, so
     # it is skipped unless explicitly requested (e.g. for the onefile/Inno path).
@@ -720,6 +757,9 @@ def build(make_zip: bool = False, source_root: Path | None = None,
     # zip 里装的是换牌前的旧内容——曾致 mac dmg 品牌混杂（2026-10-19）。
     # 必须在 zip 之前执行，失败即中止构建。
     _rebrand_staging(_py_site_packages(STAGING_PY))
+    # zip 路径兜底：rebrand_root 末尾已预编译，这里幂等重跑（增量，秒级），
+    # 保证打进 runtime.zip 的树 pyc 齐全——zip 是 mac .app 的运行时事实源。
+    precompile_site_packages(STAGING_PY)
 
     out_zip = DIST / "runtime.zip"
     out_zip.unlink(missing_ok=True)

@@ -18,7 +18,9 @@ import time
 import ctypes
 import struct
 from pathlib import Path
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
+from urllib import request as urlrequest
 
 log = logging.getLogger("dt.process")
 
@@ -35,6 +37,12 @@ FRONTEND_PATH = "/"  # health-probe path on the frontend server
 SHELL_MANAGED_ENV = "DEEPTUTOR_SHELL_MANAGED"
 # 后端 banner 行回读：zh "后端       http://127.0.0.1:PORT" / en "Backend  ..."
 BACKEND_URL_PATTERN = re.compile(r"http://127\.0\.0\.1:(\d+)")
+
+# 探活专用无代理 opener（教训同 deeptutor/runtime/launcher.py）：urlopen 默认
+# 读系统代理环境变量，Clash/公司代理开启且 ProxyOverride 不含 127.0.0.1 时，
+# loopback 探活会被代理劫持、必然失败，健康后端被误判死、180s 超时后弹
+# "启动失败"横幅——探活绝不能漏进系统代理。
+_LOOPBACK_OPENER = urlrequest.build_opener(urlrequest.ProxyHandler({}))
 
 # 已知异常退出码的机制解读（取证用）。键一律按无符号 32 位归一。
 # 依据：2026-10-20 用户机 app.log 实证 + Windows NTSTATUS 文档。
@@ -400,6 +408,14 @@ class DeepTutorProcess:
         # deeptutor 再往下拉起的孙进程，这里才是壳直拉子进程的源头。
         env["PYTHONIOENCODING"] = "utf-8"
         env["PYTHONUTF8"] = "1"
+        # 后端就绪超时放宽（2026-10-24）：launcher 默认 60s 是服务端部署的
+        # 保守值（#1435 已被撞过），桌面端首启要把整个 site-packages 导入
+        # 一遍（更新后首启还要叠加杀软逐文件扫描），用户机 1.6.15 更新事故
+        # 实证 60s 撞线 → launcher 退出 → 壳弹「启动失败」横幅，用户手动再
+        # 点一次才能进。桌面后端只服务本机前端：等待的代价只是慢，撞线的
+        # 代价是错误横幅——取 180s。打包期预编译 .pyc（build_runtime.py
+        # precompile_site_packages）才是首启提速的主力，这里是兜底。
+        env["DEEPTUTOR_BACKEND_READY_TIMEOUT"] = "180"
 
         # 启动前清场：别让上次异常退出留下的孤儿把端口冲突顶到子进程面前。
         self._kill_stale_listeners()
@@ -462,12 +478,19 @@ class DeepTutorProcess:
         self._reader.start()
         log.info("deeptutor pid=%s", self.proc.pid)
 
-    def wait_ready(self, timeout: float = 180.0) -> tuple[str, int]:
+    def wait_ready(self, timeout: float = 180.0, *,
+                   on_progress=None) -> tuple[str, int]:
         """Block until the frontend answers, or raise TimeoutError/RuntimeError.
 
         就绪判定只依赖前端端口探测（无条件、每轮一次），**不依赖子进程
         stdout 的任何文本**——文本通道（子进程缓冲/尾随线程/语言差异）任何
         一环出问题都不能拖累启动。
+
+        on_progress(elapsed_seconds)：长等待期间的进度回调（每 5s 心跳触发
+        一次），供壳把「已等待 Xs」刷进 splash，避免界面静止被当成卡死
+        （2026-10-24：更新后首启可达数分钟，生产模式 push_line 是
+        debug-only，等待期原本没有任何可见反馈）。回调异常只记日志，
+        绝不影响就绪等待本身。
         """
         start = time.monotonic()
         last_beat = start
@@ -492,10 +515,68 @@ class DeepTutorProcess:
                 return self.frontend_url, 200
             if now - last_beat >= 5:
                 last_beat = now
+                elapsed = now - start
                 log.info(
                     "wait_ready: %.0fs elapsed; child alive, frontend %s not "
-                    "answering yet", now - start, self.frontend_url,
+                    "answering yet", elapsed, self.frontend_url,
                 )
+                if on_progress is not None:
+                    try:
+                        on_progress(elapsed)
+                    except Exception:  # noqa: BLE001
+                        log.exception("wait_ready on_progress callback failed")
+
+    def wait_backend_ready(self, timeout: float = 180.0, *,
+                           on_progress=None) -> tuple[str, int]:
+        """Block until the backend answers HTTP, or raise TimeoutError/RuntimeError.
+
+        前端（Next standalone）不依赖后端即可应答：「前端已就绪」不蕴含
+        「后端已就绪」。后端 uvicorn 监听后的首个请求会触发应用栈惰性初始化
+        （2026-10-24 用户机实测 ~13s），壳若在前端就绪时立刻切主界面，首屏
+        API 全部 500。这里在切换前 HTTP 探活后端：**任何** HTTP 应答（含
+        4xx/5xx 路由级错误）都证明应用栈已活、可以进主界面；只有连接拒绝/
+        超时才继续等。on_progress 语义与 wait_ready 相同（5s 心跳）。子进程
+        早退抛 RuntimeError，交给调用方的重试/横幅链路。
+        """
+        url = f"http://127.0.0.1:{self.backend_port}/"
+        start = time.monotonic()
+        last_beat = start
+        while True:
+            now = time.monotonic()
+            if now - start >= timeout:
+                raise TimeoutError(
+                    f"backend {url} did not become ready within {timeout:.0f}s. "
+                    "See the app log for deeptutor output."
+                )
+            if self.proc and self.proc.poll() is not None:
+                raise RuntimeError(
+                    f"deeptutor exited early (rc={self.proc.returncode}). "
+                    "See the app log for deeptutor output."
+                )
+            try:
+                # 无代理 opener（见 _LOOPBACK_OPENER 注释）：探活绝不能走系统代理
+                with _LOOPBACK_OPENER.open(url, timeout=1.0):  # noqa: S310 - loopback probe of our own child
+                    log.info("backend ready (http 200) at %s", url)
+                    return url, 200
+            except HTTPError as exc:
+                # 应用栈已应答：路由级 404/500 也算就绪，不让业务路由语义拖累启动
+                log.info("backend ready (http %s) at %s", exc.code, url)
+                return url, exc.code
+            except (URLError, TimeoutError, OSError):
+                pass
+            if now - last_beat >= 5:
+                last_beat = now
+                elapsed = now - start
+                log.info(
+                    "wait_backend_ready: %.0fs elapsed; backend %s not answering yet",
+                    elapsed, url,
+                )
+                if on_progress is not None:
+                    try:
+                        on_progress(elapsed)
+                    except Exception:  # noqa: BLE001
+                        log.exception("wait_backend_ready on_progress callback failed")
+            time.sleep(0.5)
 
     # ------------------------------------------------------------------ #
     def supervise(

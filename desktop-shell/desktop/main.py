@@ -495,14 +495,8 @@ def bootstrap(window, api: Api, auth: AuthManager) -> None:
             log.exception("默认搜索配置初始化失败，保留现有设置")
         api.set_status("boot", "正在启动 ThinkBuddy 本地服务…", f"工作区：{home}")
 
-        # 3. spawn hidden subprocess
-        proc = DeepTutorProcess(
-            deeptutor, home, node_dir, on_line=api.push_line
-        )
-        _shared["proc"] = proc
-        proc.start()
-
         # 3.5 直报不走本地队列。错误数据来自引擎 JSONL 增量 tail。
+        #     （不依赖子进程，置于 spawn 重试循环之外，只建一次。）
         reporter = TelemetryReporter(
             auth_config.telemetry_url(rt.ROOT),
             {
@@ -539,15 +533,68 @@ def bootstrap(window, api: Api, auth: AuthManager) -> None:
         _shared["engine_log_tail"] = tail
         tail.start()
 
-        api.set_status(
-            "boot",
-            "正在启动本地服务…",
-            f"{proc.frontend_url}（后端 :{proc.backend_port} + 前端 :{proc.frontend_port}）",
-        )
+        # 等待期进度回调：生产模式 push_line 是 debug-only，长等待期间 splash
+        # 原本没有任何可见反馈（2026-10-24）。每 5s 把「已等待 Xs」刷进状态，
+        # 避免被用户当成卡死而手动关窗。
+        def _wait_progress(elapsed: float) -> None:
+            api.set_status(
+                "boot",
+                f"正在启动本地服务…（已等待 {int(elapsed)}s）",
+                "首次启动或刚完成更新后较慢，后台正在初始化，请稍候",
+            )
 
-        # 4. health check until the frontend answers
-        log.info("waiting for frontend readiness (timeout=%ss)...", 150)
-        url, _status = proc.wait_ready(timeout=150)
+        # 3+4. spawn + 就绪等待，带一次有界自动重试（2026-10-24）。
+        # 旧路径首启失败直接弹「启动失败」横幅：supervise 在 wait_ready 成功
+        # 之后才启动，管不到首启；而冷机/杀软扫描/更新后首启确实可能超时，
+        # 用户机实证「再点一次就能进」——把这个自愈变成自动行为（最多 1 次）。
+        proc = None
+        url = ""
+        last_exc: Exception | None = None
+        for attempt in (1, 2):
+            if attempt == 2:
+                api.set_status(
+                    "boot",
+                    "首次启动较慢，正在自动重试…",
+                    "已重置本地服务再试一次，无需手动操作",
+                )
+                log.warning(
+                    "bootstrap: first spawn/wait attempt failed (%s); retrying once",
+                    last_exc,
+                )
+                time.sleep(2.0)
+            proc = DeepTutorProcess(deeptutor, home, node_dir, on_line=api.push_line)
+            _shared["proc"] = proc
+            try:
+                proc.start()
+                api.set_status(
+                    "boot",
+                    "正在启动本地服务…",
+                    f"{proc.frontend_url}（后端 :{proc.backend_port} + 前端 :{proc.frontend_port}）",
+                )
+                log.info(
+                    "waiting for frontend readiness (attempt %d, timeout=%ss)...",
+                    attempt, 150,
+                )
+                url, _status = proc.wait_ready(timeout=150, on_progress=_wait_progress)
+                # 前端就绪 ≠ 后端就绪：Next standalone 不依赖后端即可应答，
+                # 而后端监听后的首个请求会触发应用栈惰性初始化（实测 ~13s），
+                # 直接切主界面会让首屏 API 全 500。这里 HTTP 探活后端，任何
+                # 应答即过；失败走与上面相同的 spawn 重试链路。
+                proc.wait_backend_ready(timeout=180, on_progress=_wait_progress)
+                break
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                log.exception("bootstrap: spawn/wait attempt %d failed", attempt)
+                try:
+                    proc.stop()
+                except Exception:  # noqa: BLE001
+                    log.exception(
+                        "bootstrap: proc.stop cleanup failed after attempt %d", attempt
+                    )
+                _shared["proc"] = None
+                proc = None
+        if proc is None:
+            raise RuntimeError(f"本地服务未能启动：{last_exc}") from last_exc
         _shared["deeptutor_version"] = rt.resolve_deeptutor_version() or "未知"
 
         # 4.5 Sync Tokengine user info / balance / models in the background so
