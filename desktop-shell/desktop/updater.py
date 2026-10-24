@@ -380,7 +380,9 @@ def run_installer(setup_path: str | os.PathLike) -> None:
     """静默安装更新，并在安装完成后**延迟**拉起新版本。
 
     Windows：临时 bat 编排时序——
-        1) taskkill 兜底清理残留旧实例（防文件占用中止静默安装）；
+        1) taskkill /T 兜底清理残留旧实例（连树杀，防文件占用中止静默
+           安装），并按安装目录精确清扫 runtime python/node 孤儿（换文件
+           窗口期撞半成品运行时的崩溃循环，2026-10-23 用户机实证）；
         2) 阻塞运行 /VERYSILENT 安装（bat 顺序执行天然等待完成）；
         3) ping 延迟约 15s，给杀软扫描新 DLL 留出时间（PyInstaller
            bootloader 若在安装器 Exec 后立刻 LoadLibrary(python312.dll)
@@ -404,19 +406,54 @@ def run_installer(setup_path: str | os.PathLike) -> None:
     update_log = setup_path_obj.parent / (setup_path_obj.stem + ".update.log")
     app_exe = "ThinkBuddyDesktop.exe"
     uninstall_key = f"HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{INSTALLER_APP_ID}_is1"
+    # 换文件窗口期的运行时孤儿清扫（2026-10-24）：优雅退出链断裂（硬退路径）
+    # 时 detached 的 python/node 孤儿可能活到 Inno 换文件窗口，被
+    # /FORCECLOSEAPPLICATIONS 强杀后又被壳/launcher 反复拉起，撞上半成品
+    # 运行时 → ModuleNotFoundError 崩溃循环（2026-10-23 用户机 1.6.15 更新
+    # 事故实证：先后缺 security_guard / voice.adapters.gemini 连崩 8 次）。
+    # Inno 启动前按「可执行文件路径位于安装目录内」精确清场，不误伤用户
+    # 自己的 python/node。安装器退出后 bat 再从注册表读 InstallLocation
+    # 拉起新壳（同一目录）。
+    ps_sweep = (
+        "$d=$env:TB_APPDIR; if($d){"
+        "Get-Process python,node -ErrorAction SilentlyContinue | "
+        "Where-Object { $_.Path -and $_.Path.ToLower().StartsWith(($d.TrimEnd('\\') + '\\').ToLower()) } | "
+        "Stop-Process -Force }"
+    )
     # bat 内容保持纯 ASCII：cmd 按 OEM 代码页解析，中文注释会乱码（同 build.ps1 的教训）。
     bat_lines = [
         "@echo off",
         "setlocal",
         f"echo [%date% %time%] update-bat started >> \"{update_log}\"",
-        f"taskkill /F /FI \"IMAGENAME eq {app_exe}\" >nul 2>&1",
+        # /T 连树杀：壳直拉的 launcher python 及孙进程（uvicorn/node）一起退场，
+        # 不给换文件窗口留任何会 import 半成品运行时的活进程。
+        f"taskkill /F /T /FI \"IMAGENAME eq {app_exe}\" >nul 2>&1",
         f"echo [%date% %time%] old instances killed >> \"{update_log}\"",
+        f"for /f \"tokens=2*\" %%A in ('reg query \"{uninstall_key}\" /v InstallLocation 2^>nul ^| findstr InstallLocation') do set \"APPDIR=%%B\"",
+        "if not defined APPDIR goto :runtime_swept",
+        "if \"%APPDIR:~-1%\"==\"\\\" set \"APPDIR=%APPDIR:~0,-1%\"",
+        "set \"TB_APPDIR=%APPDIR%\"",
+        f"powershell -NoProfile -Command \"{ps_sweep}\" >nul 2>&1",
+        ":runtime_swept",
+        f"echo [%date% %time%] runtime children swept >> \"{update_log}\"",
         f"\"{setup}\" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /FORCECLOSEAPPLICATIONS /MERGETASKS=\"!autostart\" /LOG=\"{install_log}\"",
         f"echo [%date% %time%] setup exit %%errorlevel%% >> \"{update_log}\"",
         "ping -n 16 127.0.0.1 >nul",
         f"for /f \"tokens=2*\" %%A in ('reg query \"{uninstall_key}\" /v InstallLocation 2^>nul ^| findstr InstallLocation') do set \"APPDIR=%%B\"",
-        "if not defined APPDIR (echo [%date% %time%] InstallLocation missing, abort launch >> \"{update_log}\" & exit /b 1)",
+        f"if not defined APPDIR (echo [%date% %time%] InstallLocation missing, abort launch >> \"{update_log}\" & exit /b 1)",
         "if \"%APPDIR:~-1%\"==\"\\\" set \"APPDIR=%APPDIR:~0,-1%\"",
+        # 预热后端导入（2026-10-24）：新装运行时的 15000+ 个 pyc/py 首次被读
+        # 时会挨个过杀软实时扫描（后端 uvicorn 导入实测 29s，冷盘更久），全部
+        # 落在用户更新后的第一次启动里。这里在 bat 内、拉起新壳之前用安装好的
+        # 解释器静默导入一次完整应用栈，把扫描成本吸收进安装阶段（用户此时
+        # 本就在等安装器）。失败不阻塞：预热只是优化，任何错误都放行启动。
+        # 注意用 goto 而非 if (...) 括号块：块内 %%errorlevel%% 在解析期提前
+        # 展开，会记录到进块前的陈旧值，日志失真。
+        f"if not exist \"%APPDIR%\\runtime\\python\\python.exe\" goto :prewarm_done",
+        f"echo [%date% %time%] prewarming backend imports >> \"{update_log}\"",
+        "\"%APPDIR%\\runtime\\python\\python.exe\" -c \"import deeptutor.api.main\" >nul 2>&1",
+        f"echo [%date% %time%] prewarm done (exit %%errorlevel%%) >> \"{update_log}\"",
+        ":prewarm_done",
         f"echo [%date% %time%] launching %APPDIR%\\{app_exe} >> \"{update_log}\"",
         f"start \"\" /D \"%APPDIR%\" \"%APPDIR%\\{app_exe}\"",
     ]

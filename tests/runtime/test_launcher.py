@@ -127,6 +127,37 @@ def test_packaged_web_cache_replaces_next_public_placeholders(tmp_path: Path) ->
     assert "auth='true'" in (runtime / ".next" / "static" / "app.js").read_text(encoding="utf-8")
 
 
+def test_packaged_web_patch_does_not_write_through_hardlinks(tmp_path: Path) -> None:
+    """守住 _patch_packaged_web_placeholders 的 copy-on-write：防硬链接写穿 site-packages。"""
+    packaged = tmp_path / "pkg"
+    (packaged / ".next" / "static").mkdir(parents=True)
+    (packaged / "server.js").write_text(
+        "const api='__NEXT_PUBLIC_API_BASE_PLACEHOLDER__';",
+        encoding="utf-8",
+    )
+    (packaged / ".next" / "static" / "app.js").write_text(
+        "auth='__NEXT_PUBLIC_AUTH_ENABLED_PLACEHOLDER__'",
+        encoding="utf-8",
+    )
+
+    runtime = launcher._copy_packaged_web_if_needed(
+        packaged,
+        home=tmp_path / "home",
+        api_base="http://localhost:8001",
+        auth_enabled=False,
+    )
+
+    # 缓存侧已打补丁
+    patched_server = (runtime / "server.js").read_text(encoding="utf-8")
+    assert "http://localhost:8001" in patched_server
+    assert "__NEXT_PUBLIC_API_BASE_PLACEHOLDER__" not in patched_server
+    # 关键断言：源侧必须保留占位符原样。缓存用 os.link 硬链接物化，若补丁
+    # 改回原地 write_text 会穿透硬链接污染 site-packages 出货源——无论
+    # 当前实现是断链写（NTFS 链接生效）还是 copy2 回退，这里都必须成立。
+    source_server = (packaged / "server.js").read_text(encoding="utf-8")
+    assert "__NEXT_PUBLIC_API_BASE_PLACEHOLDER__" in source_server
+
+
 def test_runtime_home_rejects_project_data_paths(monkeypatch, tmp_path: Path) -> None:
     package_root = tmp_path / "package"
     monkeypatch.setattr("deeptutor.runtime.home.PACKAGE_ROOT", package_root)

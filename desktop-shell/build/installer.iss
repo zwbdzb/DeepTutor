@@ -238,6 +238,29 @@ begin
   end;
 end;
 
+(* ===== 安装完成后预热后端导入（CurStepChanged/ssPostInstall） =============
+   背景（2026-10-24 用户机实测）：新装运行时 15000+ 个 pyc/py 首次被读都会
+   挨个过杀软实时扫描——后端 uvicorn 导入 29s、首请求惰性初始化 ~13s，全部
+   落在用户安装/更新后的第一次启动里（首装 ~139s 才见主界面）。打包期已
+   预编译 .pyc，剩下的成本就是「首读扫描」；这里在复制文件完成后、[Run]
+   拉起新壳之前，用安装好的解释器静默导入一次完整应用栈，把扫描成本吸收
+   进安装阶段（交互安装时用户本就在等进度条；静默更新时 updater.bat 里
+   还有同款预热兜底，此处先行完成则 bat 内预热秒过）。
+
+   best-effort：Exec 失败/非零退出码一律忽略——预热只是优化，任何失败都
+   不阻断安装、不弹框惊扰用户；残余成本由壳侧 180s 就绪超时 + 自动重试
+   兜底（desktop/process.py、desktop/main.py）。
+   ====================================================================== *)
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  ResultCode: Integer;  // Exec 返回码占位：预热失败静默放行
+begin
+  if CurStep = ssPostInstall then
+    Exec(ExpandConstant('{app}\runtime\python\python.exe'),
+         '-c "import deeptutor.api.main"', '', SW_HIDE,
+         ewWaitUntilTerminated, ResultCode);
+end;
+
 // 卸载器侧的 Sleep 导入：external 声明的 setuponly 标志意味着上面的 SleepMs
 // 仅在安装器进程可用；卸载器是独立进程，必须单独声明 uninstallonly 版本
 // （两个声明指向同一个 kernel32.Sleep，名字错开即可，互不冲突）。

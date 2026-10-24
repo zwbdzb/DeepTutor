@@ -44,6 +44,7 @@ import argparse
 import ast
 import io
 import re
+import subprocess
 import sys
 import tokenize
 from pathlib import Path
@@ -211,6 +212,57 @@ def rebrand_python_source(text: str) -> tuple[str, int]:
     return text, total
 
 
+def _staging_python_for(site_packages: Path) -> Path | None:
+    """从 site-packages 路径反推同一 staging 树的解释器。
+
+    build_runtime staging 布局：Windows ``.../python/Lib/site-packages``，
+    macOS ``.../python/lib/python3.X/site-packages``。反推失败（非 staging
+    布局，例如 --root 指向别处）返回 None，调用方跳过预编译。
+    """
+    try:
+        if sys.platform == "darwin":
+            exe = site_packages.parents[2] / "bin" / "python3"
+        else:
+            exe = site_packages.parents[1] / "python.exe"
+    except IndexError:
+        return None
+    return exe if exe.is_file() else None
+
+
+def precompile_bytecode(site_packages: Path) -> None:
+    """品牌重写后预编译全量 .pyc（2026-10-24 首启提速）。
+
+    rebrand 改写过的 .py mtime 变化，此前编译的 pyc 全部失效；且 pip
+    --no-compile 装出的树本来就没有 pyc。不预编译的话，安装包交付纯源码，
+    用户机每次首启（更新后尤甚）要现场编译整个 site-packages——实测后端
+    导入 4 分钟以上，直接撞穿 launcher 60s 就绪超时（1.6.15 更新事故）。
+    构建期用 staging 自带解释器编译，Inno / ditto 均保留文件 mtime，pyc
+    跨机保持有效。
+
+    个别文件编译失败只影响它自己（运行时回退源码导入，与不编译等价），
+    记录后继续，不让构建失败。
+    """
+    exe = _staging_python_for(site_packages)
+    if exe is None:
+        print("  预编译跳过：无法从 site-packages 定位同树解释器（非 staging 布局？）")
+        return
+    print(f"  预编译字节码（{exe.name}）...")
+    try:
+        res = subprocess.run(
+            [str(exe), "-m", "compileall", "-q", "-j", "0", str(site_packages)],
+            capture_output=True, text=True, timeout=1800,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"  [WARN] compileall 启动失败（不影响重写产物）：{exc}")
+        return
+    if res.returncode != 0:
+        tail = (res.stderr or res.stdout or "").strip()[-600:]
+        print(f"  [WARN] compileall rc={res.returncode}"
+              f"（个别文件无 pyc，运行时回退源码导入）\n{tail}")
+    else:
+        print("  预编译完成 [OK]")
+
+
 def rebrand_root(site_packages: Path, dry_run: bool = False) -> int:
     if not site_packages.is_dir():
         raise SystemExit(f"site-packages 不存在: {site_packages}")
@@ -247,6 +299,12 @@ def rebrand_root(site_packages: Path, dry_run: bool = False) -> int:
 
     mode = "（dry-run，未写入）" if dry_run else ""
     print(f"\n重写完成{mode}: {files_changed} 个文件，共 {grand_total} 处 {BRAND} → {NEW_BRAND}")
+    if not dry_run:
+        # 改写使被触碰 .py 的 mtime 变化、既有 pyc 失效；重写后统一增量
+        # 重编译，保证 staging（→ 安装包 / runtime.zip / portable）交付的
+        # 是 pyc 齐全的树。这是 build.ps1 链路上最后一次改写 .py 的环节，
+        # 预编译放这里才能保证打进去的都是有效的。
+        precompile_bytecode(site_packages)
     return grand_total
 
 

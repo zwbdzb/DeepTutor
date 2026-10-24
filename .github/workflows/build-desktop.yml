@@ -52,9 +52,20 @@ on:
 permissions:
   contents: write
 
+# 并发语义（2026-10-23 修复「取消-冷缓存」死循环）：
+# 实证连续 7 个 run 被 cancel-in-progress 掐死（run#85-#91，2026-10-23）——
+# 被取消的 run 不执行 actions/cache 的保存后置步骤，最慢的 mac x86_64 job
+# （Intel 全冷构建 10-30 分钟）永远跑不完、缓存永远存不上，每次触发都全量
+# 冷装，形成死循环；而跑得快的 arm64（~2.5 分钟）总能存活，缓存越来越热。
+# 修复：按事件类型分组 + 仅 push 互杀。
+#   - push vs push：同组，新的取消旧的（保留快速迭代语义；缓存变热后单次
+#     构建只要几分钟，被掐概率大幅下降）；
+#   - 手动 workflow_dispatch（验证/发版）：独立分组且永不取消、也不取消
+#     push run——手动构建是明确意图，不该被无关 push 掐死；与 push 并行
+#     最多多花一份 runner 时长，但两条 run 都能跑完、都能存缓存。
 concurrency:
-  group: build-desktop-${{ github.ref }}
-  cancel-in-progress: true
+  group: build-desktop-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
 
 jobs:
   # ---------- 共享前端构建（架构无关，只跑一次） ----------

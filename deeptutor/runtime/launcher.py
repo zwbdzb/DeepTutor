@@ -837,6 +837,95 @@ def _packaged_web_dir() -> Path | None:
     return path if (path / "server.js").exists() else None
 
 
+def _web_cache_marker_payload(
+    packaged: Path,
+    *,
+    api_base: str,
+    auth_enabled: bool,
+) -> dict[str, object]:
+    source_server = packaged / "server.js"
+    return {
+        "source": str(packaged),
+        "source_mtime_ns": source_server.stat().st_mtime_ns,
+        "api_base": api_base,
+        "auth_enabled": bool(auth_enabled),
+    }
+
+
+def _web_cache_is_current(
+    packaged: Path,
+    cache: Path,
+    *,
+    api_base: str,
+    auth_enabled: bool,
+) -> bool:
+    """True when the runtime web cache already matches the packaged source."""
+    if not (cache / "server.js").exists():
+        return False
+    try:
+        payload = json.loads(
+            (cache / ".deeptutor-web-runtime.json").read_text(encoding="utf-8")
+        )
+    except Exception:  # noqa: BLE001 - corrupt/missing marker falls through to rebuild
+        return False
+    return payload == _web_cache_marker_payload(
+        packaged, api_base=api_base, auth_enabled=auth_enabled
+    )
+
+
+def _materialize_web_cache(
+    packaged: Path,
+    cache: Path,
+    *,
+    api_base: str,
+    auth_enabled: bool,
+) -> None:
+    """Materialize the writable web cache from the packaged standalone tree.
+
+    首装/更新后的首次物化曾是 92.9MB / 3541 个文件的 ``shutil.copytree``：
+    小文件 + 杀软逐文件内容扫描实测拖到 ~78s（2026-10-24 用户机启动时间线，
+    占首装 139s 的大头），还串行挡在后端启动之前。NTFS 同卷上 ``os.link``
+    是纯元数据操作（不写文件内容，杀软无需逐个重扫），秒级完成；跨卷/
+    链接数上限等 OSError 逐文件回退 ``copy2``，行为与旧实现等价。占位符
+    改写必须走「先断链再写」的 copy-on-write（见 _patch_packaged_web_
+    placeholders），绝不能原地写硬链接——那会把缓存内容写穿到 site-packages
+    的出货源文件上。
+    """
+    if cache.exists():
+        shutil.rmtree(cache)
+    cache.mkdir(parents=True, exist_ok=True)
+    linked = 0
+    copied = 0
+    for src_root, _dirs, files in os.walk(packaged):
+        dst_root = cache / Path(src_root).relative_to(packaged)
+        dst_root.mkdir(parents=True, exist_ok=True)
+        for name in files:
+            src = Path(src_root) / name
+            dst = dst_root / name
+            try:
+                os.link(src, dst)
+                linked += 1
+            except OSError:
+                shutil.copy2(src, dst)
+                copied += 1
+    _patch_packaged_web_placeholders(
+        cache,
+        api_base=api_base,
+        auth_enabled="true" if auth_enabled else "false",
+    )
+    marker = cache / ".deeptutor-web-runtime.json"
+    marker.write_text(
+        json.dumps(
+            _web_cache_marker_payload(
+                packaged, api_base=api_base, auth_enabled=auth_enabled
+            ),
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    _log(f"web cache materialized: {linked} hardlinked, {copied} copied -> {cache}")
+
+
 def _copy_packaged_web_if_needed(
     packaged: Path,
     *,
@@ -844,39 +933,20 @@ def _copy_packaged_web_if_needed(
     api_base: str,
     auth_enabled: bool,
 ) -> Path:
-    """Copy packaged Next.js standalone files into a writable runtime cache.
+    """Materialize packaged Next.js standalone files into a writable runtime cache.
 
     Next public variables are inlined at build time, so placeholders must be
     replaced before ``server.js`` starts. The installed package may live in a
     read-only site-packages directory; the cache keeps mutation local to the
-    active workspace.
+    active workspace. Marker hit（暖启动）→ no-op，秒回。
     """
-
     cache = home / WEB_CACHE_DIR
-    marker = cache / ".deeptutor-web-runtime.json"
-    source_server = packaged / "server.js"
-    marker_payload = {
-        "source": str(packaged),
-        "source_mtime_ns": source_server.stat().st_mtime_ns,
-        "api_base": api_base,
-        "auth_enabled": bool(auth_enabled),
-    }
-    if (cache / "server.js").exists():
-        try:
-            if json.loads(marker.read_text(encoding="utf-8")) == marker_payload:
-                return cache
-        except Exception:
-            pass
-
-    if cache.exists():
-        shutil.rmtree(cache)
-    shutil.copytree(packaged, cache)
-    _patch_packaged_web_placeholders(
-        cache,
-        api_base=api_base,
-        auth_enabled="true" if auth_enabled else "false",
-    )
-    marker.write_text(json.dumps(marker_payload, indent=2), encoding="utf-8")
+    if not _web_cache_is_current(
+        packaged, cache, api_base=api_base, auth_enabled=auth_enabled
+    ):
+        _materialize_web_cache(
+            packaged, cache, api_base=api_base, auth_enabled=auth_enabled
+        )
     return cache
 
 
@@ -904,6 +974,10 @@ def _patch_packaged_web_placeholders(
             for placeholder, value in replacements.items():
                 updated = updated.replace(placeholder, value)
             if updated != text:
+                # 硬链接安全（copy-on-write）：先断链再写。_materialize_web_cache
+                # 用 os.link 物化缓存，原地 write_text 会穿透硬链接，把改写内容
+                # 写进 site-packages 的出货源文件、静默污染安装运行时。
+                path.unlink()
                 path.write_text(updated, encoding="utf-8")
 
 
