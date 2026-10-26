@@ -431,9 +431,13 @@ def run_installer(setup_path: str | os.PathLike) -> None:
         "@echo off",
         "setlocal",
         f"echo [%date% %time%] update-bat started >> \"{update_log}\"",
-        # /T 连树杀：壳直拉的 launcher python 及孙进程（uvicorn/node）一起退场，
-        # 不给换文件窗口留任何会 import 半成品运行时的活进程。
-        f"taskkill /F /T /FI \"IMAGENAME eq {app_exe}\" >nul 2>&1",
+        # 只杀壳本身，**绝不能带 /T**：本 bat 是壳用 Popen 起的 cmd 子进程，
+        # /T 会连壳的整棵子进程树一起杀 —— 包括正在执行本文件的 cmd.exe 自己，
+        # bat 当场死掉，安装器一行都执行不到（2026-10-26 用户机实证：update.log
+        # 只剩第一行 update-bat started，且不产生 .install.log）。
+        # 壳直拉的 launcher python / uvicorn / node 孤儿由下一段按安装目录前缀
+        # 精确清扫，不依赖 /T。
+        f"taskkill /F /FI \"IMAGENAME eq {app_exe}\" >nul 2>&1",
         f"echo [%date% %time%] old instances killed >> \"{update_log}\"",
         f"for /f \"tokens=2*\" %%A in ('reg query \"{uninstall_key}\" /v InstallLocation 2^>nul ^| findstr InstallLocation') do set \"APPDIR=%%B\"",
         "if not defined APPDIR goto :runtime_swept",
