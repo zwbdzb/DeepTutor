@@ -420,7 +420,13 @@ def run_installer(setup_path: str | os.PathLike) -> None:
         "Where-Object { $_.Path -and $_.Path.ToLower().StartsWith(($d.TrimEnd('\\') + '\\').ToLower()) } | "
         "Stop-Process -Force }"
     )
-    # bat 内容保持纯 ASCII：cmd 按 OEM 代码页解析，中文注释会乱码（同 build.ps1 的教训）。
+    # bat 主体保持纯 ASCII（cmd 按 OEM 代码页解析，中文注释会乱码，同
+    # build.ps1 的教训），但 setup/install_log/update_log 等嵌入路径位于
+    # %LOCALAPPDATA% 下，中文用户名机器上必然含中文，因此写盘**不能**用
+    # ascii（会在中文用户名机器上直接炸 UnicodeEncodeError，断掉整条
+    # 静默更新链 —— P2-5，2026-10-26 修复）。改用 mbcs（Windows ANSI
+    # 代码页，中文系统即 GBK，与 cmd 解析代码页一致）；若内容含 ANSI
+    # 代码页之外的字符，降级为 UTF-8 写盘并在 bat 头部 chcp 65001。
     bat_lines = [
         "@echo off",
         "setlocal",
@@ -458,7 +464,16 @@ def run_installer(setup_path: str | os.PathLike) -> None:
         f"start \"\" /D \"%APPDIR%\" \"%APPDIR%\\{app_exe}\"",
     ]
     bat_path = Path(tempfile.gettempdir()) / f"thinkbuddy_update_{os.getpid()}.bat"
-    bat_path.write_text("\r\n".join(bat_lines) + "\r\n", encoding="ascii")
+    bat_payload = "\r\n".join(bat_lines) + "\r\n"
+    try:
+        bat_path.write_text(bat_payload, encoding="mbcs")
+    except (LookupError, UnicodeEncodeError):
+        # mbcs 不可用（非 Windows 测试环境）或内容含 ANSI 外字符：
+        # 降级 UTF-8 写盘 + chcp 65001，让 cmd 按 UTF-8 解析后续行。
+        bat_path.write_text(
+            "\r\n".join(["@echo off", "chcp 65001 >nul", *bat_lines[1:]]) + "\r\n",
+            encoding="utf-8",
+        )
     try:
         subprocess.Popen(
             ["cmd", "/c", str(bat_path)],
