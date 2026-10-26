@@ -533,16 +533,6 @@ def bootstrap(window, api: Api, auth: AuthManager) -> None:
         _shared["engine_log_tail"] = tail
         tail.start()
 
-        # 等待期进度回调：生产模式 push_line 是 debug-only，长等待期间 splash
-        # 原本没有任何可见反馈（2026-10-24）。每 5s 把「已等待 Xs」刷进状态，
-        # 避免被用户当成卡死而手动关窗。
-        def _wait_progress(elapsed: float) -> None:
-            api.set_status(
-                "boot",
-                f"正在启动本地服务…（已等待 {int(elapsed)}s）",
-                "首次启动或刚完成更新后较慢，后台正在初始化，请稍候",
-            )
-
         # 3+4. spawn + 就绪等待，带一次有界自动重试（2026-10-24）。
         # 旧路径首启失败直接弹「启动失败」横幅：supervise 在 wait_ready 成功
         # 之后才启动，管不到首启；而冷机/杀软扫描/更新后首启确实可能超时，
@@ -575,12 +565,12 @@ def bootstrap(window, api: Api, auth: AuthManager) -> None:
                     "waiting for frontend readiness (attempt %d, timeout=%ss)...",
                     attempt, 150,
                 )
-                url, _status = proc.wait_ready(timeout=150, on_progress=_wait_progress)
+                url, _status = proc.wait_ready(timeout=150)
                 # 前端就绪 ≠ 后端就绪：Next standalone 不依赖后端即可应答，
                 # 而后端监听后的首个请求会触发应用栈惰性初始化（实测 ~13s），
                 # 直接切主界面会让首屏 API 全 500。这里 HTTP 探活后端，任何
                 # 应答即过；失败走与上面相同的 spawn 重试链路。
-                proc.wait_backend_ready(timeout=180, on_progress=_wait_progress)
+                proc.wait_backend_ready(timeout=180)
                 break
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc

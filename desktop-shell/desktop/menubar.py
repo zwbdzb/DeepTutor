@@ -304,7 +304,8 @@ def install_ready_update(api) -> None:
         return
     _toast("正在安装更新…")
     try:
-        updater.run_installer(path)
+        # 版本号透传给更新进度窗标题（_READY_UPDATE 由 _check_updates 填充）。
+        updater.run_installer(path, new_version=_READY_UPDATE.get("version"))
     except updater.UpdateError as exc:
         from desktop import dialogs
         dialogs.message_box("更新失败", str(exc), 0x10)  # MB_ICONERROR
