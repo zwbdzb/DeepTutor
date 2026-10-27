@@ -33,13 +33,40 @@ OUT="${2:-$DEFAULT_OUT}"
 [ -d "$APP" ] || { echo "app 不存在: $APP" >&2; exit 1; }
 [ -e "$OUT" ] && rm -f "$OUT"
 
-STAGING="$(mktemp -d /tmp/thinkbuddy-dmg.XXXXXX)"
+STAGING="$(mktemp -d "${TMPDIR:-/tmp}/thinkbuddy-dmg.XXXXXX")"
 trap 'rm -rf "$STAGING"' EXIT
 
 cp -R "$APP" "$STAGING/"
 ln -s /Applications "$STAGING/Applications"
 
-hdiutil create -volname "ThinkBuddy" -srcfolder "$STAGING" -ov -format UDZO "$OUT"
+# 用「显式挂载 + 拷贝 + 卸载」替代 hdiutil -srcfolder：
+STAGING_DMG="$(mktemp "${TMPDIR:-/tmp}/thinkbuddy-dmg-src.XXXXXX").dmg"
+trap 'rm -f "$STAGING_DMG"; rm -rf "$STAGING"' EXIT
+
+# 1) 创建空镜像（读写中间格式用 UDRW，最终转 UDZO 压缩）
+#    -fs HFS+ 创建文件系统卷，-size 预留空间避免拷贝中途写满。
+VOLSIZE_KB=$(du -sk "$STAGING" | awk '{print $1}')
+# 预留 10% 余量给卷头/元数据（空间不足时 hdiutil 会报 ENOSPC 而非 Resource busy）
+VOLSIZE_KB=$(( VOLSIZE_KB + VOLSIZE_KB / 10 + 4096 ))
+hdiutil create -volname "ThinkBuddy" -fs HFS+ -size "${VOLSIZE_KB}k" \
+  -ov -format UDRW "$STAGING_DMG"
+
+# 2) 挂载空镜像（-noidme 禁用 Spotlight 索引，避免挂载卷被占用）
+MOUNT_POINT="$(hdiutil attach "$STAGING_DMG" -nobrowse -noidme -readwrite \
+  | awk -F'\t' '/\/Volumes\//{print $NF; exit}')"
+trap 'hdiutil detach "$MOUNT_POINT" -quiet 2>/dev/null || true; rm -f "$STAGING_DMG"; rm -rf "$STAGING"' EXIT
+
+# 3) 拷贝内容到挂载卷（源目录此时不被任何镜像进程锁定）
+ditto "$STAGING/" "$MOUNT_POINT/"
+
+# 4) 卸载，镜像落盘
+hdiutil detach "$MOUNT_POINT" -quiet
+
+# 5) 转为最终压缩 DMG（UDZO）。
+#    hdiutil convert 会自动给输出名补 .dmg 后缀；这里用不带 .dmg 的目标基名，
+#    转换产物即 $OUT（脚本开头已 rm 掉旧 $OUT，避免 convert 因目标存在而拒绝覆盖）。
+rm -f "$OUT"
+hdiutil convert "$STAGING_DMG" -ov -format UDZO -o "${OUT%.dmg}"
 
 # ---- 生成 mac 更新清单 latest-mac-<arch>.json（与 Windows 的 latest.json 同契约）----
 # 上传到更新源目录（UPDATE_BASE）后，mac 客户端经统一 latest.json 的
