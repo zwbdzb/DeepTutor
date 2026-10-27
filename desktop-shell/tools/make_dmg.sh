@@ -49,8 +49,12 @@ trap 'rm -f "$STAGING_DMG"; rm -rf "$STAGING"' EXIT
 #    用 -size 创建空镜像时带上 -format，hdiutil 会直接报
 #    “-format requires -srcfolder or -srcdevice”（macOS 15 / ARM runner 上必现）。
 VOLSIZE_KB=$(du -sk "$STAGING" | awk '{print $1}')
-# 预留 10% 余量给卷头/元数据（空间不足时 hdiutil 会报 ENOSPC 而非 Resource busy）
-VOLSIZE_KB=$(( VOLSIZE_KB + VOLSIZE_KB / 10 + 4096 ))
+# HFS+ 实际占用远大于 du 的源大小：卷头/日志/Catalog 树 + 每个文件按 4KB
+# 分配块取整（Frameworks/python3.12 有数万小文件，开销可观）+ 资源叉/xattr。
+# 10% 余量在大包（runtime.zip + python3.12 框架）上实测 ENOSPC（arm CI 实证，
+# 2026-10-27）。按 2 倍 + 512MiB 预留，宁可大不可小——最终转 UDZO 压缩，
+# 产物体积不受中间镜像大小影响。
+VOLSIZE_KB=$(( VOLSIZE_KB * 2 + 524288 ))
 hdiutil create -volname "ThinkBuddy" -fs HFS+ -size "${VOLSIZE_KB}k" \
   -ov "$STAGING_DMG"
 
