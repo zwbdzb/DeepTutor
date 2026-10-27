@@ -1,6 +1,7 @@
 # ThinkBuddy Desktop 打包流水线（Windows + macOS）
 #
-# 四 job 流水线（web -> build / mac{arm64,x86_64} -> release）：
+# 四 job 流水线（web -> build / mac{arm64,x86_64} -> latest），各构建 job
+# 尾部内嵌 release step，latest job 汇总生成 unified latest.json：
 #
 #   web（ubuntu-latest）：前端 standalone 只构建一次。
 #     npm ci + next build -> 上传 web-standalone artifact。
@@ -19,13 +20,22 @@
 #     3. PyInstaller -> dist/ThinkBuddyDesktop.app；hdiutil -> dist/ThinkBuddyDesktop-mac-<arch>.dmg
 #
 # 触发：
-#   - push 到 main/dev 且改动涉及 desktop-shell/**、web/**、deeptutor/** 等打包输入
+#   - push 到 main/dev/dev1019 且改动涉及 desktop-shell/**、web/**、deeptutor/** 等打包输入
 #   - 手动 workflow_dispatch（可勾选 release 额外发布 GitHub Release）
 #
-# 发布模型：web job 只产共享前端产物（web-standalone）；Windows / macOS arm64 /
-# macOS x86_64 三个平台 job 产出并上传各自 artifact（名称均以 ThinkBuddy 开头）；
-# 勾选 release 时由统一的 release job 汇总【所有】Windows + macOS 包到【同一个】
-# GitHub Release（desktop-N tag）。
+# 发布模型（各平台独立发布，互不等待）：
+#   不设独立 release job，发布 step 直接内嵌在 build / mac job 尾部。
+#   勾选 release 时，谁先打完谁就把自己的产物追加到同一个 GitHub Release
+#   （desktop-${{ github.run_number }}）：
+#     - Windows build 打完 → 追加 exe + 安装包
+#     - macOS arm64 打完  → 追加 arm64 dmg
+#     - macOS x86_64 打完 → 追加 x86_64 dmg
+#   softprops/action-gh-release@v2 自带 create-or-update 语义 + append_body，
+#   哪个先跑完哪个先创建 release，后跑完的自动追加文件和 body 段落。
+#
+#   latest job（needs build+mac，仅勾选 release 时运行）：等三个平台都打完，
+#   下载全部构建产物生成 unified latest.json（Windows + macOS 双平台更新清单），
+#   追加到同一个 desktop-N release，并同时上传为 run artifact。
 #
 # macOS MVP 阶段不做 codesigning：用户首次打开需右键 → 打开 → 仍要打开 绕过 Gatekeeper。
 # 后续接 APPLE_DEVELOPER_ID secrets + codesign --deep + notarytool。
@@ -235,6 +245,24 @@ jobs:
           path: desktop-shell/dist/ThinkBuddySetup-*.exe
           if-no-files-found: error
 
+      # 内嵌发布：build 跑完立即把 Windows 产物追加到同一个 desktop-N release。
+      # softprops/action-gh-release@v2 自带 create-or-update + append_body，
+      # 如果 mac 某个子 job 先跑完已创建 release，这里追加 Windows 文件即可。
+      - name: Publish Windows to GitHub Release
+        if: inputs.release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: desktop-${{ github.run_number }}
+          name: ThinkBuddy Desktop build ${{ github.run_number }}
+          append_body: true
+          body: |
+            ## Windows
+            - `ThinkBuddySetup-<ver>.<ts>.exe` — 安装包（Inno Setup）
+            - `ThinkBuddyDesktop.exe` — 便携单文件（含离线运行时）
+          files: |
+            desktop-shell/dist/ThinkBuddySetup-*.exe
+            desktop-shell/dist/ThinkBuddyDesktop.exe
+
   mac:
     name: macOS ${{ matrix.arch }} · runtime + app + dmg
     strategy:
@@ -392,11 +420,37 @@ jobs:
           path: desktop-shell/dist/ThinkBuddyDesktop-mac-*.dmg
           if-no-files-found: error
 
-  # 统一发布：把 Windows + macOS 的所有包汇总到【同一个】GitHub Release。
-  # 只在上游构建 job 全部成功且勾选 release 时运行；日常 push 构建不触发。
-  # （web 是 build/mac 的传递依赖，无需显式列入 needs。）
-  release:
-    name: Release · 汇总 Windows + macOS 包发布
+      # 内嵌发布：mac 每个 matrix 子 job（arm64 / x86_64）打完立即把自己的 dmg
+      # 追加到同一个 desktop-N release，不等待另一个架构，也不等待 Windows。
+      # append_body=true：arm64 先发就先建 release + 写 arm64 段 + 通用说明，
+      # x86_64 后发再 append 自己那一段（通用说明会再写一次，可接受）。
+      - name: Publish macOS ${{ matrix.arch }} to GitHub Release
+        if: inputs.release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: desktop-${{ github.run_number }}
+          name: ThinkBuddy Desktop build ${{ github.run_number }}
+          append_body: true
+          body: |
+            ## macOS ${{ matrix.arch }}
+            - `ThinkBuddyDesktop-mac-${{ matrix.arch }}.dmg` — ${{ matrix.arch == 'arm64' && 'Apple Silicon' || 'Intel' }}
+
+            **macOS 首次打开方式**（未签名应用绕过 Gatekeeper）：
+            1. 下载对应架构的 `ThinkBuddyDesktop-mac-${{ matrix.arch }}.dmg` 并双击挂载
+            2. 把 `ThinkBuddy.app` 拖入「应用程序」
+            3. **右键** → 「打开」→ 弹窗点「仍要打开」
+            4. 之后双击即可正常启动
+
+            首次启动会自解压运行时（python + node），可能需要 10-30 秒。
+          files: desktop-shell/dist/ThinkBuddyDesktop-mac-${{ matrix.arch }}-*.dmg
+
+  # 汇总清单：等 Windows + macOS【三个平台都打完】才生成 unified latest.json。
+  # 平台包发布走 build / mac job 尾部内嵌的 Publish step（谁先打完谁先追加，
+  # 互不等待）；latest.json 需要聚合全部平台产物，必须等 needs（build, mac）
+  # 全部成功后下载各自 artifact 再生成，只上传 latest.json 到同一个
+  # desktop-N release（附件 + run artifact 双份），不重复上传平台包文件。
+  latest:
+    name: Latest · 汇总双平台产物生成 latest.json
     runs-on: ubuntu-latest
     needs: [build, mac]
     if: inputs.release
@@ -405,10 +459,10 @@ jobs:
         uses: actions/checkout@v4
 
       # pattern 必须排除 web-standalone：不带 name 的 download-artifact 会拉取
-      # 本次 run 的【所有】artifact，加上共享 web job 后若不过滤，前端产物会
-      # 污染 release-artifacts 目录。所有平台构建产物 artifact 名均以 ThinkBuddy
+      # 本次 run 的【所有】artifact。所有平台构建产物 artifact 名均以 ThinkBuddy
       # 开头（ThinkBuddyDesktop-windows / ThinkBuddySetup-windows /
-      # ThinkBuddyDesktop-mac-<arch>-dmg），一个 pattern 即可精准圈定。
+      # ThinkBuddyDesktop-mac-<arch>-dmg），一个 pattern 即可精准圈定，
+      # 且 web 共享 job 的 web-standalone 不会污染 release-artifacts 目录。
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
         with:
@@ -437,32 +491,14 @@ jobs:
           name: ThinkBuddy-latest-json
           path: release-artifacts/latest.json
 
-      - name: Publish GitHub Release
+      # 只追加 latest.json 到同一个 desktop-N release，不重复上传平台包文件。
+      - name: Publish unified latest.json
         uses: softprops/action-gh-release@v2
         with:
           tag_name: desktop-${{ github.run_number }}
           name: ThinkBuddy Desktop build ${{ github.run_number }}
+          append_body: true
           body: |
-            ## Windows
-            - `ThinkBuddySetup-<ver>.<ts>.exe` — 安装包（Inno Setup）
-            - `ThinkBuddyDesktop.exe` — 便携单文件（含离线运行时）
 
-            ## macOS
-            - `ThinkBuddyDesktop-mac-arm64.dmg` — Apple Silicon
-            - `ThinkBuddyDesktop-mac-x86_64.dmg` — Intel
-
-            **macOS 首次打开方式**（未签名应用绕过 Gatekeeper）：
-            1. 下载对应架构的 `ThinkBuddyDesktop-mac-<arch>.dmg` 并双击挂载
-            2. 把 `ThinkBuddy.app` 拖入「应用程序」
-            3. **右键** → 「打开」→ 弹窗点「仍要打开」
-            4. 之后双击即可正常启动
-
-            首次启动会自解压运行时（python + node），可能需要 10-30 秒。
-          # 附件 = 最新统一清单 + 安装包 + 各平台 dmg；mac 的 .zip 仅作为 CI
-          # 构建 artifact 保留，不进 GitHub Release（避免 release 页出现多余 zip）。
-          files: |
-            release-artifacts/latest.json
-            release-artifacts/ThinkBuddySetup-*.exe
-            release-artifacts/ThinkBuddyDesktop.exe
-            release-artifacts/ThinkBuddyDesktop-mac-arm64-*.dmg
-            release-artifacts/ThinkBuddyDesktop-mac-x86_64-*.dmg
+            **更新清单**：`latest.json`（Windows + macOS 全平台）
+          files: release-artifacts/latest.json
