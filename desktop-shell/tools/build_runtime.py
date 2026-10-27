@@ -79,6 +79,22 @@ def _read_source_version(source_root: Path) -> str:
         raise SystemExit(f"cannot parse __version__ from {vf}")
     return m.group(1)
 
+
+def _distinfo_metadata_version(dist: Path) -> str | None:
+    """读 dist-info/METADATA 的 Version 字段；读不到或解析失败返回 None。"""
+    meta = dist / "METADATA"
+    if not meta.is_file():
+        return None
+    try:
+        for line in meta.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.startswith("Version:"):
+                value = line.split(":", 1)[1].strip()
+                return value or None
+    except OSError:
+        return None
+    return None
+
+
 # Relocatable runtime components (edit to bump versions).
 # Windows 用 python.org embeddable + node win-x64 zip；
 # macOS 用 python-build-standalone（indygreg）+ node darwin tarball——
@@ -750,6 +766,27 @@ def build(make_zip: bool = False, source_root: Path | None = None,
             res.returncode == 0 and current == expected
             and not state_changed and not deps_changed
         )
+        # 清理自家 dist-info 的残留元数据（历史事故：pip --target 覆盖式安装
+        # 只增不删，旧版本 deeptutor-<旧>.dist-info 会随运行时一起发给用户，
+        # 显示层若取到旧元数据就出现「1.6.14 遮蔽 1.6.15」的版本倒退）。
+        # 【关键】只删版本与源码（expected）不一致的残留，**保留正确那份**：
+        # 快路径（已装且版本/指纹未变 → 跳过下方安装，见 installed_ok）不会
+        # 重建 dist-info，若把唯一一份也删掉，打出的运行时只有代码没有元数据，
+        # 关于页引擎会显示「未知」、select_runtime_base 的版本择优也会失明。
+        # cli/web 的 dist-info 壳不读取、无遮蔽风险，且快路径删除后不会重建，
+        # 故不在此清理（重装路径的移除循环会统一重建）。
+        for entry in sp.glob("deeptutor-*.dist-info"):
+            if _distinfo_metadata_version(entry) == expected:
+                continue
+            try:
+                shutil.rmtree(entry) if entry.is_dir() else entry.unlink()
+                log(f"removed stale dist-info residue: {entry.name}")
+            except OSError as exc:
+                raise SystemExit(
+                    f"cannot clean stale {entry.name}: {exc}\n"
+                    f"likely held by a running ThinkBuddy/deeptutor "
+                    f"process or antivirus — close the app and retry."
+                ) from exc
         if installed_ok and not force_deeptutor:
             log(f"deeptutor {current} already installed & matches source; skipping pip")
         else:
