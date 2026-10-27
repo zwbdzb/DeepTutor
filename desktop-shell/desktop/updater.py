@@ -487,7 +487,7 @@ $lblStage.Location = New-Object System.Drawing.Point(10, 92)
 $form.Controls.Add($lblStage)
 
 $lblHint = New-Object System.Windows.Forms.Label
-$lblHint.Text = '预计 2-6 分钟（取决于磁盘与杀毒软件），完成后将自动打开新版本'
+$lblHint.Text = '预计 1 分钟左右（取决于磁盘与杀毒软件），完成后将自动打开新版本'
 $lblHint.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 8.25)
 $lblHint.ForeColor = [System.Drawing.Color]::Gray
 $lblHint.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
@@ -542,8 +542,12 @@ if ($AppExe) { $procName = [System.IO.Path]::GetFileNameWithoutExtension($AppExe
 #   no log / only start lines            -> '正在准备安装…'
 #   runtime children swept, no setup exit -> '正在安装新版本…'
 #   setup exit 0                          -> '正在完成收尾…'
+#   setup exit 8                          -> runtime 解压失败（安装器自定义码，见 installer.iss）
 #   setup exit <non-zero>                 -> red failure text, close in 120s
 #   InstallLocation missing               -> red failure text, close in 120s
+#   runtime probe waiting                 -> '正在校验运行环境…'（就绪门等待中）
+#   deploy enter/extract/swap/warmup      -> '正在部署/解压/启用/预热运行环境…'
+#                                            （installer.iss ssPostInstall 追加，约 45s）
 #   launching + new process alive         -> '更新完成，正在打开新版本…', 3s
 $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 1000
@@ -563,7 +567,15 @@ $timer.Add_Tick({
     if ($text -match 'setup exit (\d+)') {
         $code = [int]$Matches[1]
         if ($code -eq 0) {
-            $lblStage.Text = '正在完成收尾…'
+            # 就绪门等待期（runtime probe waiting 已落盘、ok/timeout 还没落）：
+            # 给一句比「正在完成收尾…」更准确的话，用户不会以为卡住。
+            if (($text -match 'runtime probe waiting') -and ($text -notmatch 'runtime probe (ok|timeout)')) {
+                $lblStage.Text = '正在校验运行环境…'
+            } else {
+                $lblStage.Text = '正在完成收尾…'
+            }
+        } elseif ($code -eq 8) {
+            Show-ErrorStage -Message '运行环境解压失败（可能被杀毒软件拦截）。旧版本未被破坏，请手动运行下载的安装包完成安装。'
         } else {
             Show-ErrorStage -Message ('更新安装失败（错误码 ' + $code + '）。当前版本未被破坏，可稍后在应用内重试，或手动运行下载的安装包。')
         }
@@ -572,6 +584,22 @@ $timer.Add_Tick({
     } else {
         # Log not created yet, or only the early kill/sweep lines landed.
         $lblStage.Text = '正在准备安装…'
+    }
+    # runtime 部署阶段（installer.iss 的 ssPostInstall 经 /TBLOG 追加 deploy 行）。
+    # 这一段约 45 秒（删旧 5s + tar 解压 30s + 预热 13s）且 Inno 自己不提供任何
+    # 进度，不映射的话窗口会一直停在「正在完成收尾…」像是死了。
+    # 只在 setup 退出前生效：setup exit 落地后日志里仍留着这些行，不能让它们
+    # 盖掉后面的「正在完成收尾…」/失败态。
+    if ($text -notmatch 'setup exit') {
+        if ($text -match 'deploy warmup') {
+            $lblStage.Text = '正在预热运行环境…'
+        } elseif ($text -match 'deploy swap') {
+            $lblStage.Text = '正在启用新运行环境…'
+        } elseif ($text -match 'deploy extract') {
+            $lblStage.Text = '正在解压运行环境…'
+        } elseif ($text -match 'deploy enter') {
+            $lblStage.Text = '正在部署运行环境…'
+        }
     }
     if ($text -match 'launching') {
         $running = $null
@@ -593,6 +621,10 @@ $timer.Add_Tick({
 # User may close the window (Alt+F4) at any time: harmless to the install.
 [void]$timer.Start()
 [void]$form.ShowDialog()
+
+# 脚本自身用完即删：否则每次更新都会在 %TEMP% 留一个 thinkbuddy_update_ui_*.ps1
+# （实测残留，脚本已全部载入内存，删除不影响正在运行的内容）。
+try { Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue } catch { }
 """  # ← _UPDATE_UI_PS1 收尾（必须与开头的 r""" 配对）
 
 
@@ -637,9 +669,11 @@ def run_installer(setup_path: str | os.PathLike, new_version: str | None = None)
         2) 阻塞运行 /VERYSILENT 安装（bat 顺序执行天然等待完成）。新运行时
            的冷启动预热由 installer.iss 的 CurStepChanged(ssPostInstall)
            在复制文件后完成，bat 不再重复做；
-        3) ping 延迟约 15s，给杀软扫描新 DLL 留出时间（PyInstaller
-           bootloader 若在安装器 Exec 后立刻 LoadLibrary(python312.dll)
-           可能拿到 ERROR 126，手动延迟启动则正常，2026-10-14 实测）；
+        3) 就绪门 + 启动：探测 runtime 的 python.exe 能否起来（等价于
+           LoadLibrary(python312.dll) 是否被杀软放行，PyInstaller bootloader
+           早于 main 执行的正是这一步，抢跑会拿到 ERROR 126，2026-10-14
+           实测），通过即启动，失败按 1s 间隔重试、上限 15 拍（与原先
+           固定 15s 延迟同量级，正常路径 ~0.1s）；
         4) 从注册表 InstallLocation 读安装目录，拉起新壳。
     bat 与进度窗全程 CREATE_NO_WINDOW / -WindowStyle Hidden，不弹黑窗；小窗
     存活在系统 powershell.exe 进程里，不受壳自退、taskkill 与 Inno Restart
@@ -704,7 +738,7 @@ def run_installer(setup_path: str | os.PathLike, new_version: str | None = None)
         f"powershell -NoProfile -Command \"{ps_sweep}\" >nul 2>&1",
         ":runtime_swept",
         f"echo [%date% %time%] runtime children swept >> \"{update_log}\"",
-        f"\"{setup}\" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /FORCECLOSEAPPLICATIONS /MERGETASKS=\"!autostart\" /LOG=\"{install_log}\"",
+        f"\"{setup}\" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /FORCECLOSEAPPLICATIONS /MERGETASKS=\"!autostart\" /LOG=\"{install_log}\" /TBLOG=\"{update_log}\"",
         # 注意是单 %errorlevel%（bat 文件里 %%errorlevel%% 只会输出字面
         # 「%errorlevel%」，实测 2026-10-25）：进度窗按「setup exit <数字>」
         # 映射「正在完成收尾」与「错误码 N」失败态，日志里必须落真实数字。
@@ -712,13 +746,42 @@ def run_installer(setup_path: str | os.PathLike, new_version: str | None = None)
         # 预热已由 installer.iss 的 CurStepChanged(ssPostInstall) 承担（Inno
         # 复制完文件后对全新 runtime 做同样的冷导入，覆盖更新与新装两条路），
         # bat 内这段跑在热缓存上是纯重复，删除。
-        # 保留 15s 延迟仅作杀软扫描缓冲：PyInstaller bootloader 若在安装器
-        # Exec 后立刻 LoadLibrary(python312.dll) 可能拿到 ERROR 126，手动
-        # 延迟启动则正常（2026-10-14 实测）。
-        "ping -n 16 127.0.0.1 >nul",
+        #
+        # 【2026-10-27 改】这里原先是一句 `ping -n 16`，即**盲等 15 秒**，
+        # 赌杀软把刚落地的 DLL 扫完（否则 PyInstaller bootloader 在 main
+        # 之前 LoadLibrary(python312.dll) 会拿到 ERROR 126，2026-10-14 本机
+        # 静默更新必现）。用户机实测这段固定占更新全程 ~45s 的 25%
+        # （10:12:51.60 setup exit 0 → 10:13:06.88 launching，正好 15.28s）。
+        # 改成**主动探测**：直接用 runtime 里的 python.exe 跑一句 -c，这一步
+        # 必然 LoadLibrary(python312.dll)——正是失败的那个操作；能跑通就说明
+        # 杀软已经放行，立刻启动；跑不通就隔 1s 重试。上限 15 tick 与旧的
+        # 固定 15s 同量级，**永远不会比旧行为更慢**，但正常路径只需 1 次探测
+        # （~0.1s）。日志里落 ticks 数，方便后续按真实数据判断还需不需要它。
         f"for /f \"tokens=2*\" %%A in ('reg query \"{uninstall_key}\" /v InstallLocation 2^>nul ^| findstr InstallLocation') do set \"APPDIR=%%B\"",
         f"if not defined APPDIR (echo [%date% %time%] InstallLocation missing, abort launch >> \"{update_log}\" & exit /b 1)",
         "if \"%APPDIR:~-1%\"==\"\\\" set \"APPDIR=%APPDIR:~0,-1%\"",
+        "set \"GATE_TICKS=0\"",
+        ":gate_probe",
+        # 探测体只做「能不能起来」这一件事：-c pass 不需要任何 import，
+        # 返回 0 就说明 python312.dll 与 UCRT 依赖都能加载（实测健康 ~0.1s，
+        # 缺 DLL 时 0.05s 返回非 0，且 CREATE_NO_WINDOW 下不弹加载器模态框）。
+        "\"%APPDIR%\\runtime\\python\\python.exe\" -c \"pass\" >nul 2>&1",
+        # 判据用等值比较 `EQU 0`，不能写 `if errorlevel 1`：DLL 加载失败时
+        # 进程退出码是 0xC0000135（实测 cmd 里呈现为**负数** -1073741515），
+        # `if errorlevel 1` 对负数恒不成立，会把失败误判成成功。
+        "if %errorlevel% EQU 0 goto :gate_ready",
+        "set /a GATE_TICKS+=1",
+        "if %GATE_TICKS% GEQ 15 goto :gate_timeout",
+        # 只记第一拍：进度窗据此显示「正在校验运行环境…」，又不刷爆日志。
+        f"if %GATE_TICKS% EQU 1 echo [%date% %time%] runtime probe waiting >> \"{update_log}\"",
+        "ping -n 2 127.0.0.1 >nul",
+        "goto :gate_probe",
+        ":gate_timeout",
+        f"echo [%date% %time%] runtime probe timeout ticks=%GATE_TICKS%, launching anyway >> \"{update_log}\"",
+        "goto :launch_now",
+        ":gate_ready",
+        f"echo [%date% %time%] runtime probe ok ticks=%GATE_TICKS% >> \"{update_log}\"",
+        ":launch_now",
         f"echo [%date% %time%] launching %APPDIR%\\{app_exe} >> \"{update_log}\"",
         f"start \"\" /D \"%APPDIR%\" \"%APPDIR%\\{app_exe}\"",
     ]
