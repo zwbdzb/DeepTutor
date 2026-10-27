@@ -298,8 +298,15 @@ def resolve_deeptutor_version() -> str | None:
 
 
 def _read_distinfo_version(site: Path) -> str | None:
-    """从 site-packages 的 deeptutor-*.dist-info/METADATA 里读版本号。"""
+    """从 site-packages 的 deeptutor-*.dist-info/METADATA 里读版本号。
+
+    可能同时存在多份 dist-info（旧版 pip 覆盖安装未卸载干净会留下残留），
+    这里取**版本最大**的一份，而不是排序后的第一份——否则残留的旧元数据
+    （如 1.6.14）会遮蔽真实版本（1.6.15），导致关于页显示倒退。
+    """
     try:
+        best: tuple[int, ...] | None = None
+        best_version: str | None = None
         for dist in sorted(site.glob("deeptutor-*.dist-info")):
             meta = dist / "METADATA"
             if not meta.exists():
@@ -307,11 +314,12 @@ def _read_distinfo_version(site: Path) -> str | None:
             for line in meta.read_text(encoding="utf-8", errors="replace").splitlines():
                 if line.startswith("Version:"):
                     version = line.split(":", 1)[1].strip()
-                    if version:
-                        return version
+                    if version and (best is None or _version_key(version) > best):
+                        best, best_version = _version_key(version), version
+                    break
     except OSError:
         return None
-    return None
+    return best_version
 
 
 # -- provisioning ------------------------------------------------------------ #
