@@ -435,6 +435,28 @@ try {
     $form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
 }
 
+# ---- borderless drag support ------------------------------------------------
+# A None-border form has no caption to drag by (user feedback 2026-10-27).
+# Standard fix: on left MouseDown anywhere on the form or its child controls,
+# release mouse capture and send WM_NCLBUTTONDOWN(0xA1)/HTCAPTION(2) so
+# Windows itself runs the native move loop. TopMost stays: an updater window
+# is expected to stay visible above app windows being installed. Cosmetic
+# only -- any Add-Type failure must not take the update window down.
+try {
+    Add-Type -Name U32 -Namespace W -MemberDefinition @'
+[DllImport("user32.dll")] public static extern bool ReleaseCapture();
+[DllImport("user32.dll")] public static extern int SendMessage(IntPtr h, int m, IntPtr w, IntPtr l);
+'@
+    $dragHandler = {
+        if ($_.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
+            [void][W.U32]::ReleaseCapture()
+            [void][W.U32]::SendMessage($form.Handle, 0xA1, [IntPtr]2, [IntPtr]0)
+        }
+    }
+    $form.Add_MouseDown($dragHandler)
+    foreach ($ctl in $form.Controls) { $ctl.Add_MouseDown($dragHandler) }
+} catch { }
+
 $lblTitle = New-Object System.Windows.Forms.Label
 $title = '正在更新 ThinkBuddy'
 if ($NewVersion -and $NewVersion.Trim().Length -gt 0) {
@@ -465,7 +487,7 @@ $lblStage.Location = New-Object System.Drawing.Point(10, 92)
 $form.Controls.Add($lblStage)
 
 $lblHint = New-Object System.Windows.Forms.Label
-$lblHint.Text = '预计 1-2 分钟，完成后将自动打开新版本'
+$lblHint.Text = '预计 2-6 分钟（取决于磁盘与杀毒软件），完成后将自动打开新版本'
 $lblHint.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 8.25)
 $lblHint.ForeColor = [System.Drawing.Color]::Gray
 $lblHint.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
