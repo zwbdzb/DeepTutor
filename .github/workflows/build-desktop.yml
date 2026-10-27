@@ -1,6 +1,7 @@
 # ThinkBuddy Desktop 打包流水线（Windows + macOS）
 #
-# 三 job 流水线（web -> build / mac{arm64,x86_64}），各 job 尾部内嵌 release step：
+# 四 job 流水线（web -> build / mac{arm64,x86_64} -> latest），各构建 job
+# 尾部内嵌 release step，latest job 汇总生成 unified latest.json：
 #
 #   web（ubuntu-latest）：前端 standalone 只构建一次。
 #     npm ci + next build -> 上传 web-standalone artifact。
@@ -31,6 +32,10 @@
 #     - macOS x86_64 打完 → 追加 x86_64 dmg
 #   softprops/action-gh-release@v2 自带 create-or-update 语义 + append_body，
 #   哪个先跑完哪个先创建 release，后跑完的自动追加文件和 body 段落。
+#
+#   latest job（needs build+mac，仅勾选 release 时运行）：等三个平台都打完，
+#   下载全部构建产物生成 unified latest.json（Windows + macOS 双平台更新清单），
+#   追加到同一个 desktop-N release，并同时上传为 run artifact。
 #
 # macOS MVP 阶段不做 codesigning：用户首次打开需右键 → 打开 → 仍要打开 绕过 Gatekeeper。
 # 后续接 APPLE_DEVELOPER_ID secrets + codesign --deep + notarytool。
@@ -423,3 +428,62 @@ jobs:
 
             首次启动会自解压运行时（python + node），可能需要 10-30 秒。
           files: desktop-shell/dist/ThinkBuddyDesktop-mac-${{ matrix.arch }}-*.dmg
+
+  # 汇总清单：等 Windows + macOS【三个平台都打完】才生成 unified latest.json。
+  # 平台包发布走 build / mac job 尾部内嵌的 Publish step（谁先打完谁先追加，
+  # 互不等待）；latest.json 需要聚合全部平台产物，必须等 needs（build, mac）
+  # 全部成功后下载各自 artifact 再生成，只上传 latest.json 到同一个
+  # desktop-N release（附件 + run artifact 双份），不重复上传平台包文件。
+  latest:
+    name: Latest · 汇总双平台产物生成 latest.json
+    runs-on: ubuntu-latest
+    needs: [build, mac]
+    if: inputs.release
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # pattern 必须排除 web-standalone：不带 name 的 download-artifact 会拉取
+      # 本次 run 的【所有】artifact。所有平台构建产物 artifact 名均以 ThinkBuddy
+      # 开头（ThinkBuddyDesktop-windows / ThinkBuddySetup-windows /
+      # ThinkBuddyDesktop-mac-<arch>-dmg），一个 pattern 即可精准圈定，
+      # 且 web 共享 job 的 web-standalone 不会污染 release-artifacts 目录。
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ThinkBuddy*
+          path: release-artifacts
+          merge-multiple: true
+
+      # 汇总双平台更新清单：顶层 = Windows（老客户端兼容），mac.<arch> = macOS。
+      # 客户端 updater.check_latest 按平台读取；发布时把 latest.json 与安装包
+      # 一起上传到更新源（上传顺序铁律：先安装包，后 latest.json）。
+      - name: Build unified latest.json
+        run: |
+          python3 desktop-shell/tools/build_update_manifest.py \
+            --win-exe "release-artifacts/ThinkBuddySetup-dt*.exe" \
+            --mac-dmg "release-artifacts/ThinkBuddyDesktop-mac-arm64-*.dmg" \
+            --mac-dmg "release-artifacts/ThinkBuddyDesktop-mac-x86_64-*.dmg" \
+            --out release-artifacts/latest.json
+
+      - name: List release artifacts
+        run: ls -lh release-artifacts
+
+      # latest.json 上传为 run artifact：不勾 release 时更新源也能从 Artifacts 下载。
+      - name: Upload unified latest.json
+        uses: actions/upload-artifact@v4
+        with:
+          name: ThinkBuddy-latest-json
+          path: release-artifacts/latest.json
+
+      # 只追加 latest.json 到同一个 desktop-N release，不重复上传平台包文件。
+      - name: Publish unified latest.json
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: desktop-${{ github.run_number }}
+          name: ThinkBuddy Desktop build ${{ github.run_number }}
+          append_body: true
+          body: |
+
+            **更新清单**：`latest.json`（Windows + macOS 全平台）
+          files: release-artifacts/latest.json
