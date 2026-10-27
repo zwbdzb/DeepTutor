@@ -430,6 +430,13 @@ jobs:
       - name: List release artifacts
         run: ls -lh release-artifacts
 
+      # latest.json 上传为 run artifact：不勾 release 时更新源也能从 Artifacts 下载。
+      - name: Upload unified latest.json
+        uses: actions/upload-artifact@v4
+        with:
+          name: ThinkBuddy-latest-json
+          path: release-artifacts/latest.json
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -451,9 +458,10 @@ jobs:
             4. 之后双击即可正常启动
 
             首次启动会自解压运行时（python + node），可能需要 10-30 秒。
-          # 只发布安装包与 dmg；mac 的 .zip 仅作为 CI 构建 artifact 保留，
-          # 不进 GitHub Release（避免 release 页出现多余 zip）。
+          # 附件 = 最新统一清单 + 安装包 + 各平台 dmg；mac 的 .zip 仅作为 CI
+          # 构建 artifact 保留，不进 GitHub Release（避免 release 页出现多余 zip）。
           files: |
+            release-artifacts/latest.json
             release-artifacts/ThinkBuddySetup-*.exe
             release-artifacts/ThinkBuddyDesktop.exe
             release-artifacts/ThinkBuddyDesktop-mac-arm64-*.dmg
