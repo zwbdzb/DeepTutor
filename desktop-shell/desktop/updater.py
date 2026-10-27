@@ -336,39 +336,117 @@ def download(
 
 
 def _run_installer_darwin(dmg_path: str) -> None:
-    """macOS 静默更新：detached sh 脚本编排（本进程随后自行优雅退出）。
+    """macOS 静默更新：detached bash 脚本编排（本进程随后自行优雅退出）。
 
     时序：等旧进程退场 → 挂载 dmg → ditto 覆盖 /Applications/ThinkBuddy.app
-    → 卸载 → 延迟拉起新版（给文件系统/安全扫描留缓冲，对齐 Windows
-    「安装器不要立刻 Exec 新壳」的教训）。关键节点写 <dmg名>.update.log。
+    → 卸载 → 拉起新版并**验证真的起来了**。关键节点写 <dmg名>.update.log。
+
+    【2026-10-27 改：把两处固定 sleep 换成活跃探测，与 Windows 侧
+    「ping 15s → runtime 就绪门」同一套思路】
+      1) `sleep 3`（等旧壳退场）→ 轮询 `kill -0 <旧壳 pid>`（调用方把自己的
+         pid 传进来）：进程一消失立刻往下走，通常 0.3-1s；上限 30×0.1s=3s，
+         与旧的固定等待同量级，**永远不会更慢**。没有 pid 可用（旧版调用）
+         时退回固定 3s。
+      2) `sleep 8`（落盘后缓冲再 open）→ **启动后验证**：`open` 之后轮询
+         `pgrep` 确认进程真的出现（首次最多 6s，通常 1-2s），没出现就重试一次
+         （`open` 对「正在启动」的应用是激活而非二次实例，重试安全）。
+    为什么 macOS 可以用「验证」替代「等待」而 Windows 不行：Windows 侧
+    LoadLibrary 抢跑是**硬失败**（ERROR 126 + 弹框，进程活着但没起来，只能靠
+    事前等待规避）；macOS 上 exec 一个新落盘的 Mach-O 只是慢（XProtect 同步
+    扫描），不会失败，所以事后验证 + 重试是对的解法，且省掉 8s 白等。
+
     dmg 由 urllib 下载、hdiutil 挂载，均不经过 LaunchServices，不会带
     com.apple.quarantine 隔离属性——覆盖安装后不会被 Gatekeeper 拦。
     """
     dmg = Path(dmg_path).resolve()
     update_log = dmg.parent / (dmg.stem + ".update.log")
     app_name = "ThinkBuddy.app"
+    exe_name = "ThinkBuddy"          # Info.plist 的 CFBundleExecutable（mac.spec:95）
     script = "\n".join([
         "set -u",
-        'DMG="$1"; LOG="$2"',
+        'DMG="$1"; LOG="$2"; OLD_PID="${3:-0}"',
         f'APP_NAME="{app_name}"',
+        f'EXE_NAME="{exe_name}"',
         'DEST="/Applications/$APP_NAME"',
-        'echo "[$(date +%T)] update start: $DMG" >> "$LOG"',
-        "sleep 3",  # 等旧壳进程完全退场（调用方优雅退出后本脚本才继续）
-        'hdiutil attach "$DMG" -nobrowse -quiet || { echo "[$(date +%T)] attach failed" >> "$LOG"; exit 1; }',
+        'BIN="$DEST/Contents/MacOS/$EXE_NAME"',
+        'log() { echo "[$(date +%T)] $*" >> "$LOG"; }',
+        'log "update start: $DMG (old pid=$OLD_PID)"',
+        # ---- 1) 等旧壳真正退场（活跃探测，替代固定 sleep 3） --------------
+        "old_gone=0",
+        'if [ "$OLD_PID" -gt 0 ] 2>/dev/null; then',
+        "  i=0",
+        '  while [ "$i" -lt 30 ]; do',
+        '    if ! kill -0 "$OLD_PID" 2>/dev/null; then old_gone=1; break; fi',
+        "    sleep 0.1",
+        "    i=$((i + 1))",
+        "  done",
+        '  log "old process wait: ticks=$i gone=$old_gone"',
+        "else",
+        "  sleep 3",
+        "  old_gone=1",
+        '  log "old process wait: fixed 3s (no pid)"',
+        "fi",
+        'hdiutil attach "$DMG" -nobrowse -quiet || { log "attach failed"; exit 1; }',
         'SRC="$(ls -d /Volumes/ThinkBuddy*/"$APP_NAME" 2>/dev/null | head -1)"',
-        'if [ -z "$SRC" ]; then echo "[$(date +%T)] app not found in dmg" >> "$LOG"; hdiutil detach /Volumes/ThinkBuddy* -quiet 2>/dev/null; exit 1; fi',
+        'if [ -z "$SRC" ]; then log "app not found in dmg"; hdiutil detach /Volumes/ThinkBuddy* -quiet 2>/dev/null; exit 1; fi',
         'rm -rf "$DEST"',
-        'ditto "$SRC" "$DEST" || { echo "[$(date +%T)] copy failed" >> "$LOG"; hdiutil detach "$(dirname "$SRC")" -quiet 2>/dev/null; exit 1; }',
+        'ditto "$SRC" "$DEST" || { log "copy failed"; hdiutil detach "$(dirname "$SRC")" -quiet 2>/dev/null; exit 1; }',
         'hdiutil detach "$(dirname "$SRC")" -quiet 2>/dev/null || true',
-        "sleep 8",  # 新二进制落盘后稍作缓冲再启动（对齐 Windows 延迟启动经验）
-        'open "$DEST"',
-        'echo "[$(date +%T)] relaunched" >> "$LOG"',
+        # 复制期间再复核一次旧进程：ditto 覆盖几百 MB 的 bundle 本身要几秒，
+        # 前 3s 没退干净的旧壳（优雅退出最多给 15s）到这时通常已经没了 ——
+        # 补这一步能把「跳过验证」压成少数真·卡死场景，而不是常态。
+        'if [ "$old_gone" -eq 0 ]; then',
+        '  if [ "$OLD_PID" -gt 0 ] && ! kill -0 "$OLD_PID" 2>/dev/null; then',
+        '    old_gone=1; log "old process gone during copy"',
+        "  fi",
+        "fi",
+        # ---- 2) 落盘校验 + 拉起并验证（替代固定 sleep 8） ----------------
+        'if [ ! -x "$BIN" ]; then log "bundle executable missing or not exec: $BIN"; fi',
+        # app_up：只认「本 bundle 路径下的 Mach-O」或进程名恰为 EXE_NAME，
+        # 避免把系统里同名的别的东西当成启动成功。
+        "app_up() {",
+        '  pgrep -f "$DEST/Contents/MacOS/" >/dev/null 2>&1 && return 0',
+        '  pgrep -x "$EXE_NAME" >/dev/null 2>&1 && return 0',
+        "  return 1",
+        "}",
+        "launch_and_verify() {",
+        '  open "$DEST" >>"$LOG" 2>&1 || log "open failed"',
+        "  k=0",
+        '  while [ "$k" -lt "$1" ]; do',
+        '    if app_up; then return 0; fi',
+        "    sleep 0.1",
+        "    k=$((k + 1))",
+        "  done",
+        "  return 1",
+        "}",
+        'if [ "$old_gone" -eq 0 ]; then',
+        # 旧实例没死透时 pgrep 会假阳性（匹配到旧的），验证没有意义：直接
+        # open，交给应用自身的单实例逻辑（mac 侧是 PID 文件 + 激活既有实例）。
+        '  log "old instance still alive; open without verification"',
+        '  open "$DEST" >>"$LOG" 2>&1 || log "open failed"',
+        "else",
+        "  if launch_and_verify 60; then",
+        '    log "relaunched (verified)"',
+        "  else",
+        '    log "first launch not detected, retry once"',
+        "    sleep 0.5",
+        "    if launch_and_verify 40; then",
+        '      log "relaunched on retry (verified)"',
+        "    else",
+        '      log "app did not start; please launch ThinkBuddy manually"',
+        "    fi",
+        "  fi",
+        "fi",
     ])
     script_path = Path(tempfile.gettempdir()) / f"thinkbuddy_update_{os.getpid()}.sh"
-    script_path.write_text(script + "\n", encoding="utf-8")
+    # newline="\n" 必写：write_text 默认会把 \n 翻成 os.linesep，在 macOS 上恰好
+    # 还是 \n，但换到任何非 POSIX 宿主（本仓在 Windows 上做脚本验证）就会落成
+    # CRLF，bash 会把它当成 `set -u\r` 这类非法 token，整段脚本直接不工作。
+    script_path.write_text(script + "\n", encoding="utf-8", newline="\n")
     try:
         subprocess.Popen(
-            ["/bin/bash", str(script_path), str(dmg), str(update_log)],
+            # 第三个参数是本进程 pid：脚本据此做「旧壳是否真的退了」的活跃探测。
+            ["/bin/bash", str(script_path), str(dmg), str(update_log), str(os.getpid())],
             start_new_session=True,  # 脱离父会话：壳退出后脚本继续跑完
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -787,14 +865,18 @@ def run_installer(setup_path: str | os.PathLike, new_version: str | None = None)
     ]
     bat_path = Path(tempfile.gettempdir()) / f"thinkbuddy_update_{os.getpid()}.bat"
     bat_payload = "\r\n".join(bat_lines) + "\r\n"
+    # newline="" 必写：payload 已自带 \r\n，而 write_text 默认还会把每个 \n 再翻
+    # 成 os.linesep，落盘变成 \r\r\n（2026-10-27 实测）。cmd 目前容忍多余 \r，
+    # 但这是双重回车而不是标准 CRLF，属于随时可能咬人的隐式行为。
     try:
-        bat_path.write_text(bat_payload, encoding="mbcs")
+        bat_path.write_text(bat_payload, encoding="mbcs", newline="")
     except (LookupError, UnicodeEncodeError):
         # mbcs 不可用（非 Windows 测试环境）或内容含 ANSI 外字符：
         # 降级 UTF-8 写盘 + chcp 65001，让 cmd 按 UTF-8 解析后续行。
         bat_path.write_text(
             "\r\n".join(["@echo off", "chcp 65001 >nul", *bat_lines[1:]]) + "\r\n",
             encoding="utf-8",
+            newline="",
         )
     # 先拉进度窗、后放 bat：窗是独立 powershell.exe 进程，bat 随后 taskkill/
     # 安装器 RM 都伤不到它；窗若拉不起来只记 warning，更新照常进行。
