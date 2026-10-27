@@ -43,13 +43,16 @@ ln -s /Applications "$STAGING/Applications"
 STAGING_DMG="$(mktemp "${TMPDIR:-/tmp}/thinkbuddy-dmg-src.XXXXXX").dmg"
 trap 'rm -f "$STAGING_DMG"; rm -rf "$STAGING"' EXIT
 
-# 1) 创建空镜像（读写中间格式用 UDRW，最终转 UDZO 压缩）
+# 1) 创建空镜像（默认即 UDRW 读写格式，最终转 UDZO 压缩）
 #    -fs HFS+ 创建文件系统卷，-size 预留空间避免拷贝中途写满。
+#    注意：-format 只允许与 -srcfolder/-srcdevice（或 convert）搭配；
+#    用 -size 创建空镜像时带上 -format，hdiutil 会直接报
+#    “-format requires -srcfolder or -srcdevice”（macOS 15 / ARM runner 上必现）。
 VOLSIZE_KB=$(du -sk "$STAGING" | awk '{print $1}')
 # 预留 10% 余量给卷头/元数据（空间不足时 hdiutil 会报 ENOSPC 而非 Resource busy）
 VOLSIZE_KB=$(( VOLSIZE_KB + VOLSIZE_KB / 10 + 4096 ))
 hdiutil create -volname "ThinkBuddy" -fs HFS+ -size "${VOLSIZE_KB}k" \
-  -ov -format UDRW "$STAGING_DMG"
+  -ov "$STAGING_DMG"
 
 # 2) 挂载空镜像（-noidme 禁用 Spotlight 索引，避免挂载卷被占用）
 MOUNT_POINT="$(hdiutil attach "$STAGING_DMG" -nobrowse -noidme -readwrite \
