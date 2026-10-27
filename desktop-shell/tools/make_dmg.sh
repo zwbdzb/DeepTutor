@@ -58,8 +58,11 @@ VOLSIZE_KB=$(( VOLSIZE_KB * 2 + 524288 ))
 hdiutil create -volname "ThinkBuddy" -fs HFS+ -size "${VOLSIZE_KB}k" \
   -ov "$STAGING_DMG"
 
-# 2) 挂载空镜像（-noidme 禁用 Spotlight 索引，避免挂载卷被占用）
-MOUNT_POINT="$(hdiutil attach "$STAGING_DMG" -nobrowse -noidme -readwrite \
+# 2) 挂载空镜像（-nobrowse 让卷不在 Finder 显示；刻意不传 -noidme：
+#    hdiutil 的 IDME 选项已废弃——arm 的 macos-15 上只是警告后继续，
+#    x86 的 macos-15-intel 上直接报 “WARNING: ignoring IDME options”
+#    并以退出码 16 失败，CI 实测 2026-10-27）
+MOUNT_POINT="$(hdiutil attach "$STAGING_DMG" -nobrowse -readwrite \
   | awk -F'\t' '/\/Volumes\//{print $NF; exit}')"
 trap 'hdiutil detach "$MOUNT_POINT" -quiet 2>/dev/null || true; rm -f "$STAGING_DMG"; rm -rf "$STAGING"' EXIT
 
