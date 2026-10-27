@@ -79,6 +79,22 @@ def _read_source_version(source_root: Path) -> str:
         raise SystemExit(f"cannot parse __version__ from {vf}")
     return m.group(1)
 
+
+def _distinfo_metadata_version(dist: Path) -> str | None:
+    """读 dist-info/METADATA 的 Version 字段；读不到或解析失败返回 None。"""
+    meta = dist / "METADATA"
+    if not meta.is_file():
+        return None
+    try:
+        for line in meta.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.startswith("Version:"):
+                value = line.split(":", 1)[1].strip()
+                return value or None
+    except OSError:
+        return None
+    return None
+
+
 # Relocatable runtime components (edit to bump versions).
 # Windows 用 python.org embeddable + node win-x64 zip；
 # macOS 用 python-build-standalone（indygreg）+ node darwin tarball——
@@ -572,22 +588,76 @@ def source_fingerprint(source_root: Path, *, strict: bool = False) -> str:
     return digest.hexdigest()
 
 
-def dependencies_signature(source_root: Path) -> str:
-    """pyproject.toml 内容 + pip extras 标识的哈希——区分「只改了代码」
-    （--no-deps 快速路径）与「依赖声明/安装面变了」（全量安装）。
+def _dependency_relevant_payload(source_root: Path) -> bytes | None:
+    """提取 pyproject.toml 中真正影响依赖安装面的字段（canonical JSON 编码）。
 
-    extras 计入签名：PIP_EXTRAS 增删 → 签名变 → 旧 .source-state.json 失效 →
-    下次构建自动全量重装，extras 的依赖树随之装进 runtime（否则改了 extras
-    但签名不变，manim 等会被静默漏装）。尾部固定 marker 还保证：即使 extras
-    为空，新签名也与旧版「纯 pyproject 哈希」不同 → 升级本脚本后旧状态文件
-    必然失效一次（安全方向）。
+    整文件哈希的教训（2026-10-24 CI 实证，macOS x86_64 job 11m11s）：pyproject
+    里的 ruff/black/pytest/mypy/bandit 工具配置、description、scripts、
+    entry-points 与依赖安装毫无关系，但任何一个字符的改动都会让 deps_sig 变化
+    → CI 缓存 restore-keys 恢复旧 staging 后 site-packages 被整体清空 + 全量
+    重装（Intel runner 上多花 5-7 分钟）。改为只哈希 pip 对
+    `<source>[PIP_EXTRAS]` 这条安装命令实际解析的字段：
+
+      [build-system].requires / .build-backend   — 隔离构建环境的内容
+      [project].requires-python                  — 环境标记求值基准
+      [project].dependencies                     — 主依赖集
+      [project.optional-dependencies][extra]     — 仅 PIP_EXTRAS 声明的 extra
+
+    其余段落（工具配置等）的改动只影响源码指纹（pyproject.toml 本身在
+    _iter_source_files 里），走 --no-deps 快速路径秒装，不再触发全量重装。
+    解析失败（tomllib 不可用 / TOML 语法错误）返回 None，调用方回退整文件
+    哈希——保守方向多重装，绝不漏装。
+    """
+    try:
+        import tomllib
+    except ImportError:
+        return None
+    pyproject = source_root / "pyproject.toml"
+    try:
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - malformed TOML: fall back to whole file
+        return None
+    build_system = data.get("build-system", {}) or {}
+    project = data.get("project", {}) or {}
+    optional = project.get("optional-dependencies", {}) or {}
+    payload = {
+        "build_backend": build_system.get("build-backend", ""),
+        "build_requires": sorted(build_system.get("requires", []) or []),
+        "requires_python": project.get("requires-python", ""),
+        "dependencies": sorted(project.get("dependencies", []) or []),
+        # PIP_EXTRAS 里声明了但 pyproject 没定义的 extra 也计入：这种情况
+        # pip 本身会报错，先让签名变化触发重装、尽早失败，好过静默漏装。
+        "extras": {extra: sorted(optional[extra] or [])
+                   for extra in PIP_EXTRAS if extra in optional},
+        "missing_extras": sorted(e for e in PIP_EXTRAS if e not in optional),
+    }
+    return json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+
+
+def dependencies_signature(source_root: Path) -> str:
+    """依赖安装面签名——区分「只改了代码」（--no-deps 快速路径）与「依赖
+    声明/安装面变了」（全量安装）。
+
+    哈希输入见 _dependency_relevant_payload（2026-10-24 起为依赖段提取，
+    不再是整文件字节——工具配置改动不再误伤增量缓存）。尾部固定 marker
+    双保险：
+      * extras 标识：PIP_EXTRAS 增删 → 签名变 → 旧 .source-state.json 失效
+        → 下次构建自动全量重装（否则改了 extras 但签名不变，manim 等会被
+        静默漏装）；
+      * 算法版本 marker：签名算法升级后新旧签名必然不同 → 旧状态文件失效
+        一次（安全方向，一次性全量重装后归位）。
     """
     pyproject = source_root / "pyproject.toml"
     if not pyproject.is_file():
         return ""
+    payload = _dependency_relevant_payload(source_root)
+    if payload is None:
+        # tomllib 不可用或 TOML 解析失败：回退整文件哈希（旧行为，保守方向）。
+        payload = pyproject.read_bytes()
     digest = hashlib.sha256()
-    digest.update(pyproject.read_bytes())
+    digest.update(payload)
     digest.update(b"\0extras=" + ",".join(PIP_EXTRAS).encode("utf-8"))
+    digest.update(b"\0algo=deps-only-v1")
     return digest.hexdigest()
 
 
@@ -696,6 +766,27 @@ def build(make_zip: bool = False, source_root: Path | None = None,
             res.returncode == 0 and current == expected
             and not state_changed and not deps_changed
         )
+        # 清理自家 dist-info 的残留元数据（历史事故：pip --target 覆盖式安装
+        # 只增不删，旧版本 deeptutor-<旧>.dist-info 会随运行时一起发给用户，
+        # 显示层若取到旧元数据就出现「1.6.14 遮蔽 1.6.15」的版本倒退）。
+        # 【关键】只删版本与源码（expected）不一致的残留，**保留正确那份**：
+        # 快路径（已装且版本/指纹未变 → 跳过下方安装，见 installed_ok）不会
+        # 重建 dist-info，若把唯一一份也删掉，打出的运行时只有代码没有元数据，
+        # 关于页引擎会显示「未知」、select_runtime_base 的版本择优也会失明。
+        # cli/web 的 dist-info 壳不读取、无遮蔽风险，且快路径删除后不会重建，
+        # 故不在此清理（重装路径的移除循环会统一重建）。
+        for entry in sp.glob("deeptutor-*.dist-info"):
+            if _distinfo_metadata_version(entry) == expected:
+                continue
+            try:
+                shutil.rmtree(entry) if entry.is_dir() else entry.unlink()
+                log(f"removed stale dist-info residue: {entry.name}")
+            except OSError as exc:
+                raise SystemExit(
+                    f"cannot clean stale {entry.name}: {exc}\n"
+                    f"likely held by a running ThinkBuddy/deeptutor "
+                    f"process or antivirus — close the app and retry."
+                ) from exc
         if installed_ok and not force_deeptutor:
             log(f"deeptutor {current} already installed & matches source; skipping pip")
         else:

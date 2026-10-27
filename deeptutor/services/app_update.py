@@ -499,7 +499,7 @@ class UpdateJobStore:
         except FileExistsError as exc:
             raise UpdateInProgressError("Another update is already in progress") from exc
         try:
-            os.write(descriptor, job.id.encode("ascii"))
+            os.write(descriptor, job.id.encode("utf-8"))
         finally:
             os.close(descriptor)
         try:
@@ -587,7 +587,7 @@ class UpdateJobStore:
 
     def release(self, job_id: str) -> None:
         try:
-            owner = self.active_path.read_text(encoding="ascii")
+            owner = self.active_path.read_text(encoding="utf-8")
         except OSError:
             return
         if owner == job_id:
