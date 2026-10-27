@@ -711,6 +711,9 @@ def run_installer(setup_path: str | os.PathLike, new_version: str | None = None)
             "\r\n".join(["@echo off", "chcp 65001 >nul", *bat_lines[1:]]) + "\r\n",
             encoding="utf-8",
         )
+    # 先拉进度窗、后放 bat：窗是独立 powershell.exe 进程，bat 随后 taskkill/
+    # 安装器 RM 都伤不到它；窗若拉不起来只记 warning，更新照常进行。
+    ui_proc = _spawn_update_ui(update_log, new_version or "", app_exe)
     try:
         subprocess.Popen(
             ["cmd", "/c", str(bat_path)],
