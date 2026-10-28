@@ -417,13 +417,19 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
-# ---- window: small borderless top-most dialog, centered on screen ----------
+# ---- window: small top-most dialog with minimize button, centered -----------
+# 带标题栏 + 最小化按钮（用户反馈 2026-10-28：杀进程后要出现一个「可最小化」
+# 的安装进度窗，对齐参考截图）：FixedSingle 边框、只留最小化，不允许关窗取消
+# 更新（Alt+F4 仍无害，安装由独立 bat 编排）。TopMost 保留：安装期始终可见。
 $form = New-Object System.Windows.Forms.Form
-$form.Text = 'ThinkBuddy Update'
-$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::None
+$form.Text = '正在安装更新'
+$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedSingle
+$form.MinimizeBox = $true
+$form.MaximizeBox = $false
+$form.ControlBox = $true
 $form.TopMost = $true
 $form.BackColor = [System.Drawing.Color]::White
-$form.ClientSize = New-Object System.Drawing.Size(380, 190)
+$form.ClientSize = New-Object System.Drawing.Size(420, 210)
 try {
     $wa = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
     $form.StartPosition = [System.Windows.Forms.FormStartPosition]::Manual
@@ -435,13 +441,9 @@ try {
     $form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
 }
 
-# ---- borderless drag support ------------------------------------------------
-# A None-border form has no caption to drag by (user feedback 2026-10-27).
-# Standard fix: on left MouseDown anywhere on the form or its child controls,
-# release mouse capture and send WM_NCLBUTTONDOWN(0xA1)/HTCAPTION(2) so
-# Windows itself runs the native move loop. TopMost stays: an updater window
-# is expected to stay visible above app windows being installed. Cosmetic
-# only -- any Add-Type failure must not take the update window down.
+# ---- drag support ------------------------------------------------------------
+# 现在已带标题栏（可按住标题栏拖动/最小化）；这里保留窗体客户区任意位置左键
+# 拖动（WM_NCLBUTTONDOWN/HTCAPTION 原生移动循环），小窗任意处都能拖走。
 try {
     Add-Type -Name U32 -Namespace W -MemberDefinition @'
 [DllImport("user32.dll")] public static extern bool ReleaseCapture();
@@ -458,32 +460,38 @@ try {
 } catch { }
 
 $lblTitle = New-Object System.Windows.Forms.Label
-$title = '正在更新 ThinkBuddy'
-if ($NewVersion -and $NewVersion.Trim().Length -gt 0) {
-    $title = '正在更新 ThinkBuddy v' + $NewVersion.Trim()
-}
-$lblTitle.Text = $title
-$lblTitle.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 11.75, [System.Drawing.FontStyle]::Bold)
+$lblTitle.Text = '正在安装更新'
+$lblTitle.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 14.25, [System.Drawing.FontStyle]::Bold)
 $lblTitle.ForeColor = [System.Drawing.Color]::FromArgb(32, 33, 36)
 $lblTitle.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-$lblTitle.Size = New-Object System.Drawing.Size(360, 36)
-$lblTitle.Location = New-Object System.Drawing.Point(10, 24)
+$lblTitle.Size = New-Object System.Drawing.Size(400, 44)
+$lblTitle.Location = New-Object System.Drawing.Point(10, 20)
 $form.Controls.Add($lblTitle)
+
+# 副标题（对齐截图）：一句话说明安装期间的行为。
+$lblSub = New-Object System.Windows.Forms.Label
+$lblSub.Text = '更新即将完成，应用将自动重启，请稍候…'
+$lblSub.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 9.75)
+$lblSub.ForeColor = [System.Drawing.Color]::FromArgb(32, 33, 36)
+$lblSub.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+$lblSub.Size = New-Object System.Drawing.Size(400, 24)
+$lblSub.Location = New-Object System.Drawing.Point(10, 66)
+$form.Controls.Add($lblSub)
 
 $bar = New-Object System.Windows.Forms.ProgressBar
 $bar.Style = [System.Windows.Forms.ProgressBarStyle]::Marquee
 $bar.MarqueeAnimationSpeed = 30
-$bar.Size = New-Object System.Drawing.Size(300, 10)
-$bar.Location = New-Object System.Drawing.Point(40, 72)
+$bar.Size = New-Object System.Drawing.Size(340, 12)
+$bar.Location = New-Object System.Drawing.Point(40, 108)
 $form.Controls.Add($bar)
 
 $lblStage = New-Object System.Windows.Forms.Label
 $lblStage.Text = '正在准备安装…'
 $lblStage.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 9.75)
-$lblStage.ForeColor = [System.Drawing.Color]::FromArgb(32, 33, 36)
+$lblStage.ForeColor = [System.Drawing.Color]::Gray
 $lblStage.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-$lblStage.Size = New-Object System.Drawing.Size(360, 60)
-$lblStage.Location = New-Object System.Drawing.Point(10, 92)
+$lblStage.Size = New-Object System.Drawing.Size(400, 26)
+$lblStage.Location = New-Object System.Drawing.Point(10, 132)
 $form.Controls.Add($lblStage)
 
 $lblHint = New-Object System.Windows.Forms.Label
@@ -491,8 +499,8 @@ $lblHint.Text = '预计 2-6 分钟（取决于磁盘与杀毒软件），完成�
 $lblHint.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 8.25)
 $lblHint.ForeColor = [System.Drawing.Color]::Gray
 $lblHint.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-$lblHint.Size = New-Object System.Drawing.Size(360, 22)
-$lblHint.Location = New-Object System.Drawing.Point(10, 158)
+$lblHint.Size = New-Object System.Drawing.Size(400, 22)
+$lblHint.Location = New-Object System.Drawing.Point(10, 176)
 $form.Controls.Add($lblHint)
 
 # ---- helpers ----------------------------------------------------------------
