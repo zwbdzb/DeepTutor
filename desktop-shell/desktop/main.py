@@ -745,6 +745,7 @@ def main() -> int:
         min_size=(450, 450),
         js_api=api,
         background_color="#ffffff",
+        text_select=True,
         menu=build_native_menu(api),
     )
     webview_windows.append(window)
