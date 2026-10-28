@@ -18,13 +18,11 @@ minify 不会拆开字符串字面量，"DeepTutor" 在 chunk 里永远连续完
 替换规则（安全边界）
 --------------------
 1. 只替换驼峰品牌名 ``DeepTutor`` → ``ThinkBuddy``；
-     - 同时把上一任发行版品牌 ``EduBuddy``（旧 staging 产物）升级为
-       ``ThinkBuddy``（见 LEGACY_BRANDS）；
      - ``deeptutor`` 小写（Python 包名 / import / 路径 / pip 包名 /
        indexedDB 库名 / docs.deeptutor.info 域名）不碰；
      - ``DEEPTUTOR_*`` 大写（环境变量）不碰；
-     - ``edubuddy-desktop``（OAuth client_id）、``__edubuddyToast``（前端
-       JS 契约）、``edubuddy_oauth``（服务端路由）等小写技术标识符不碰。
+     - ``edubuddy-desktop``（OAuth client_id，服务端注册契约，改名须服务端
+       同步）等小写技术标识符不碰。
 2. 品牌词必须带【标识符边界】：前后紧贴字母/数字/下划线时不替换。
    ``DeepTutorApp`` / ``DeepTutorParser`` / ``DeepTutorError`` 因此全部
    豁免，包括它们出现在字符串内部时（如 ``__all__``、
@@ -46,6 +44,7 @@ import argparse
 import ast
 import io
 import re
+import subprocess
 import sys
 import tokenize
 from pathlib import Path
@@ -64,17 +63,12 @@ TARGET_PACKAGES = ("deeptutor", "deeptutor_cli", "deeptutor_web")
 PLAINTEXT_SUFFIXES = {
     ".yaml", ".yml", ".json", ".js", ".mjs", ".cjs",
     ".html", ".htm", ".css", ".txt",
+    ".rsc",  # Next.js 预渲染段 payload（RSC），设置页等首屏文案烧在里面
 }
 SKIP_SUFFIXES = {".pyc", ".pyo", ".map"}
 
 BRAND = "DeepTutor"
 NEW_BRAND = "ThinkBuddy"
-# 上一任发行版品牌：staging 是按 fingerprint 复用的（fingerprint 不含本脚本），
-# 上轮 rebrand 产物里的品牌名是它。升级重写把它也推向 NEW_BRAND，否则源码
-# 未变时 staging 复用旧产物，DeepTutor 已被换光、本轮替换 0 处，包里品牌
-# 停留在 EduBuddy。只匹配驼峰独立词，小写技术标识符（edubuddy-desktop
-# client_id、__edubuddyToast、edubuddy_oauth 路由）天然不受影响。
-LEGACY_BRANDS = ("EduBuddy",)
 
 # 含品牌名的 URL —— 仓库/官网等真实地址，必须原样保留。
 # 同时覆盖 JS 编译产物里的转义形式（https:\/\/... 斜杠前带反斜杠）。
@@ -118,15 +112,14 @@ def _restore_urls(text: str, stash: list[str]) -> str:
 
 
 def _brand_bounded(text: str) -> tuple[str, int]:
-    """带标识符边界的品牌替换（DeepTutor + 历任发行版品牌 → NEW_BRAND）。
+    """带标识符边界的品牌替换（DeepTutor → NEW_BRAND）。
 
     返回 (新文本, 替换次数)。
     """
     hits = 0
-    for brand in (BRAND, *LEGACY_BRANDS):
-        pat = re.compile(r"(?<![A-Za-z0-9_])" + brand + r"(?![A-Za-z0-9_])")
-        hits += len(pat.findall(text))
-        text = pat.sub(NEW_BRAND, text)
+    pat = re.compile(r"(?<![A-Za-z0-9_])" + BRAND + r"(?![A-Za-z0-9_])")
+    hits += len(pat.findall(text))
+    text = pat.sub(NEW_BRAND, text)
     return text, hits
 
 
@@ -219,6 +212,57 @@ def rebrand_python_source(text: str) -> tuple[str, int]:
     return text, total
 
 
+def _staging_python_for(site_packages: Path) -> Path | None:
+    """从 site-packages 路径反推同一 staging 树的解释器。
+
+    build_runtime staging 布局：Windows ``.../python/Lib/site-packages``，
+    macOS ``.../python/lib/python3.X/site-packages``。反推失败（非 staging
+    布局，例如 --root 指向别处）返回 None，调用方跳过预编译。
+    """
+    try:
+        if sys.platform == "darwin":
+            exe = site_packages.parents[2] / "bin" / "python3"
+        else:
+            exe = site_packages.parents[1] / "python.exe"
+    except IndexError:
+        return None
+    return exe if exe.is_file() else None
+
+
+def precompile_bytecode(site_packages: Path) -> None:
+    """品牌重写后预编译全量 .pyc（2026-10-24 首启提速）。
+
+    rebrand 改写过的 .py mtime 变化，此前编译的 pyc 全部失效；且 pip
+    --no-compile 装出的树本来就没有 pyc。不预编译的话，安装包交付纯源码，
+    用户机每次首启（更新后尤甚）要现场编译整个 site-packages——实测后端
+    导入 4 分钟以上，直接撞穿 launcher 60s 就绪超时（1.6.15 更新事故）。
+    构建期用 staging 自带解释器编译，Inno / ditto 均保留文件 mtime，pyc
+    跨机保持有效。
+
+    个别文件编译失败只影响它自己（运行时回退源码导入，与不编译等价），
+    记录后继续，不让构建失败。
+    """
+    exe = _staging_python_for(site_packages)
+    if exe is None:
+        print("  预编译跳过：无法从 site-packages 定位同树解释器（非 staging 布局？）")
+        return
+    print(f"  预编译字节码（{exe.name}）...")
+    try:
+        res = subprocess.run(
+            [str(exe), "-m", "compileall", "-q", "-j", "0", str(site_packages)],
+            capture_output=True, text=True, timeout=1800,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"  [WARN] compileall 启动失败（不影响重写产物）：{exc}")
+        return
+    if res.returncode != 0:
+        tail = (res.stderr or res.stdout or "").strip()[-600:]
+        print(f"  [WARN] compileall rc={res.returncode}"
+              f"（个别文件无 pyc，运行时回退源码导入）\n{tail}")
+    else:
+        print("  预编译完成 [OK]")
+
+
 def rebrand_root(site_packages: Path, dry_run: bool = False) -> int:
     if not site_packages.is_dir():
         raise SystemExit(f"site-packages 不存在: {site_packages}")
@@ -255,6 +299,12 @@ def rebrand_root(site_packages: Path, dry_run: bool = False) -> int:
 
     mode = "（dry-run，未写入）" if dry_run else ""
     print(f"\n重写完成{mode}: {files_changed} 个文件，共 {grand_total} 处 {BRAND} → {NEW_BRAND}")
+    if not dry_run:
+        # 改写使被触碰 .py 的 mtime 变化、既有 pyc 失效；重写后统一增量
+        # 重编译，保证 staging（→ 安装包 / runtime.zip / portable）交付的
+        # 是 pyc 齐全的树。这是 build.ps1 链路上最后一次改写 .py 的环节，
+        # 预编译放这里才能保证打进去的都是有效的。
+        precompile_bytecode(site_packages)
     return grand_total
 
 

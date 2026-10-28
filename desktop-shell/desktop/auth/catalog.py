@@ -26,6 +26,13 @@ log = logging.getLogger("dt.auth.catalog")
 # 与 DeepTutor ModelCatalogService 的空壳保持一致
 _SERVICE_NAMES = ("llm", "task", "embedding", "search", "tts", "stt", "imagegen", "videogen")
 
+# Tokengine 托管 connection 的展示名：带平台定位备注（2026-10-23 产品要求）。
+# 老版本写入的裸 "Tokengine" 会在下次登录/令牌刷新时升级为新默认；用户在
+# 设置页改过的其它名字不在此列，登录流程不覆盖（与 reconcile 把 name 视为
+# 用户可编辑展示字段的语义一致）。
+TOKENGINE_CONNECTION_NAME = "Tokengine（领先的MaaS服务和一站式大模型API聚合分发平台）"
+_LEGACY_CONNECTION_NAMES = {"Tokengine"}
+
 
 def _service_shell() -> dict[str, Any]:
     return {"active_profile_id": None, "active_model_id": None, "profiles": []}
@@ -501,7 +508,7 @@ def ensure_tokengine_catalog(
         conn = {
             "id": connection_id,
             "provider": "openai",
-            "name": "Tokengine",
+            "name": TOKENGINE_CONNECTION_NAME,
             "api_key": api_key,
             "base_url": base_url,
             "api_version": "",
@@ -512,6 +519,8 @@ def ensure_tokengine_catalog(
         conn["api_key"] = api_key
         if base_url:
             conn["base_url"] = base_url
+        if conn.get("name") in _LEGACY_CONNECTION_NAMES:
+            conn["name"] = TOKENGINE_CONNECTION_NAME
 
     # 2) services.llm 活动 profile：复用 Tokengine 自己的 profile；没有才新建。
     #    1.6.9 的 catalog 依赖 connection_id 在保存/Apply 时回填凭据，

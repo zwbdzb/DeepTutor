@@ -1,24 +1,37 @@
-"""Tokengine 与 thinkbuddy-website 接入配置。
+"""ThinkBuddy 主站与 Tokengine 认证服务接入配置。
 
-端点解析优先级（高 → 低）：
+两个站点的语义分工：
+
+* **ThinkBuddy 主站**（键 ``api_base``，默认 ``https://thinkbuddy.hanyoai.com``）：
+  产品官网 / 邀请页 / 更新源 / 遥测上报等业务入口。
+* **Tokengine**（键 ``oauth_base``，默认 ``https://tokengine.hanyoai.com``）：
+  登录认证（OAuth）+ token（模型中继）服务。
+
+端点解析优先级（高 → 低，两个站点一致）：
 
 1. 环境变量（联调最快，无需改文件）
 2. ``<ROOT>/endpoints.json``（打包版可外部覆盖，免重建就能指向本地平台）
-3. 内置默认（当前兜底为生产地址 ``PROD_API_BASE``；本地联调用 endpoints.json / 环境变量覆盖）
+3. 内置默认（当前兜底为生产地址；本地联调用 endpoints.json / 环境变量覆盖）
+
+例外：更新源与遥测端点**纯硬编码派生**自主站 ``api_base``
+（``<api_base>/update``、``<api_base>/v1/events``），不吃环境变量 / 文件覆盖。
 
 ``endpoints.json`` 示例（放在 ``%LOCALAPPDATA%\\ThinkBuddy\\endpoints.json``）::
 
     {
-      "api_base": "http://127.0.0.1:3000",
+      "oauth_base": "http://127.0.0.1:3000",
       "relay_base": "http://127.0.0.1:3000/v1",
-      "thinkbuddy_website_url": "http://127.0.0.1:8000"
+      "api_base": "http://127.0.0.1:8000"
     }
 
-可覆写的键：``api_base`` / ``authorize_url`` / ``token_url`` / ``userinfo_url`` /
-``revoke_url`` / ``relay_base`` / ``thinkbuddy_website_url`` / ``update_url``。
+可覆写的键：``oauth_base`` / ``authorize_url`` / ``token_url`` / ``userinfo_url`` /
+``revoke_url`` / ``relay_base`` / ``api_base``。
 
-Tokengine 环境变量名为 ``TOKENGINE_`` + 对应键的大写形式；网站服务地址使用
-``THINKBUDDY_WEBSITE_URL``；更新源使用 ``THINKBUDDY_UPDATE_URL``。
+环境变量：Tokengine 侧为 ``TOKENGINE_`` + 对应键的大写形式（根地址为
+``TOKENGINE_OAUTH_BASE``）；主站根地址为 ``THINKBUDDY_API_BASE``。
+废弃键 ``thinkbuddy_website_url``（→ 改写为 ``api_base``）与 ``update_url`` /
+``telemetry_url``（→ 随 ``api_base`` 自动派生）出现在 endpoints.json 时只告警、
+不生效。
 """
 from __future__ import annotations
 
@@ -36,29 +49,31 @@ log = logging.getLogger("dt.auth.config")
 # 当前构建兜底为**生产地址**（分发给别人的机器上没有 endpoints.json / 环境变量，
 # 落到的就是这个兜底值——必须是收件人能访问的地址）。本地联调不要改这里，
 # 用优先级更高的覆盖方式指回联调环境：
-#   * 用户级覆盖文件 %LOCALAPPDATA%\ThinkBuddy\endpoints.json 写 "api_base"
-#   * 或启动前设环境变量 TOKENGINE_API_BASE=http://127.0.0.1:3000
+#   * 用户级覆盖文件 %LOCALAPPDATA%\ThinkBuddy\endpoints.json 写 "oauth_base"
+#     （主站联调写 "api_base"）
+#   * 或启动前设环境变量 TOKENGINE_OAUTH_BASE=http://127.0.0.1:3000
+#     （主站联调设 THINKBUDDY_API_BASE=http://127.0.0.1:8000）
 #
-# 注意：``TOKENGINE_DEFAULT_API_BASE`` 是**运行时**在启动机器上读取的，
+# 注意：``TOKENGINE_DEFAULT_OAUTH_BASE`` 是**运行时**在启动机器上读取的，
 # 打包时设置它不会烘焙进 exe；要改「分发默认值」只能改下面这个兜底参数。
-DEV_API_BASE = "http://127.0.0.1:3000"
-PROD_API_BASE = "https://tokengine.hanyoai.com"
+PROD_OAUTH_BASE = "https://tokengine.hanyoai.com"
 
-DEFAULT_API_BASE = os.environ.get("TOKENGINE_DEFAULT_API_BASE", PROD_API_BASE)
-DEFAULT_THINKBUDDY_WEBSITE_URL = "https://thinkbuddy.hanyoai.com"
+DEFAULT_OAUTH_BASE = os.environ.get("TOKENGINE_DEFAULT_OAUTH_BASE", PROD_OAUTH_BASE)
+# ThinkBuddy 主站根地址（官网/邀请页/更新源/遥测的派生基准）。
+DEFAULT_API_BASE = "https://thinkbuddy.hanyoai.com"
 
 # --------------------------------------------------------------------------- #
 # 端点解析
 # --------------------------------------------------------------------------- #
 _TOKENGINE_ENDPOINT_KEYS = (
-    "api_base",
+    "oauth_base",
     "authorize_url",
     "token_url",
     "userinfo_url",
     "revoke_url",
     "relay_base",
 )
-_CONFIG_KEYS = (*_TOKENGINE_ENDPOINT_KEYS, "thinkbuddy_website_url", "update_url")
+_CONFIG_KEYS = (*_TOKENGINE_ENDPOINT_KEYS, "api_base")
 
 
 def _read_endpoints_file(root: Optional[Path]) -> dict[str, str]:
@@ -75,6 +90,17 @@ def _read_endpoints_file(root: Optional[Path]) -> dict[str, str]:
         return {}
     if not isinstance(data, dict):
         return {}
+    # 废弃键迁移提示（只告警不读值）：
+    #   thinkbuddy_website_url -> 改写为 "api_base"（主站根地址）
+    #   update_url / telemetry_url -> 已退出覆盖链，随 api_base 自动派生
+    for legacy_key in ("thinkbuddy_website_url", "update_url", "telemetry_url"):
+        if legacy_key in data:
+            log.warning(
+                "endpoints.json 含废弃键 %r（已忽略）。迁移路径："
+                "thinkbuddy_website_url -> api_base；update_url/telemetry_url "
+                "随 api_base 自动派生，不再支持单独覆盖。",
+                legacy_key,
+            )
     out: dict[str, str] = {}
     for key in _CONFIG_KEYS:
         value = data.get(key)
@@ -90,31 +116,38 @@ def endpoints(root: Optional[Path] = None) -> dict[str, str]:
     file_over = _read_endpoints_file(root)
 
     def pick(env_suffix: str, default: str) -> str:
-        env_value = os.environ.get(f"TOKENGINE_{env_suffix.upper()}")
+        # env 值先 strip 再进 or 链：纯空白 env 视为未设置，穿透到 file/default
+        # （与 thinkbuddy_api_base 的 candidate.strip() 语义保持一致）。
+        env_value = (os.environ.get(f"TOKENGINE_{env_suffix.upper()}") or "").strip()
         value = env_value or file_over.get(env_suffix) or default
-        return str(value).rstrip("/")
+        return str(value).strip().rstrip("/")
 
-    base = pick("api_base", DEFAULT_API_BASE)
+    base = pick("oauth_base", DEFAULT_OAUTH_BASE)
     resolved = {
-        "api_base": base,
+        "oauth_base": base,
         "authorize_url": pick("authorize_url", f"{base}/oauth/authorize"),
         "token_url": pick("token_url", f"{base}/oauth/token"),
         "userinfo_url": pick("userinfo_url", f"{base}/oauth/userinfo"),
         "revoke_url": pick("revoke_url", f"{base}/oauth/revoke"),
         "relay_base": pick("relay_base", f"{base}/v1"),
     }
-    log.info("端点解析结果：api_base=%s authorize=%s relay=%s",
-             resolved["api_base"], resolved["authorize_url"], resolved["relay_base"])
+    log.info("端点解析结果：oauth_base=%s authorize=%s relay=%s",
+             resolved["oauth_base"], resolved["authorize_url"], resolved["relay_base"])
     return resolved
 
 
-def thinkbuddy_website_url(root: Optional[Path] = None) -> str:
-    """Resolve the thinkbuddy-website base URL for desktop requests."""
+def thinkbuddy_api_base(root: Optional[Path] = None) -> str:
+    """Resolve the ThinkBuddy main-site base URL for desktop requests.
+
+    优先级：环境变量 ``THINKBUDDY_API_BASE`` > ``endpoints.json`` 的
+    ``api_base`` > 内置默认 ``DEFAULT_API_BASE``。返回空串表示未配置
+    （调用方自行回退内置生产地址）。
+    """
     file_over = _read_endpoints_file(root)
     candidates = (
-        os.environ.get("THINKBUDDY_WEBSITE_URL"),
-        file_over.get("thinkbuddy_website_url"),
-        DEFAULT_THINKBUDDY_WEBSITE_URL,
+        os.environ.get("THINKBUDDY_API_BASE"),
+        file_over.get("api_base"),
+        DEFAULT_API_BASE,
     )
     for candidate in candidates:
         if isinstance(candidate, str) and candidate.strip():
@@ -122,38 +155,43 @@ def thinkbuddy_website_url(root: Optional[Path] = None) -> str:
     return ""
 
 
+def telemetry_url(root: Optional[Path] = None) -> str:
+    """Resolve the telemetry ingest endpoint for the shell's direct reporter.
+
+    纯硬编码派生：``<thinkbuddy_api_base(root)>/v1/events``，不读环境变量 /
+    endpoints.json（2026-11 键值重定位：独立覆盖链退出，随主站域名走）。
+    返回空串表示遥测关闭（reporter 直接丢弃事件）。
+    """
+    site = thinkbuddy_api_base(root)
+    return f"{site}/v1/events" if site else ""
+
+
 def update_base(root: Optional[Path] = None) -> str:
     """Resolve the update source base URL (latest.json + installers live here).
 
-    优先级：环境变量 ``THINKBUDDY_UPDATE_URL`` > ``endpoints.json`` 的
-    ``update_url`` > 默认 ``<thinkbuddy_website_url>/update``。返回空串表示
-    没有可用的更新源（此时更新检查应降级为本地 mtime 探测）。
+    纯硬编码派生：``<thinkbuddy_api_base(root)>/update``，不读环境变量 /
+    endpoints.json（2026-11 键值重定位：独立覆盖链退出，随主站域名走）。
+    返回空串表示没有可用的更新源（此时更新检查应降级为本地 mtime 探测）。
     """
-    file_over = _read_endpoints_file(root)
-    candidates = (
-        os.environ.get("THINKBUDDY_UPDATE_URL"),
-        file_over.get("update_url"),
-    )
-    for candidate in candidates:
-        if isinstance(candidate, str) and candidate.strip():
-            return candidate.strip().rstrip("/")
-    website = thinkbuddy_website_url(root)
-    return f"{website}/update" if website else ""
+    site = thinkbuddy_api_base(root)
+    return f"{site}/update" if site else ""
 
 
 def explicit_overrides(root: Optional[Path] = None) -> dict[str, str]:
     """收集**显式**配置的端点键值（环境变量 > endpoints.json）。
 
     与 :func:`endpoints` 的区别：这里只返回用户真正写下来的键，
-    不含从 ``api_base`` 派生的默认值。用于区分「本地显式覆盖」与
+    不含从 ``oauth_base`` 派生的默认值。用于区分「本地显式覆盖」与
     「内置默认」——显式覆盖在与平台宣告域名冲突时应当获胜。
     """
     file_over = _read_endpoints_file(root)
     out: dict[str, str] = {}
     for key in _TOKENGINE_ENDPOINT_KEYS:
-        env_value = os.environ.get(f"TOKENGINE_{key.upper()}")
-        value = env_value or file_over.get(key)
-        if isinstance(value, str) and value.strip():
+        # env 值先 strip 再进 or 链：纯空白 env 视为未设置，穿透到 file
+        # （与 endpoints().pick 同语义，避免两侧对空白 env 的判定不一致）。
+        env_value = (os.environ.get(f"TOKENGINE_{key.upper()}") or "").strip()
+        value = env_value or file_over.get(key) or ""
+        if value.strip():
             out[key] = value.strip().rstrip("/")
     return out
 
@@ -163,7 +201,8 @@ def explicit_overrides(root: Optional[Path] = None) -> dict[str, str]:
 # 请使用 endpoints(root)。
 _EP = endpoints(root=None)
 
-API_BASE = _EP["api_base"]
+# Tokengine 认证+token 服务根地址（authorize/token/relay 等的派生基准）。
+OAUTH_BASE = _EP["oauth_base"]
 AUTHORIZE_URL = _EP["authorize_url"]
 TOKEN_URL = _EP["token_url"]
 USERINFO_URL = _EP["userinfo_url"]

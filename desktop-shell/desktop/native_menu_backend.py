@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import ctypes
 import logging
+import math
 import os
 import threading
 import time
@@ -62,8 +63,10 @@ WM_NCHITTEST = 0x0084
 WM_NCLBUTTONDOWN = 0x00A1
 WM_NCLBUTTONDBLCLK = 0x00A3
 WM_SYSCOMMAND = 0x0112
+WM_GETMINMAXINFO = 0x0024
 HTCAPTION = 2
 HTCLIENT = 1
+HTTRANSPARENT = -1
 HTLEFT = 10
 HTRIGHT = 11
 HTTOP = 12
@@ -88,6 +91,16 @@ class _RECT(ctypes.Structure):
 
 class _POINT(ctypes.Structure):
     _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
+class _MINMAXINFO(ctypes.Structure):
+    _fields_ = [
+        ("ptReserved", _POINT),
+        ("ptMaxSize", _POINT),
+        ("ptMaxPosition", _POINT),
+        ("ptMinTrackSize", _POINT),
+        ("ptMaxTrackSize", _POINT),
+    ]
 
 
 _WNDPROC = None  # 延迟绑定：ctypes.WINFUNCTYPE 在 mac 上不存在，不能在模块顶层定义
@@ -126,6 +139,13 @@ def _bind_user32() -> None:
 
 # hwnd → (原窗口过程, 回调引用)；全局持有，防止 ctypes 回调被 GC
 _HOOKS: dict[int, tuple] = {}
+# hwnd → (min_w, min_h) 物理像素；WM_GETMINMAXINFO 钩子读取此表覆盖 ptMinTrackSize
+_HWND_MIN: dict[int, tuple] = {}
+
+
+def _get_target_min(hwnd: int) -> tuple[int, int] | None:
+    """返回 hwnd 对应窗口的目标最小尺寸（物理像素）。"""
+    return _HWND_MIN.get(hwnd)
 
 
 def _frame_thickness() -> int:
@@ -245,23 +265,66 @@ def _make_form_handler(hwnd: int):
     def handler(msg, wp, lp):
         if msg == WM_DESTROY:
             _unhook(hwnd)
+            _HWND_MIN.pop(hwnd, None)
             return None
-        if msg != WM_NCCALCSIZE or not wp:
-            return None
-        # 只抹掉标题栏（顶部内缩为 0），左右下三边保留系统缩放边框（非客户
-        # 区）：WebView2 子窗口盖满客户区，若客户区=整窗矩形，左右下边缘的
-        # WM_NCHITTEST 全部落进子窗口、永远到不了窗体，边缘拖拽缩放即失效。
-        # 保留边框后由系统原生接管缩放（含四个角），观感与普通窗口一致。
-        # 最大化时四边都按边框厚度内缩，避免内容溢出屏幕。
-        ins = _frame_thickness()
-        if ins > 0 and lp:
-            rect = ctypes.cast(lp, ctypes.POINTER(_RECT)).contents
-            rect.left += ins
-            rect.right -= ins
-            rect.bottom -= ins
-            if _user32.IsZoomed(hwnd):
-                rect.top += ins
-        return 0
+        if msg == WM_GETMINMAXINFO and lp:
+            # 先让 WinForms 默认处理跑一遍（把 Form.MinimumSize 写入 mmi），
+            # 然后覆盖 ptMinTrackSize 为真正想要的值（跳过 MenuStrip 自动叠加）
+            hook_entry = _HOOKS.get(hwnd)
+            if hook_entry:
+                _user32.CallWindowProcW(hook_entry[0], hwnd, msg, wp, lp)
+            mmi = ctypes.cast(lp, ctypes.POINTER(_MINMAXINFO)).contents
+            target = _get_target_min(hwnd)
+            if target is not None:
+                mmi.ptMinTrackSize.x = target[0]
+                mmi.ptMinTrackSize.y = target[1]
+            return 0
+        if msg == WM_NCHITTEST:
+            # 自己判断边缘，覆盖 WinForms 默认。关键：WM_NCCALCSIZE 返回 0
+            # 让系统用我们改后的 rect，WinForms 默认处理就按那个 rect 算，
+            # 可能把我们保留的边框区误判为客户区。这里手动算最靠谱。
+            cursor = _POINT()
+            if _user32.GetCursorPos(ctypes.byref(cursor)):
+                rect = _RECT()
+                if _user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                    m = _frame_thickness()
+                    x = cursor.x - rect.left
+                    y = cursor.y - rect.top
+                    w = rect.right - rect.left
+                    h = rect.bottom - rect.top
+                    if y < m or y >= h - m or x < m or x >= w - m:
+                        if y < m:
+                            if x < m:
+                                return HTTOPLEFT
+                            if x >= w - m:
+                                return HTTOPRIGHT
+                            return HTTOP
+                        if y >= h - m:
+                            if x < m:
+                                return HTBOTTOMLEFT
+                            if x >= w - m:
+                                return HTBOTTOMRIGHT
+                            return HTBOTTOM
+                        if x < m:
+                            return HTLEFT
+                        if x >= w - m:
+                            return HTRIGHT
+            return None  # 非边缘 → WinForms 默认
+        if msg == WM_NCCALCSIZE and wp:
+            # 只抹掉标题栏（顶部内缩为 0），左右下三边保留系统缩放边框（非客户
+            # 区）：WebView2 子窗口盖满客户区，若客户区=整窗矩形，左右下边缘的
+            # WM_NCHITTEST 全部落进子窗口、永远到不了窗体，边缘拖拽缩放即失效。
+            # 保留边框后由系统原生接管缩放（含四个角），观感与普通窗口一致。
+            # 最大化时四边都按边框厚度内缩，避免内容溢出屏幕。
+            ins = _frame_thickness()
+            if ins > 0 and lp:
+                rect = ctypes.cast(lp, ctypes.POINTER(_RECT)).contents
+                rect.left += ins
+                rect.right -= ins
+                rect.bottom -= ins
+                if _user32.IsZoomed(hwnd):
+                    rect.top += ins
+            return 0
 
     return handler
 
@@ -269,37 +332,87 @@ def _make_form_handler(hwnd: int):
 # --------------------------------------------------------------------------- #
 # 菜单条钩子：让被菜单条盖住的窗口边缘仍可缩放                                    #
 # --------------------------------------------------------------------------- #
-def _make_strip_handler(hwnd: int, caption_hit=None):
+def _make_strip_handler(strip_hwnd: int, parent_hwnd: int, strip_ref, caption_hit=None):
+    """菜单条钩子。关键：strip 是子窗口，在边缘区域必须返回 HTTRANSPARENT，
+    让系统继续向父窗口询问，父窗口返回 HT* 才能启动缩放循环。
+    但是，如果鼠标在菜单项上，必须返回 HTCLIENT 让菜单项可以点击。"""
     def handler(msg, wp, lp):
         if msg == WM_DESTROY:
-            _unhook(hwnd)
+            _unhook(strip_hwnd)
             return None
         if msg != WM_NCHITTEST:
             return None
         cursor = _POINT()
         if not _user32.GetCursorPos(ctypes.byref(cursor)):
             return None
+        # 先检查是否在菜单项上
+        if strip_ref is not None:
+            try:
+                strip_rect = _RECT()
+                if _user32.GetWindowRect(strip_hwnd, ctypes.byref(strip_rect)):
+                    sx = cursor.x - strip_rect.left
+                    sy = cursor.y - strip_rect.top
+                    item = strip_ref.GetItemAt(sx, sy)
+                    if item is not None:
+                        return HTCLIENT  # 在菜单项上，让菜单处理点击
+            except Exception:
+                pass
+        # 用父窗口 rect 判断是否在整窗边缘
         rect = _RECT()
-        if not _user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+        if not _user32.GetWindowRect(parent_hwnd, ctypes.byref(rect)):
             return None
         m = _frame_thickness()
         x = cursor.x - rect.left
         y = cursor.y - rect.top
-        width = rect.right - rect.left
-        # 标题栏按钮区优先于缩放带：整块按钮可点（原生标题栏同样如此）
-        if caption_hit is not None and caption_hit(x, y):
-            return HTCLIENT
+        w = rect.right - rect.left
+        h = rect.bottom - rect.top
+        # 按钮区优先：caption_hit 用 strip 自身坐标
+        if caption_hit is not None:
+            strip_rect = _RECT()
+            if _user32.GetWindowRect(strip_hwnd, ctypes.byref(strip_rect)):
+                sx = cursor.x - strip_rect.left
+                sy = cursor.y - strip_rect.top
+                if caption_hit(sx, sy):
+                    return HTCLIENT
+        # 整窗边缘 → 返回 HTTRANSPARENT，让系统向父窗口询问
         if y < m:
-            if x < m:
-                return HTTOPLEFT
-            if x >= width - m:
-                return HTTOPRIGHT
-            return HTTOP
+            return HTTRANSPARENT
+        if y >= h - m:
+            return HTTRANSPARENT
         if x < m:
-            return HTLEFT
-        if x >= width - m:
-            return HTRIGHT
-        return None
+            return HTTRANSPARENT
+        if x >= w - m:
+            return HTTRANSPARENT
+        return None  # 非边缘 → ToolStrip 默认处理
+
+    return handler
+
+
+def _make_webview_handler(form_hwnd: int):
+    """WebView2 钩子。WebView2 是 Dock=Fill 的子窗口，覆盖整个客户区。
+    在窗口边缘区域返回 HTTRANSPARENT，让系统继续向父窗口询问，
+    父窗口返回 HT* 才能启动缩放循环。"""
+    def handler(msg, wp, lp):
+        if msg == WM_DESTROY:
+            return None
+        if msg != WM_NCHITTEST:
+            return None
+        cursor = _POINT()
+        if not _user32.GetCursorPos(ctypes.byref(cursor)):
+            return None
+        # 用父窗口 rect 判断是否在整窗边缘
+        rect = _RECT()
+        if not _user32.GetWindowRect(form_hwnd, ctypes.byref(rect)):
+            return None
+        m = _frame_thickness()
+        x = cursor.x - rect.left
+        y = cursor.y - rect.top
+        w = rect.right - rect.left
+        h = rect.bottom - rect.top
+        # 整窗边缘 → 返回 HTTRANSPARENT，让系统向父窗口询问
+        if y < m or y >= h - m or x < m or x >= w - m:
+            return HTTRANSPARENT
+        return None  # 非边缘 → WebView2 默认处理
 
     return handler
 
@@ -361,6 +474,11 @@ def _attach_strip_behaviors(form, strip, caption_hit=None) -> None:
 _CAPTION_H_DIP = 36     # 标题栏高度（逻辑像素，96 DPI 基准）
 _BTN_W_DIP = 46         # 单个按钮宽度（逻辑像素）
 _GLYPH_BOX_DIP = 10.0   # 符号盒边长（─ □ ✕ 共用）
+# 顶栏 / 账号区 / 下拉菜单统一字号（96 DPI 基准 pt）。WinForms 缺省 8.25pt
+# 的 MS Sans Serif 无 CJK 字形会回退宋体；9pt 雅黑在 125% 缩放下约 15 物理
+# 像素，与 Web 页正文（~15 CSS px ≈ 18.75 物理像素）并排明显偏小。10.5pt
+# 曾试装偏大（用户反馈），定为 10pt（≈16.7 物理像素），介于两者之间。
+_CHROME_FONT_PT = 10.0
 
 _BTN_ORDER = ("min", "max", "close")
 
@@ -571,16 +689,30 @@ class AccountChip:
     _MIN_W_DIP = 28.0      # 最小宽度（逻辑像素），避免「登录」两字太挤
     _CARET = " ▾"          # 有下拉菜单时附加的指示符
     _FG = None             # 延迟初始化的正文色
+    # 更新角标（ADR-007）：账号文案左侧的浅黄胶囊「有新版本，点击重启」
+    # + 状态圆点 + 分隔线 + 右箭头 + ✕（配色见 _draw_update_badge）。
+    _UPDATE_GAP_DIP = 10.0       # 角标与账号文案之间
+    _UPDATE_PAD_L_DIP = 10.0     # 药丸内左留白
+    _UPDATE_PAD_R_DIP = 6.0      # 药丸内右留白（✕ 之后）
+    _UPDATE_CLOSE_DIP = 16.0     # ✕ 命中盒边长
+    _UPDATE_CLOSE_GAP_DIP = 4.0  # 文案与 ✕ 之间
+    _UPDATE_H_DIP = 24.0         # 药丸高度（标题栏 36 内垂直居中）
+    _UPDATE_DOT_DIP = 6.0        # 状态圆点直径
+    _UPDATE_PAD2_DIP = 7.0       # 段落间 / 圆点后 留白
+    _UPDATE_SEP_DIP = 1.0        # 分隔线宽
+    _UPDATE_ARROW_DIP = 6.0      # 右箭头宽
+    _UPDATE_ARROW_GAP_DIP = 4.0  # 「点击重启」与箭头之间
 
     def __init__(self, form, strip, on_login=None, actions: dict | None = None) -> None:
         self._form = form
         self._strip = strip
         self._on_login = on_login
         self._actions = dict(actions or {})
-        self._font = _Font("Microsoft YaHei UI", 9.0)
+        self._font = _Font("Microsoft YaHei UI", _CHROME_FONT_PT)
         self._model: dict = {"label": "登录", "title": "登录 Tokengine 账号",
-                             "logged_in": False, "menu": None}
+                             "logged_in": False, "menu": None, "update": None}
         self._hover = False
+        self._hover_update: str | None = None   # None | "body" | "close"
         self._open = False
         self._closed_at = 0.0     # 上次下拉关闭时刻（monotonic 秒）——「再点一下=收起」守卫
         # 初始隐藏：splash 启动 / 登录门控页阶段不显示账号区（登录入口归
@@ -660,6 +792,42 @@ class AccountChip:
         label = str(self._model.get("label") or "")
         return label + self._CARET if self._model.get("menu") else label
 
+    def _update_model(self) -> dict | None:
+        """更新角标模型（None = 不显示角标）。"""
+        upd = self._model.get("update")
+        return upd if isinstance(upd, dict) and upd.get("label") else None
+
+    def _update_parts(self) -> tuple[str, str]:
+        """把文案拆成（「有新版本」, 「点击重启」）两段，缺段时补空。"""
+        label = str((self._update_model() or {}).get("label") or "")
+        parts = [p.strip() for p in label.split("，", 1)]
+        return (parts[0], parts[1]) if len(parts) == 2 else (parts[0], "")
+
+    def _update_width(self, s: float | None = None) -> int:
+        """角标宽度（圆点 + 两段文案 + 分隔线 + 箭头 + ✕ 盒 + 药丸内留白）。
+        无角标时 0。
+        """
+        upd = self._update_model()
+        if upd is None:
+            return 0
+        s = s if s is not None else self._scale()
+        first, second = self._update_parts()
+        w = round(self._UPDATE_PAD_L_DIP * s) + round(self._UPDATE_DOT_DIP * s)
+        if first:
+            w += round(self._UPDATE_PAD2_DIP * s)
+            w += int(_WF.TextRenderer.MeasureText(first, self._font).Width)
+        if second:
+            w += round(self._UPDATE_PAD2_DIP * s)      # 分隔线前
+            w += round(self._UPDATE_SEP_DIP * s)       # 分隔线宽
+            w += round(self._UPDATE_PAD2_DIP * s)      # 分隔线后
+            w += int(_WF.TextRenderer.MeasureText(second, self._font).Width)
+            w += round(self._UPDATE_ARROW_GAP_DIP * s)
+            w += round(self._UPDATE_ARROW_DIP * s)
+        w += round(self._UPDATE_CLOSE_GAP_DIP * s)
+        w += round(self._UPDATE_CLOSE_DIP * s)
+        w += round(self._UPDATE_PAD_R_DIP * s)
+        return w
+
     def _apply_metrics(self) -> None:
         """按当前文案重算宽度，并让条带右缩进为账号区 + 窗口按钮让位。"""
         try:
@@ -669,10 +837,11 @@ class AccountChip:
             else:
                 size = _WF.TextRenderer.MeasureText(
                     self._display_text(), self._font)
-                self._width = max(
-                    round(self._MIN_W_DIP * s),
-                    int(size.Width) + round(2 * self._PAD_X_DIP * s),
-                )
+                text_w = int(size.Width) + round(2 * self._PAD_X_DIP * s)
+                badge_w = self._update_width(s)
+                if badge_w:
+                    text_w += badge_w + round(self._UPDATE_GAP_DIP * s)
+                self._width = max(round(self._MIN_W_DIP * s), text_w)
             extra = self.extra_right_padding()
             w = self._btn_w(s)
             self._strip.Padding = _WF.Padding(round(6 * s), 0, 3 * w + extra, 0)
@@ -681,7 +850,7 @@ class AccountChip:
             log.exception("account chip metrics failed")
 
     def extra_right_padding(self) -> int:
-        """账号区占用的右侧宽度（含与窗口按钮之间 2px 呼吸缝）。"""
+        """账号区占用的右侧宽度（含与窗口按钮之间 2px 呼吸缝；角标已含在宽度里）。"""
         return self._width + round(2 * self._scale())
 
     def rect(self):
@@ -693,6 +862,41 @@ class AccountChip:
         right = self._strip.Width - 3 * self._btn_w(s)
         return (right - self._width, 0, right, h)
 
+    def _split_rect(self, r):
+        """把账号区矩形拆成（账号文案区, 更新角标区）；无角标时后者为 None。"""
+        s = self._scale()
+        badge_w = self._update_width(s)
+        if not badge_w:
+            return r, None
+        h = max(1, round(self._UPDATE_H_DIP * s))
+        top = r[1] + ((r[3] - r[1]) - h) // 2
+        badge = (r[0], top, r[0] + badge_w, top + h)
+        text = (badge[2] + round(self._UPDATE_GAP_DIP * s), r[1], r[2], r[3])
+        return text, badge
+
+    def _update_close_rect(self, badge):
+        """✕ 命中盒（药丸内右侧，垂直居中）。"""
+        s = self._scale()
+        box = round(self._UPDATE_CLOSE_DIP * s)
+        right = badge[2] - round(self._UPDATE_PAD_R_DIP * s)
+        mid = (badge[1] + badge[3]) // 2
+        return (right - box, mid - box // 2, right, mid - box // 2 + box)
+
+    def _update_hit(self, x, y) -> str | None:
+        """角标命中：'body'（点重启）/ 'close'（点 ✕）/ None。"""
+        r = self.rect()
+        if r is None:
+            return None
+        _, badge = self._split_rect(r)
+        if badge is None:
+            return None
+        if not (badge[0] <= x < badge[2] and badge[1] <= y < badge[3]):
+            return None
+        cl, ct, cr, cb = self._update_close_rect(badge)
+        if cl <= x < cr and ct <= y < cb:
+            return "close"
+        return "body"
+
     def hit(self, x, y) -> bool:
         r = self.rect()
         return bool(r and r[0] <= x < r[2] and r[1] <= y < r[3])
@@ -700,18 +904,48 @@ class AccountChip:
     # ---- 交互 ------------------------------------------------------------ #
     def _on_move(self, sender, e) -> None:
         try:
-            hot = self.hit(e.X, e.Y)
+            # 鼠标落在「更新角标」列区域内时不算账户 hover——避免给账号
+            # 文案段盖上灰色高亮（ADR-007：角标与账户区是两块独立可点区域）。
+            upd_hit = self._update_hit(e.X, e.Y)
+            in_chip = self.hit(e.X, e.Y)
+            # 角标存在时，角标列区域（x 在角标右边缘以左）整体不算账户 hover
+            if in_chip and self._update_model() is not None:
+                r = self.rect()
+                if r is not None:
+                    text_r, badge = self._split_rect(r)
+                    if badge is not None and e.X < text_r[0]:
+                        in_chip = False
+            hot = not upd_hit and in_chip
+            changed = False
             if hot != self._hover:
                 self._hover = hot
+                changed = True
+            if upd_hit != self._hover_update:
+                self._hover_update = upd_hit
+                changed = True
+            if changed:
                 self._strip.Invalidate()
+                if _WF is not None and self._strip is not None:
+                    if upd_hit:
+                        self._strip.Cursor = _WF.Cursors.Hand
+                    else:
+                        self._strip.Cursor = _WF.Cursors.Default
         except Exception:  # noqa: BLE001
             pass
 
     def _on_leave(self, sender, e) -> None:
         try:
+            changed = False
             if self._hover:
                 self._hover = False
+                changed = True
+            if self._hover_update:
+                self._hover_update = None
+                changed = True
+            if changed:
                 self._strip.Invalidate()
+                if _WF is not None:
+                    self._strip.Cursor = _WF.Cursors.Default
         except Exception:  # noqa: BLE001
             pass
 
@@ -719,6 +953,24 @@ class AccountChip:
         try:
             if e.Button != _WF.MouseButtons.Left or not self.hit(e.X, e.Y):
                 return
+            # 角标命中优先于账号菜单/登录（ADR-007）
+            upd_hit = self._update_hit(e.X, e.Y)
+            if upd_hit == "close":
+                # 乐观清除角标（sync 线程下一轮会推送确认）
+                self._model.pop("update", None)
+                self._hover_update = None
+                self._apply_metrics()
+                self._run(self._actions.get("update_dismiss"))
+                return
+            if upd_hit == "body":
+                self._run(self._actions.get("update_restart"))
+                return
+            # 角标存在时，点击角标列区域（药丸外但仍在角标 x 范围内）不触发账号菜单
+            r = self.rect()
+            if r is not None and self._update_model() is not None:
+                text_r, badge = self._split_rect(r)
+                if badge is not None and e.X < text_r[0]:
+                    return
             menu = self._model.get("menu")
             if menu and (menu.get("items") or menu.get("header")):
                 if self._dd is not None and self._dd.Visible:
@@ -758,9 +1010,21 @@ class AccountChip:
             p for p in (str(header.get("title") or ""), str(header.get("sub") or "")) if p
         )
         if head_text:
-            head = _WF.ToolStripMenuItem(head_text)
-            head.Enabled = False
-            dd.Items.Add(head)
+            if header.get("refresh_icon") and self._actions.get("refresh_user"):
+                # 头行升级为「文字 + ⟳ 刷新图标」（ToolStripMenuItem 自绘项，
+                # 见 _build_header_item）；构建失败回退普通禁用头行（菜单
+                # 结构不变，headless/headed 测试兼容）。
+                try:
+                    dd.Items.Add(self._build_header_item(dd, header))
+                except Exception:  # noqa: BLE001
+                    log.exception("header item build failed; fallback plain")
+                    head = _WF.ToolStripMenuItem(head_text)
+                    head.Enabled = False
+                    dd.Items.Add(head)
+            else:
+                head = _WF.ToolStripMenuItem(head_text)
+                head.Enabled = False
+                dd.Items.Add(head)
             dd.Items.Add(_WF.ToolStripSeparator())
         for it in menu.get("items") or []:
             if not isinstance(it, dict):
@@ -788,6 +1052,166 @@ class AccountChip:
         self._strip.Invalidate()
         # 菜单展开在账号区正下方（贴标题栏下缘），左缘对齐账号区
         dd.Show(self._strip, _Point(r[0], self._strip.Height))
+
+    def _build_header_item(self, dd, header):
+        """菜单头行升级版：「用户名 · 余额」＋ 右侧 ⟳ 刷新图标（可点击）。
+
+        实现选型（三轮实证后的定稿）：pythonnet 3.1.0 CLR 子类化失效，
+        不能派生 Control/Item；首版 ToolStripControlHost 承载 Panel 在实机
+        菜单里 Paint 不上屏（截图实证渲染为空白条）；二版 AutoSize=False
+        固定宽度又撞上 ToolStripDropDownMenu 整体尺寸按 item 文字
+        GetPreferredSize 计算的规则——固定宽度对它不可见，glyph 右缘被
+        dd 裁掉（probe 实证 dd 186 < item 188）。定稿回到本模块已实证的
+        原语——普通 ToolStripMenuItem + item.Paint 全量自绘（与悬停药丸
+        同一管线），并以「文字尾部垫 en-space」把 glyph 区留进 item 自然
+        宽度（probe 实证：8 个 en-space 使 GetPreferredSize/dd 宽同步
+        +32px，ASCII 空格同样计入；显式加宽 dd 会让其余行不拉伸，弃）。
+        要点：
+          * Paint 全量重绘：先铺菜单底色盖掉渲染器默认文本/悬停底色，再画
+            「标题 · 副文本」与 ⟳（280° 圆弧 + 切向箭头，免字体缺字风险）；
+          * 命中：仅 glyph 区可点（文字区维持头行惰性观感）。ToolStripItem
+            没有 MouseClick 事件且 Click 不带坐标，用全局光标位置换算 item
+            本地坐标做矩形命中；0.5s 去重兜底防双事件路径重复触发；
+          * glyph 矩形随 Paint 刷进 ``item.Tag``（宽度由 dd 布局最终决定，
+            构建期不可知），供 headed 冒烟测试程序化命中；
+          * 点击 ⟳ → 收起下拉 + 触发 refresh_user。
+        """
+        s = self._scale()
+        font = self._font
+        title = str(header.get("title") or "")
+        sub = str(header.get("sub") or "")
+        pad_l, gap, box, pad_r = round(10 * s), round(8 * s), round(20 * s), round(8 * s)
+        text = " · ".join(p for p in (title, sub) if p)
+        en_w = max(2, int(_WF.TextRenderer.MeasureText("\u2002", font).Width))
+        n_pad = max(2, math.ceil((gap + box + pad_r) / en_w))
+        state = {"hover": False, "last_fire": 0.0}
+
+        def _resolve_bg(it):
+            try:
+                return it.Owner.Renderer.ColorTable.ToolStripDropDownBackground
+            except Exception:  # noqa: BLE001  渲染器取色失败退通用菜单底色
+                return _Color.FromArgb(0xF0, 0xF0, 0xF0)
+
+        def glyph_rect(it):
+            iw, ih = int(it.Width), int(it.Height)
+            # glyph 盒不超行高-4（s=1.5 时 30px 盒在 28px 行里会被上下裁边）
+            box_eff = max(12, min(box, ih - 4))
+            return (iw - pad_r - box, (ih - box_eff) // 2, box_eff, box_eff)
+
+        def _draw_seg(g, it, text_seg, x, color):
+            size = _WF.TextRenderer.MeasureText(text_seg, font)
+            y = (int(it.Height) - int(size.Height)) // 2
+            _WF.TextRenderer.DrawText(g, text_seg, font, _Point(x, y), color)
+            return int(size.Width)
+
+        def local_pos(it):
+            """全局光标 → item 本地坐标（Click 事件不带坐标参数）。"""
+            try:
+                p = it.Owner.PointToClient(_WF.Cursor.Position)
+                b = it.Bounds
+                return (int(p.X) - int(b.X), int(p.Y) - int(b.Y))
+            except Exception:  # noqa: BLE001
+                return (-1, -1)
+
+        def _in_glyph(it, x, y) -> bool:
+            gl, gt, gw, gh = glyph_rect(it)
+            return gl <= x < gl + gw and gt <= y < gt + gh
+
+        def on_paint(sender, e) -> None:
+            try:
+                it = sender
+                g = e.Graphics
+                g.SmoothingMode = _SmoothingMode.AntiAlias
+                iw, ih = int(it.Width), int(it.Height)
+                # 全量重绘：先铺菜单底色，盖掉渲染器默认文本与悬停底色
+                g.FillRectangle(_SolidBrush(_resolve_bg(it)), 0, 0, iw + 1, ih + 1)
+                x = pad_l
+                if title:
+                    x += _draw_seg(g, it, title, x, _Color.FromArgb(0x11, 0x11, 0x11))
+                if sub:
+                    _draw_seg(g, it, (" · " if title else "") + sub, x,
+                              _Color.FromArgb(0x8A, 0x8A, 0x8A))
+                gl, gt, gw, gh = glyph_rect(it)
+                it.Tag = (gl, gt, gw, gh)   # 活几何外露（宽度由 dd 布局定）
+                if state["hover"]:
+                    g.FillEllipse(
+                        _SolidBrush(_Color.FromArgb(0xE9, 0xE9, 0xE9)),
+                        gl, gt, gw - 1, gh - 1,
+                    )
+                # ⟳ 自绘：280° 圆弧 + 切向箭头三角（免字体缺字风险，与
+                # 窗口按钮 ─□✕ 同一自绘路线）
+                col = (_Color.FromArgb(0x33, 0x33, 0x33) if state["hover"]
+                       else _Color.FromArgb(0x70, 0x70, 0x70))
+                pen = _Pen(col, max(1.0, 1.5 * s))
+                r = min(gw, gh) * 0.30
+                cx, cy = gl + gw / 2.0, gt + gh / 2.0
+                start_deg, sweep_deg = -50.0, 280.0
+                g.DrawArc(pen, int(cx - r), int(cy - r),
+                          int(2 * r), int(2 * r), int(start_deg), int(sweep_deg))
+                end_deg = math.radians(start_deg + sweep_deg)
+                ex, ey = cx + r * math.cos(end_deg), cy + r * math.sin(end_deg)
+                # GDI 角度顺时针（y 轴向下）：θ 增大方向的切向量
+                tx, ty = -math.sin(end_deg), math.cos(end_deg)
+                nx, ny = math.cos(end_deg), math.sin(end_deg)
+                ah, aw = 4.2 * s, 2.2 * s
+                g.FillPolygon(
+                    _SolidBrush(col),
+                    (
+                        _Point(int(ex + tx * ah), int(ey + ty * ah)),
+                        _Point(int(ex + nx * aw), int(ey + ny * aw)),
+                        _Point(int(ex - nx * aw), int(ey - ny * aw)),
+                    ),
+                )
+            except Exception:  # noqa: BLE001  头行绘制异常不外抛进 WinForms
+                log.exception("account header item paint failed")
+
+        def on_move(sender, e) -> None:
+            try:
+                it = sender
+                hot = _in_glyph(it, int(e.X), int(e.Y))
+                if hot != state["hover"]:
+                    state["hover"] = hot
+                    try:
+                        it.Cursor = _WF.Cursors.Hand if hot else _WF.Cursors.Default
+                    except Exception:  # noqa: BLE001  光标失败不影响命中
+                        pass
+                    it.Invalidate()
+            except Exception:  # noqa: BLE001
+                pass
+
+        def on_leave(sender, e) -> None:
+            try:
+                it = sender
+                if state["hover"]:
+                    state["hover"] = False
+                    it.Invalidate()
+            except Exception:  # noqa: BLE001
+                pass
+
+        def on_click(sender, e) -> None:
+            try:
+                it = sender
+                # 仅 glyph 区触发；文字区维持头行「惰性」观感，不关菜单
+                if not _in_glyph(it, *local_pos(it)):
+                    return
+                now = time.monotonic()
+                if now - state["last_fire"] < 0.5:
+                    return  # 去重兜底：防多事件路径重复触发刷新
+                state["last_fire"] = now
+                self.close_dropdown()
+                handler = self._actions.get("refresh_user")
+                if handler is not None:
+                    self._run(handler)
+            except Exception:  # noqa: BLE001
+                log.exception("header refresh click failed")
+
+        head = _WF.ToolStripMenuItem(text + "\u2002" * n_pad)
+        head.Enabled = True   # 需启用才有 Click；观感由上面自绘全权接管
+        head.Paint += on_paint
+        head.MouseMove += on_move
+        head.MouseLeave += on_leave
+        head.Click += on_click
+        return head
 
     def _on_dd_opened(self, sender, e) -> None:
         try:
@@ -818,13 +1242,15 @@ class AccountChip:
                     or clip.Bottom <= r[1] or clip.Top >= r[3]):
                 return
             g = e.Graphics
+            text_r, badge = self._split_rect(r)
             if self._hover or self._open:
                 s = self._scale()
-                # 内缩药丸形高亮（与菜单条圆角项一致），命中区仍是完整矩形
-                x = r[0] + round(1 * s)
-                y = r[1] + round(3 * s)
-                w = (r[2] - r[0]) - round(2 * s)
-                h = (r[3] - r[1]) - round(6 * s)
+                # 内缩药丸形高亮（与菜单条圆角项一致），命中区仍是完整矩形；
+                # 有角标时只高亮账号文案那一段，别把黑色角标盖成灰底
+                x = text_r[0] + round(1 * s)
+                y = text_r[1] + round(3 * s)
+                w = (text_r[2] - text_r[0]) - round(2 * s)
+                h = (text_r[3] - text_r[1]) - round(6 * s)
                 if w > 2 and h > 2:
                     path = _round_path(
                         (x, y, w, h), min(max(2, round(5 * s)), h // 2)
@@ -833,18 +1259,109 @@ class AccountChip:
                     g.FillPath(
                         _SolidBrush(_Color.FromArgb(0xE9, 0xE9, 0xE9)), path
                     )
+            if badge is not None:
+                self._draw_update_badge(g, badge)
             text = self._display_text()
             size = _WF.TextRenderer.MeasureText(text, self._font)
-            tx = r[0] + ((r[2] - r[0]) - int(size.Width)) // 2
+            tx = text_r[0] + ((text_r[2] - text_r[0]) - int(size.Width)) // 2
             ty = r[1] + ((r[3] - r[1]) - int(size.Height)) // 2
             if AccountChip._FG is None:
                 AccountChip._FG = _Color.FromArgb(17, 17, 17)
             _WF.TextRenderer.DrawText(
-                g, text, self._font, _Point(max(r[0], tx), max(r[1], ty)),
+                g, text, self._font, _Point(max(text_r[0], tx), max(r[1], ty)),
                 AccountChip._FG,
             )
         except Exception:  # noqa: BLE001
             log.exception("account chip paint failed")
+
+    def _draw_update_badge(self, g, badge) -> None:
+        """画「有新版本，点击重启」浅黄胶囊（用户定色 #FEF3C7 / #B45309）。
+
+        布局（从左到右）：状态圆点 → 「有新版本」 → 分隔线 → 「点击重启」
+        → 右箭头 → ✕。底 #FEF3C7、边框 #E9D99E、悬停 #F9E3A9；
+        文案两段 + 箭头同 #B45309 深橙；圆点 #D97706 琥珀；
+        分隔线 #E2C98F、✕ #A16207。整块文字一起用 TextRenderer 绘制
+        （各段单独着色），右箭头与 ✕ 用线条画（免缺字）。
+        """
+        s = self._scale()
+        text = str((self._update_model() or {}).get("label") or "")
+        first, second = self._update_parts()
+        hot = self._hover_update
+        g.SmoothingMode = _SmoothingMode.AntiAlias
+        BX, BY, BW, BH = badge
+        radius = (BH - BY) // 2
+        path = _round_path((BX, BY, BW - BX, BH - BY), max(2, radius))
+        # 底色随悬停：主体 hover 画深一档浅黄（用户定色 #FEF3C7）
+        g.FillPath(
+            _SolidBrush(_Color.FromArgb(0xF9, 0xE3, 0xA9) if hot else
+                         _Color.FromArgb(0xFE, 0xF3, 0xC7)),
+            path,
+        )
+        # 边框（同色系深一档）
+        pen_border = _Pen(_Color.FromArgb(0xE9, 0xD9, 0x9E), max(1.0, round(s)))
+        g.DrawPath(pen_border, path)
+
+        cx = BX + round(self._UPDATE_PAD_L_DIP * s)
+        # 状态圆点（紧贴左内边距）
+        dot = round(self._UPDATE_DOT_DIP * s)
+        top = BY + (BH - BY - dot) // 2
+        g.FillEllipse(
+            _SolidBrush(_Color.FromArgb(0xD9, 0x77, 0x06)),
+            cx, top, dot, dot,
+        )
+        cx += dot
+        # 「有新版本」 深灰绿
+        first = first or text
+        if first:
+            fs = _WF.TextRenderer.MeasureText(first, self._font)
+            fty = BY + ((BH - BY) - int(fs.Height)) // 2
+            ftx = cx + round(self._UPDATE_PAD2_DIP * s)
+            _WF.TextRenderer.DrawText(
+                g, first, self._font, _Point(ftx, fty),
+                _Color.FromArgb(0xB4, 0x53, 0x09),
+            )
+            cx = ftx + int(fs.Width)
+        # 分隔线 + 「点击重启」 + 右箭头（两段式才画）
+        if second:
+            cx += round(self._UPDATE_PAD2_DIP * s)
+            sep_x = cx
+            sepd = round(self._UPDATE_SEP_DIP * s)
+            sy = BY + round(6 * s)
+            g.FillRectangle(
+                _SolidBrush(_Color.FromArgb(0xE2, 0xC9, 0x8F)),
+                sep_x, sy, max(1, sepd), (BH - BY) - 2 * round(6 * s),
+            )
+            cx = sep_x + sepd + round(self._UPDATE_PAD2_DIP * s)
+            ss = _WF.TextRenderer.MeasureText(second, self._font)
+            sty = BY + ((BH - BY) - int(ss.Height)) // 2
+            _WF.TextRenderer.DrawText(
+                g, second, self._font, _Point(cx, sty),
+                _Color.FromArgb(0xB4, 0x53, 0x09),
+            )
+            cx = cx + int(ss.Width)
+            # 右箭头（线条，橙色）
+            ax0 = cx + round(self._UPDATE_ARROW_GAP_DIP * s)
+            ah = round(self._UPDATE_ARROW_DIP * s)
+            amid = BY + (BH - BY) // 2
+            pen_a = _Pen(_Color.FromArgb(0xB4, 0x53, 0x09), max(1.0, round(s)))
+            g.DrawLine(pen_a, ax0, amid, ax0 + ah, amid)
+            g.DrawLine(pen_a, ax0 + round(0.35 * ah), amid - round(0.35 * ah),
+                       ax0 + ah, amid)
+            g.DrawLine(pen_a, ax0 + round(0.35 * ah), amid + round(0.35 * ah),
+                       ax0 + ah, amid)
+
+        # ✕（深琥珀 #A16207）
+        cl, ct, cr, cb = self._update_close_rect(badge)
+        if hot == "close":
+            g.FillEllipse(
+                _SolidBrush(_Color.FromArgb(46, 255, 255, 255)),
+                cl, ct, cr - cl - 1, cb - ct - 1,
+            )
+        pen = _Pen(_Color.FromArgb(0xA1, 0x62, 0x07), max(1.0, round(s)))
+        half = round(3.2 * s)
+        cxm, cym = (cl + cr) / 2.0, (ct + cb) / 2.0
+        g.DrawLine(pen, cxm - half, cym - half, cxm + half, cym + half)
+        g.DrawLine(pen, cxm + half, cym - half, cxm - half, cym + half)
 
 
 # --------------------------------------------------------------------------- #
@@ -994,6 +1511,37 @@ def _attach_menu_hover_paint(item) -> None:
         item.Paint += on_paint
     except Exception:  # noqa: BLE001
         log.exception("menu hover paint attach failed")
+
+
+_CHECK_ON = " ✓"   # 空格 + ✓（跟在标题后面）
+_CHECK_OFF = ""      # 后缀方案文字起始位置不变，勾选态切换不会左右跳，无需占位
+
+
+def _menu_check_text(entry) -> str:
+    """按 state_provider 生成可勾选菜单项文字（标题后跟 ✓ 表示已勾选）。"""
+    try:
+        on = bool(entry.state_provider())
+    except Exception:  # noqa: BLE001  外部真相源失败按未勾选处理
+        log.exception("menu check state read failed")
+        on = False
+    return entry.title + (_CHECK_ON if on else _CHECK_OFF)
+
+
+def _sync_checkable_items(dd) -> None:
+    """下拉展开前重读可勾选项状态（注册表等外部真相源），刷新文字 ✓ 后缀。
+
+    不用原生 Checked：下拉统一 ShowImageMargin=False，原生勾选列不渲染，
+    自绘 ✓ 需处理 DPI/悬停重绘；文本后缀方案零自绘，且随 item.Text 一起走
+    默认渲染与悬停重绘两条路径。
+    """
+    try:
+        for item in dd.Items:
+            entry = getattr(item, "Tag", None)
+            if entry is None:
+                continue
+            item.Text = _menu_check_text(entry)
+    except Exception:  # noqa: BLE001
+        log.exception("check state sync failed")
 
 
 # --------------------------------------------------------------------------- #
@@ -1174,11 +1722,19 @@ def _install_outside_click_filter() -> None:
 # 菜单条构建                                                                    #
 # --------------------------------------------------------------------------- #
 def _convert_entry(entry):
-    """pywebview Menu 项 → WinForms ToolStripMenuItem（递归）。"""
+    """pywebview Menu 项 → WinForms ToolStripMenuItem（递归）。
+
+    MenuAction 带 ``state_provider``（menubar.MenuCheck）时构建为可勾选项：
+    文字后缀「 ✓」表示勾选态，初始值读一次，之后每次下拉展开前由
+    _sync_checkable_items 重读（注册表等外部真相源），点击动作照常后台线程执行。
+    """
     if entry is None or isinstance(entry, MenuSeparator):
         return _WF.ToolStripSeparator()
     if isinstance(entry, MenuAction):
         item = _WF.ToolStripMenuItem(entry.title)
+        if callable(getattr(entry, "state_provider", None)):
+            item.Text = _menu_check_text(entry)
+            item.Tag = entry  # 供 _sync_checkable_items 识别
         item.Click += (
             lambda _s, _e, fn=entry.function: threading.Thread(
                 target=fn, daemon=True
@@ -1204,6 +1760,30 @@ def _chip_right_pad() -> int:
     return _ACCOUNT_CHIP.extra_right_padding() if _ACCOUNT_CHIP else 0
 
 
+def _apply_dropdown_font(item, font):
+    """给菜单项的下拉（含嵌套子菜单）统一设置字体。
+
+    ToolStripDropDownMenu 不显式设 ``Font`` 时继承 WinForms 默认
+    8.25pt「Microsoft Sans Serif」——该字体无中文字形，GDI 回退宋体渲染，
+    比顶栏 9pt 雅黑明显小一圈且发虚。账号区下拉（ContextMenuStrip）一直
+    显式设了字体，所以只有菜单栏下拉观感异常。
+
+    分隔线等没有 ``DropDown`` 属性的项直接跳过；任何失败都不拦构建。
+    """
+    try:
+        dd = item.DropDown
+    except Exception:  # noqa: BLE001  ToolStripSeparator 无该属性
+        return
+    if dd is None:
+        return
+    try:
+        dd.Font = font
+        for child in item.DropDownItems:
+            _apply_dropdown_font(child, font)
+    except Exception:  # noqa: BLE001  字体兜底不拦构建
+        log.exception("dropdown font apply failed")
+
+
 def _build_menu_strip(form, menu_list):
     scale = _dpi_scale(form)
     cap_h = max(1, round(_CAPTION_H_DIP * scale))
@@ -1218,7 +1798,17 @@ def _build_menu_strip(form, menu_list):
     strip.Height = cap_h
     strip.ShowItemToolTips = False
     strip.BackColor = _Color.White
-    strip.Font = _Font("Microsoft YaHei UI", 9.0)
+    # 关键：WinForms 会把 Dock=Top 的 MenuStrip.Height 叠加到 Form.MinimumSize
+    # 上，导致哪怕 Form.MinimumSize=(0,0)，实际最小高度仍被推高到菜
+    # 单条高度+WebView2 最小高度。显式清零子控件 MinimumSize 阻断叠加链。
+    try:
+        strip.MinimumSize = _Size(0, 0)
+    except Exception:
+        pass
+    # 顶栏与全部下拉共用一份字体实例（WinForms 控件不拥有赋值的 Font，
+    # 共享是标准做法）：下拉不显式设字体会继承默认 8.25pt 宋体回退观感。
+    menu_font = _Font("Microsoft YaHei UI", _CHROME_FONT_PT)
+    strip.Font = menu_font
     # 右侧让出 3 个按钮宽度，菜单项永远不会钻到按钮下面
     strip.Padding = _WF.Padding(round(6 * scale), 0, 3 * btn_w, 0)
 
@@ -1243,8 +1833,12 @@ def _build_menu_strip(form, menu_list):
                 dd.ShowImageMargin = False
                 dd.DropShadowEnabled = False
                 dd.Opened += _make_dropdown_shape_handler(dd, scale)
+                # 展开前同步可勾选项（如「开机自启动」）的 ✓ 后缀
+                dd.Opening += (lambda _s, _e, _dd=dd: _sync_checkable_items(_dd))
         except Exception:  # noqa: BLE001  圆角失败退回原生方角，不拦构建
             log.exception("dropdown rounding wire failed")
+        # 下拉（含嵌套子菜单）与顶栏同字号同字体——分隔线会在此静默跳过
+        _apply_dropdown_font(converted, menu_font)
 
     # 绘制顺序 = 订阅顺序：白底 → 窗口按钮 → 底部分隔线（最后覆盖保证连贯）
     brush = _SolidBrush(_Color.White)
@@ -1302,8 +1896,9 @@ def _build_menu_strip(form, menu_list):
     # 菜单条自己的句柄钩子：顶边/左右边缘保持系统缩放（按钮区除外）
     try:
         hwnd_strip = int(strip.Handle.ToInt64())
+        hwnd_form = int(form.Handle.ToInt64())
         _install_hook(
-            hwnd_strip, _make_strip_handler(hwnd_strip, caption_hit)
+            hwnd_strip, _make_strip_handler(hwnd_strip, hwnd_form, strip, caption_hit)
         )
     except Exception:  # noqa: BLE001
         log.exception("strip hook failed (top-edge resize may be limited)")
@@ -1382,7 +1977,67 @@ def install_windows_shell_menu() -> bool:
             _install_hook(hwnd, _make_form_handler(hwnd))
             # 窗口可见前重算非客户区 → 标题栏无声消失，无闪烁
             _user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, SWP_FRAME_RECALC)
-            log.info("chrome: custom frame installed (hwnd=0x%X)", hwnd)
+
+            # 强制 MinimumSize：先让 WM_GETMINMAXINFO 钩子也知道目标值（物理像素），
+            # 再在 Load/Shown 事件里双重硬推，覆盖 MenuStrip 叠加、WebView2 自带
+            # 最小尺寸、WinForms layout pass 等一切后续覆盖源。
+            mn = form.pywebview_window.min_size
+            scale = form._scale
+            target = _Size(int(mn[0] * scale), int(mn[1] * scale))
+            _HWND_MIN[hwnd] = (target.Width, target.Height)
+
+            def _zero_min_children(ctrl):
+                """递归清零所有子控件 MinimumSize，阻断 WinForms 叠加链。"""
+                try:
+                    ctrl.MinimumSize = _Size(0, 0)
+                except Exception:
+                    pass
+                try:
+                    for c in ctrl.Controls:
+                        _zero_min_children(c)
+                except Exception:
+                    pass
+
+            def _apply_min(*_):
+                try:
+                    _zero_min_children(form)
+                    form.MinimumSize = target
+                except Exception:
+                    pass
+
+            def _install_webview_hook(*_):
+                """在 WebView2 控件上安装 WM_NCHITTEST 钩子。"""
+                try:
+                    # 递归查找 WebView2 控件
+                    def find_webview(ctrl):
+                        ctrl_type = str(type(ctrl).__name__)
+                        if 'WebView2' in ctrl_type or 'Edge' in ctrl_type or 'Chromium' in ctrl_type:
+                            return ctrl
+                        try:
+                            for c in ctrl.Controls:
+                                result = find_webview(c)
+                                if result:
+                                    return result
+                        except Exception:
+                            pass
+                        return None
+                    
+                    webview_ctrl = find_webview(form)
+                    if webview_ctrl:
+                        webview_hwnd = int(webview_ctrl.Handle.ToInt64())
+                        _install_hook(webview_hwnd, _make_webview_handler(hwnd))
+                        log.info("chrome: webview hook installed (hwnd=0x%X)", webview_hwnd)
+                except Exception:
+                    log.exception("webview hook install failed")
+
+            form.Load += _apply_min
+            form.Shown += _apply_min
+            form.Shown += _install_webview_hook
+
+            log.info(
+                "chrome: custom frame installed (hwnd=0x%X, min_size=%d×%d)",
+                hwnd, target.Width, target.Height,
+            )
         except Exception:  # noqa: BLE001  失败则退回系统标题栏，不影响启动
             log.exception("custom frame install failed; system title bar kept")
 

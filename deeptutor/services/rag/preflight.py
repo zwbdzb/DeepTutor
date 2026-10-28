@@ -51,13 +51,20 @@ def _active_embedding() -> tuple[str | None, int]:
 
 
 def _llamaindex_preflight() -> dict:
+    # A declared dimension is optional metadata for this engine: the pipeline
+    # derives the real dimension from the vectors it receives (and an
+    # undeclared one is simply not sent as a ``dimensions`` request param).
+    # The gateway is model + endpoint + key, which ``_active_embedding``
+    # already fails closed on, so dim == 0 means "auto", not "unconfigured".
     emb_model, emb_dim = _active_embedding()
     checks = [
         _check(
             "embedding",
             "Active embedding model",
-            bool(emb_model) and emb_dim > 0,
-            f"{emb_model} · {emb_dim}d" if emb_model else "Configure one in the model catalog.",
+            bool(emb_model),
+            f"{emb_model} · {emb_dim}d"
+            if emb_model and emb_dim > 0
+            else (emb_model or "Configure one in the model catalog."),
         )
     ]
     try:

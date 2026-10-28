@@ -67,39 +67,14 @@ else:
     LOCALAPPDATA = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
 
 
-def _migrate_legacy_dir(legacy: Path, target: Path) -> Path:
-    """品牌迁移（EduBuddy -> ThinkBuddy）：旧目录一次性改名到新目录。
-
-    - 旧目录不存在 / 新目录已存在 → 直接用新目录（新装或已迁移过）。
-    - rename 失败（被占用/权限）→ 沿用旧目录，行为与旧版一致，绝不丢数据。
-    - 同盘 rename 是元数据操作，瞬时完成；auth.json / runtime 缓存 /
-      工作区学习数据随目录整体迁移，登录态与数据无缝延续。
-    """
-    if not legacy.exists() or target.exists():
-        return target
-    try:
-        legacy.rename(target)
-        log.info("migrated legacy dir %s -> %s", legacy, target)
-        return target
-    except OSError:
-        log.warning("cannot migrate %s (locked?) — keeping legacy path", legacy)
-        return legacy
-
-
 # Overridable for tests / portable (USB) installs.
 _env_root = os.environ.get("DEEPTUTOR_DESKTOP_ROOT")
-ROOT = (
-    Path(_env_root) if _env_root
-    else _migrate_legacy_dir(LOCALAPPDATA / "EduBuddy", LOCALAPPDATA / "ThinkBuddy")
-)
+ROOT = Path(_env_root) if _env_root else LOCALAPPDATA / "ThinkBuddy"
 RUNTIME = ROOT / "runtime"
 MANAGED_VENV = RUNTIME / "venv"
 NODE_RUNTIME = RUNTIME / "node"
 _env_home = os.environ.get("DEEPTUTOR_DESKTOP_HOME")
-WORKSPACE_HOME = (
-    Path(_env_home) if _env_home
-    else _migrate_legacy_dir(Path.home() / "EduBuddy", Path.home() / "ThinkBuddy")
-)
+WORKSPACE_HOME = Path(_env_home) if _env_home else Path.home() / "ThinkBuddy"
 
 # Where the PyInstaller bundle keeps an embedded runtime.zip (onefile build)
 # or extracted tree (onedir build). sys._MEIPASS works for both.
@@ -323,8 +298,15 @@ def resolve_deeptutor_version() -> str | None:
 
 
 def _read_distinfo_version(site: Path) -> str | None:
-    """从 site-packages 的 deeptutor-*.dist-info/METADATA 里读版本号。"""
+    """从 site-packages 的 deeptutor-*.dist-info/METADATA 里读版本号。
+
+    可能同时存在多份 dist-info（旧版 pip 覆盖安装未卸载干净会留下残留），
+    这里取**版本最大**的一份，而不是排序后的第一份——否则残留的旧元数据
+    （如 1.6.14）会遮蔽真实版本（1.6.15），导致关于页显示倒退。
+    """
     try:
+        best: tuple[int, ...] | None = None
+        best_version: str | None = None
         for dist in sorted(site.glob("deeptutor-*.dist-info")):
             meta = dist / "METADATA"
             if not meta.exists():
@@ -332,11 +314,12 @@ def _read_distinfo_version(site: Path) -> str | None:
             for line in meta.read_text(encoding="utf-8", errors="replace").splitlines():
                 if line.startswith("Version:"):
                     version = line.split(":", 1)[1].strip()
-                    if version:
-                        return version
+                    if version and (best is None or _version_key(version) > best):
+                        best, best_version = _version_key(version), version
+                    break
     except OSError:
         return None
-    return None
+    return best_version
 
 
 # -- provisioning ------------------------------------------------------------ #

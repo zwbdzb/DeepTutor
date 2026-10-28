@@ -51,6 +51,21 @@ DIST = ROOT / "dist"
 # PIP_INDEX_URL（或代理）时以用户为准（见 install_deeptutor 的 setdefault）。
 DEFAULT_PIP_INDEX_URL = "https://pypi.tuna.tsinghua.edu.cn/simple"
 
+# 打包时随本地源一起装进离线 runtime 的 pyproject extras。
+# math-animator → manim（数学动画/可视化）。刻意不带系统级依赖：
+# manim>=0.19 的视频编码走 PyAV（自带 ffmpeg 库，无需系统 ffmpeg）；
+# math_animator 的生成 prompt 默认禁用 Tex/MathTex（非 LaTeX 渲染路径），
+# 因此运行时无需捆绑 LaTeX 发行版。
+# 增删 extras 会改变 dependencies_signature() → 自动触发下次构建全量重装。
+PIP_EXTRAS: tuple[str, ...] = ("math-animator",)
+
+# 每个 extra 装进 runtime 后必须可 find_spec 的模块（smoke_test 门禁用）。
+# 键必须与 PIP_EXTRAS 一一对应：新增 extra 而不配门禁模块会在构建期直接报错，
+# 而不是静默漏装（scipy/av 是 manim>=0.19 的传递依赖，已核实 PyPI 元数据）。
+EXTRA_SMOKE_MODULES: dict[str, tuple[str, ...]] = {
+    "math-animator": ("manim", "scipy", "av"),
+}
+
 
 def _read_source_version(source_root: Path) -> str:
     """读本地源 deeptutor/__version__.py 的 __version__（版本门禁的基准值）。"""
@@ -63,6 +78,22 @@ def _read_source_version(source_root: Path) -> str:
     if not m:
         raise SystemExit(f"cannot parse __version__ from {vf}")
     return m.group(1)
+
+
+def _distinfo_metadata_version(dist: Path) -> str | None:
+    """读 dist-info/METADATA 的 Version 字段；读不到或解析失败返回 None。"""
+    meta = dist / "METADATA"
+    if not meta.is_file():
+        return None
+    try:
+        for line in meta.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.startswith("Version:"):
+                value = line.split(":", 1)[1].strip()
+                return value or None
+    except OSError:
+        return None
+    return None
+
 
 # Relocatable runtime components (edit to bump versions).
 # Windows 用 python.org embeddable + node win-x64 zip；
@@ -270,7 +301,8 @@ def _staging_py_exe(target: Path) -> Path:
 
 
 def install_deeptutor(target: Path, source_root: Path, *,
-                      with_deps: bool = True) -> None:
+                      with_deps: bool = True,
+                      extras: tuple[str, ...] = PIP_EXTRAS) -> None:
     """pip install --target 把【本地源】的 deeptutor 装进 embeddable 的 site-packages。
 
     注意：刻意安装本地源路径而非 PyPI 包名——PyPI 版本滞后且不含自研修复。
@@ -278,6 +310,10 @@ def install_deeptutor(target: Path, source_root: Path, *,
 
     with_deps=False（快速路径）：依赖声明未变时只装我们自己的包，跳过 ~500MB
     第三方依赖树的重新解析/下载/复制。
+    extras：随本地源一起安装的 pyproject extras（默认 PIP_EXTRAS，即
+    math-animator → manim），pip 目标写成 `<source_root>[extra1,extra2]`；
+    传 () 则退化为纯本地源安装。--no-deps 快速路径下 extras 照传（--no-deps
+    不会装 extras 的依赖树，但两条路径命令保持一致，避免行为漂移）。
     """
     if BUILD_PY is None or not BUILD_PY.exists():
         raise SystemExit("no cp312 build interpreter found (set BUILD_PY=...py)")
@@ -292,6 +328,8 @@ def install_deeptutor(target: Path, source_root: Path, *,
     dest = _py_site_packages(target)
     dest.mkdir(parents=True, exist_ok=True)
     desc = "deeptutor + full deps" if with_deps else "deeptutor only (--no-deps fast path)"
+    if extras:
+        desc += f" + extras[{','.join(extras)}]"
     log(f"pip installing {desc} from LOCAL SOURCE {source_root} ...")
     env = dict(os.environ)
     # setdefault：用户已设置镜像/代理时尊重用户，没有才落默认国内镜像。
@@ -300,9 +338,13 @@ def install_deeptutor(target: Path, source_root: Path, *,
     env.setdefault("PIP_DEFAULT_TIMEOUT", "60")
     log(f"pip index: {env['PIP_INDEX_URL']}")
 
+    # pip 对本地目录的 extras 语法：D:\path\proj[extra1,extra2]（列表传参，
+    # 无 shell，无需引号转义）。
+    spec = f"{source_root}[{','.join(extras)}]" if extras else str(source_root)
+
     def _pip(extra: list[str]) -> subprocess.CompletedProcess:
         cmd = [str(BUILD_PY), "-m", "pip", "install", "--upgrade", "--no-compile",
-               "--target", str(dest), *extra, str(source_root)]
+               "--target", str(dest), *extra, spec]
         return subprocess.run(cmd, capture_output=True, text=True, env=env)
 
     # --no-build-isolation：BUILD_PY 里已有 setuptools 时跳过每次建临时
@@ -346,15 +388,67 @@ def version_gate(target: Path, expected: str) -> str:
     return actual
 
 
-def smoke_test(py_exe) -> None:
-    import importlib.util
+def smoke_test(py_exe: Path) -> None:
+    """staging 冒烟测试：自家包可 import + PIP_EXTRAS 关键模块存在。
 
+    extras 门禁用 importlib.util.find_spec 轻量探测（不真正 import manim——
+    它导入重且在无显示环境可能引入变数），缺任一声明模块即 SystemExit，
+    防止「extras 没装上但整条构建链路静默通过」。PIP_EXTRAS 为空时门禁
+    自然跳过（与安装逻辑联动）。
+    """
     code = (
         "import deeptutor_cli, deeptutor, deeptutor_web; "
         "print('runtime imports OK:', deeptutor_cli.__file__)"
     )
     res = subprocess.run([str(py_exe), "-c", code], capture_output=True, text=True, timeout=120)
     log("import check: " + (res.stdout.strip() or res.stderr.strip()))
+
+    if not PIP_EXTRAS:
+        return
+    # {模块: 所属 extra} 映射；extra 缺门禁声明属于配置错误，宁可构建失败，
+    # 不可静默跳过校验（与「防静默漏装」同一原则）。
+    mapping: dict[str, str] = {}
+    for extra in PIP_EXTRAS:
+        mods = EXTRA_SMOKE_MODULES.get(extra)
+        if not mods:
+            raise SystemExit(
+                f"EXTRAS GATE CONFIG ERROR: extra {extra!r} has no modules declared "
+                f"in EXTRA_SMOKE_MODULES; declare them or drop the extra."
+            )
+        for mod in mods:
+            mapping[mod] = extra
+    # find_spec 必须在 staging python 里跑（探测 runtime 的实际安装面）。
+    # mapping 以字面量内嵌进 -c 代码，避免命令行传参的引号/转义问题。
+    probe = (
+        "import importlib.util, json; "
+        f"mapping = {mapping!r}; "
+        "missing = {m: e for m, e in mapping.items() "
+        "if importlib.util.find_spec(m) is None}; "
+        "print(json.dumps(missing))"
+    )
+    res = subprocess.run([str(py_exe), "-c", probe],
+                         capture_output=True, text=True, timeout=120)
+    if res.returncode != 0:
+        raise SystemExit(
+            "EXTRAS GATE FAILED: probe script errored in staging python.\n"
+            f"{(res.stderr or '').strip()[-2000:]}"
+        )
+    try:
+        missing = json.loads((res.stdout or "").strip() or "{}")
+    except ValueError:
+        raise SystemExit(
+            f"EXTRAS GATE FAILED: cannot parse probe output {res.stdout!r}.\n"
+            f"{(res.stderr or '').strip()[-2000:]}"
+        )
+    if missing:
+        detail = "; ".join(f"{mod} (extra: {extra})"
+                           for mod, extra in sorted(missing.items()))
+        raise SystemExit(
+            f"EXTRAS GATE FAILED: modules missing from runtime: {detail}.\n"
+            f"extras {list(PIP_EXTRAS)} 未装进 runtime（漏装或被 prune 误删）；"
+            f"用 --clean 或 --force-deeptutor 触发全量重装。"
+        )
+    log(f"extras gate OK: {sorted(mapping)} present for extras {list(PIP_EXTRAS)}")
 
 
 # Runtime packages that are safe to drop from a packaged install:
@@ -393,6 +487,39 @@ def prune_runtime(site_packages: Path) -> None:
             shutil.rmtree(entry, ignore_errors=True) if p.is_dir() else p.unlink(missing_ok=True)
             log(f"pruned: {p.name} ({mb:.1f} MB)")
     log(f"prune done, freed ~{removed_mb:.1f} MB")
+
+
+def precompile_site_packages(target: Path) -> None:
+    """打包期预编译 staging site-packages 全量 .pyc（2026-10-24 首启提速）。
+
+    背景：pip --no-compile 装出的是纯源码树，原样打进安装包后，用户机每次
+    首启（更新后尤甚）都要现场编译全部字节码——用户机 1.6.15 更新事故实证：
+    后端导入 4 分钟以上未监听，撞穿 launcher 60s 就绪超时，壳弹「启动失败」
+    横幅。改为构建期用 staging 自带解释器（cp312）编译，pyc 随包分发；
+    Inno / ditto 均保留文件 mtime，pyc 的 mtime+size 校验跨机依然有效，
+    用户机首启不再付编译成本。
+
+    幂等：compileall 对已是最新（mtime+size 匹配）的 pyc 直接跳过，增量
+    重跑只编译缺失/失效的文件，rebrand 改写后的二次调用成本可忽略。
+
+    个别文件编译失败只意味着它没有 pyc（运行时回退源码导入，与
+    --no-compile 现状等价），记录后继续，不让整个构建失败。
+    """
+    sp = _py_site_packages(target)
+    if not sp.is_dir():
+        log("precompile: site-packages missing, skip")
+        return
+    py_exe = _staging_py_exe(target)
+    log(f"precompiling bytecode for {sp} ...")
+    res = subprocess.run(
+        [str(py_exe), "-m", "compileall", "-q", "-j", "0", str(sp)],
+        capture_output=True, text=True, timeout=1800,
+    )
+    if res.returncode != 0:
+        log(f"precompile finished with errors (rc={res.returncode}); "
+            f"tail: {(res.stderr or res.stdout or '').strip()[-800:]}")
+    else:
+        log("precompile OK")
 
 
 def _prepared(py: Path, node: Path) -> bool:
@@ -461,12 +588,77 @@ def source_fingerprint(source_root: Path, *, strict: bool = False) -> str:
     return digest.hexdigest()
 
 
+def _dependency_relevant_payload(source_root: Path) -> bytes | None:
+    """提取 pyproject.toml 中真正影响依赖安装面的字段（canonical JSON 编码）。
+
+    整文件哈希的教训（2026-10-24 CI 实证，macOS x86_64 job 11m11s）：pyproject
+    里的 ruff/black/pytest/mypy/bandit 工具配置、description、scripts、
+    entry-points 与依赖安装毫无关系，但任何一个字符的改动都会让 deps_sig 变化
+    → CI 缓存 restore-keys 恢复旧 staging 后 site-packages 被整体清空 + 全量
+    重装（Intel runner 上多花 5-7 分钟）。改为只哈希 pip 对
+    `<source>[PIP_EXTRAS]` 这条安装命令实际解析的字段：
+
+      [build-system].requires / .build-backend   — 隔离构建环境的内容
+      [project].requires-python                  — 环境标记求值基准
+      [project].dependencies                     — 主依赖集
+      [project.optional-dependencies][extra]     — 仅 PIP_EXTRAS 声明的 extra
+
+    其余段落（工具配置等）的改动只影响源码指纹（pyproject.toml 本身在
+    _iter_source_files 里），走 --no-deps 快速路径秒装，不再触发全量重装。
+    解析失败（tomllib 不可用 / TOML 语法错误）返回 None，调用方回退整文件
+    哈希——保守方向多重装，绝不漏装。
+    """
+    try:
+        import tomllib
+    except ImportError:
+        return None
+    pyproject = source_root / "pyproject.toml"
+    try:
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - malformed TOML: fall back to whole file
+        return None
+    build_system = data.get("build-system", {}) or {}
+    project = data.get("project", {}) or {}
+    optional = project.get("optional-dependencies", {}) or {}
+    payload = {
+        "build_backend": build_system.get("build-backend", ""),
+        "build_requires": sorted(build_system.get("requires", []) or []),
+        "requires_python": project.get("requires-python", ""),
+        "dependencies": sorted(project.get("dependencies", []) or []),
+        # PIP_EXTRAS 里声明了但 pyproject 没定义的 extra 也计入：这种情况
+        # pip 本身会报错，先让签名变化触发重装、尽早失败，好过静默漏装。
+        "extras": {extra: sorted(optional[extra] or [])
+                   for extra in PIP_EXTRAS if extra in optional},
+        "missing_extras": sorted(e for e in PIP_EXTRAS if e not in optional),
+    }
+    return json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+
+
 def dependencies_signature(source_root: Path) -> str:
-    """pyproject.toml 内容哈希——区分「只改了代码」（--no-deps 快速路径）与「依赖声明变了」（全量安装）。"""
+    """依赖安装面签名——区分「只改了代码」（--no-deps 快速路径）与「依赖
+    声明/安装面变了」（全量安装）。
+
+    哈希输入见 _dependency_relevant_payload（2026-10-24 起为依赖段提取，
+    不再是整文件字节——工具配置改动不再误伤增量缓存）。尾部固定 marker
+    双保险：
+      * extras 标识：PIP_EXTRAS 增删 → 签名变 → 旧 .source-state.json 失效
+        → 下次构建自动全量重装（否则改了 extras 但签名不变，manim 等会被
+        静默漏装）；
+      * 算法版本 marker：签名算法升级后新旧签名必然不同 → 旧状态文件失效
+        一次（安全方向，一次性全量重装后归位）。
+    """
     pyproject = source_root / "pyproject.toml"
     if not pyproject.is_file():
         return ""
-    return hashlib.sha256(pyproject.read_bytes()).hexdigest()
+    payload = _dependency_relevant_payload(source_root)
+    if payload is None:
+        # tomllib 不可用或 TOML 解析失败：回退整文件哈希（旧行为，保守方向）。
+        payload = pyproject.read_bytes()
+    digest = hashlib.sha256()
+    digest.update(payload)
+    digest.update(b"\0extras=" + ",".join(PIP_EXTRAS).encode("utf-8"))
+    digest.update(b"\0algo=deps-only-v1")
+    return digest.hexdigest()
 
 
 def _load_source_state() -> dict:
@@ -484,6 +676,23 @@ def save_source_state(source_root: Path, fingerprint: str, deps_sig: str,
                     "deps_sig": deps_sig}),
         encoding="utf-8",
     )
+
+
+def _rebrand_staging(site_packages: Path) -> None:
+    """调用 tools/rebrand.py 对 staging site-packages 做品牌重写 + 安全自检。
+
+    通过文件路径加载，避免对包结构的依赖；self_check 不过会 SystemExit，
+    直接让构建失败（宁可失败，不可把未换牌运行时发出去）。
+    """
+    import importlib.util
+    rebrand_py = Path(__file__).resolve().parent / "rebrand.py"
+    spec = importlib.util.spec_from_file_location("rebrand", rebrand_py)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(mod)
+    log("rebranding staging before zip...")
+    mod.rebrand_root(site_packages)
+    mod.self_check(site_packages)
 
 
 def build(make_zip: bool = False, source_root: Path | None = None,
@@ -525,6 +734,27 @@ def build(make_zip: bool = False, source_root: Path | None = None,
         log("dependency signature changed (or first build); full install")
 
     sp = _py_site_packages(STAGING_PY)
+
+    # 依赖签名变更 → 全量重装。此时先整体清空 site-packages：CI 缓存
+    # restore-keys 恢复的旧 staging 树里，被从 pyproject 移除的第三方依赖会残留
+    # （pip --target 覆盖式安装只增不删，残包会随运行时一起发到用户机器）。
+    # 全量安装本来就要装齐所有包，先删零成本——pip 下载缓存命中，重装远快于
+    # 冷装。仅源码变更（state_changed、deps 未变）走 --no-deps 快速路径时
+    # 【绝不】清空：旧树的第三方依赖正是快速路径秒装的本钱。
+    if deps_changed and sp.exists():
+        log("dependency signature changed: wiping stale site-packages "
+            "(deps removed from pyproject would otherwise ship as residue)")
+        try:
+            shutil.rmtree(sp)
+        except OSError as exc:
+            raise SystemExit(
+                f"cannot wipe stale site-packages {sp}: {exc}\n"
+                f"likely held by a running ThinkBuddy/deeptutor process or "
+                f"antivirus — close the app and retry."
+            ) from exc
+        # 显式重建空目录（install_deeptutor 内部 mkdir 兜底，这里让语义可见）。
+        sp.mkdir(parents=True, exist_ok=True)
+
     did_install = False
     if (sp / "deeptutor").exists():
         py_exe = _staging_py_exe(STAGING_PY)
@@ -536,6 +766,27 @@ def build(make_zip: bool = False, source_root: Path | None = None,
             res.returncode == 0 and current == expected
             and not state_changed and not deps_changed
         )
+        # 清理自家 dist-info 的残留元数据（历史事故：pip --target 覆盖式安装
+        # 只增不删，旧版本 deeptutor-<旧>.dist-info 会随运行时一起发给用户，
+        # 显示层若取到旧元数据就出现「1.6.14 遮蔽 1.6.15」的版本倒退）。
+        # 【关键】只删版本与源码（expected）不一致的残留，**保留正确那份**：
+        # 快路径（已装且版本/指纹未变 → 跳过下方安装，见 installed_ok）不会
+        # 重建 dist-info，若把唯一一份也删掉，打出的运行时只有代码没有元数据，
+        # 关于页引擎会显示「未知」、select_runtime_base 的版本择优也会失明。
+        # cli/web 的 dist-info 壳不读取、无遮蔽风险，且快路径删除后不会重建，
+        # 故不在此清理（重装路径的移除循环会统一重建）。
+        for entry in sp.glob("deeptutor-*.dist-info"):
+            if _distinfo_metadata_version(entry) == expected:
+                continue
+            try:
+                shutil.rmtree(entry) if entry.is_dir() else entry.unlink()
+                log(f"removed stale dist-info residue: {entry.name}")
+            except OSError as exc:
+                raise SystemExit(
+                    f"cannot clean stale {entry.name}: {exc}\n"
+                    f"likely held by a running ThinkBuddy/deeptutor "
+                    f"process or antivirus — close the app and retry."
+                ) from exc
         if installed_ok and not force_deeptutor:
             log(f"deeptutor {current} already installed & matches source; skipping pip")
         else:
@@ -558,7 +809,9 @@ def build(make_zip: bool = False, source_root: Path | None = None,
                             f"likely held by a running ThinkBuddy/deeptutor "
                             f"process or antivirus — close the app and retry."
                         ) from exc
-            # deps_changed=True → 依赖声明变了，全量安装；False → --no-deps 快速路径
+            # deps_changed=True 的场景已在上方清空 site-packages 并转入下方
+            # else 分支全量安装；能走到这里的 reinstall 都是 deps 未变的
+            # --no-deps 快速路径（只重装自家包，第三方树原样保留）。
             install_deeptutor(STAGING_PY, source_root, with_deps=deps_changed)
             did_install = True
     else:
@@ -580,15 +833,33 @@ def build(make_zip: bool = False, source_root: Path | None = None,
         else:
             log("runtime already pruned; skipping")
 
+    # 预编译字节码（no-zip 路径在此收口；Windows 的 build.ps1 随后跑
+    # rebrand.py 会改写部分 .py 使 pyc 失效，rebrand_root 末尾会增量重编译）。
+    precompile_site_packages(STAGING_PY)
+
     # The portable flow (make_portable.py) packs `runtime-build/staging` as-is,
     # so the zip below is OPT-IN. Deflating thousands of tiny files is slow, so
     # it is skipped unless explicitly requested (e.g. for the onefile/Inno path).
     if not make_zip:
         log("staging ready at " + str(STAGE / "staging") + " (zip skipped)")
         return
+
+    # 打 zip 前强制重刷品牌（rebrand 幂等）。此前 rebrand 在本脚本之后才跑，
+    # zip 里装的是换牌前的旧内容——曾致 mac dmg 品牌混杂（2026-10-19）。
+    # 必须在 zip 之前执行，失败即中止构建。
+    _rebrand_staging(_py_site_packages(STAGING_PY))
+    # zip 路径兜底：rebrand_root 末尾已预编译，这里幂等重跑（增量，秒级），
+    # 保证打进 runtime.zip 的树 pyc 齐全——zip 是 mac .app 的运行时事实源。
+    precompile_site_packages(STAGING_PY)
+
     out_zip = DIST / "runtime.zip"
     out_zip.unlink(missing_ok=True)
-    with zipfile.ZipFile(out_zip, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+    # compresslevel=1 而非 6：这个 zip 只存在于 mac .app 内部（Windows 的
+    # build.ps1 默认 --no-zip、CI 不产 zip），而 DMG 的 hdiutil -format UDZO
+    # 会对整个镜像再压一遍——zip 内的高级压缩纯属白费 CPU（双重压缩）。
+    # level 1 让 zip 步骤快 2-3 倍、首启解压也更快；最终 dmg 体积基本不变
+    # （UDZO 对低级别压缩/未压缩数据照样压得动）。
+    with zipfile.ZipFile(out_zip, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as zf:
         zf.writestr(
             "runtime-manifest.json",
             json.dumps({

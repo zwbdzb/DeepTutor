@@ -12,12 +12,14 @@ page shows live status; once 127.0.0.1:3782 answers, the window enters a
     应用内退出登录 → 吊销令牌、摘除模型配置 → 导航回登录门控页（功能不可用）
             → 再次登录后重新进入应用
 
-Closing the window terminates the whole deeptutor process tree.
+Closing the window hides to the tray (Windows notification area / macOS menu
+bar); Quit stops the whole deeptutor process tree.
 
 开发旁路：环境变量 ``DEEPTUTOR_DESKTOP_SKIP_LOGIN=1`` 跳过登录门控（离线开发用）。
 """
 from __future__ import annotations
 
+from collections import deque
 import json
 import logging
 import logging.handlers
@@ -25,24 +27,44 @@ import os
 import sys
 import threading
 import time
+import uuid
 import webbrowser
-from collections import deque
 
-from desktop import APP_NAME, __version__, clipboard, dialogs, native_menu_backend
+from desktop import (
+    APP_NAME,
+    __version__,
+    clipboard,
+    dialogs,
+    native_menu_backend,
+    single_instance,
+)
 from desktop.auth import AuthManager
 from desktop.auth import config as auth_config
 from desktop.checkin import CheckinCoordinator, checkin_message
-from desktop.inject import ToastInjector, AccountChipInjector
-from desktop.menubar import _auto_check_updates_on_startup, build_native_menu
+from desktop.default_search import ensure_default_search
+from desktop.engine_log_tail import EngineLogTail
+from desktop.inject import AccountChipInjector, ToastInjector
+from desktop.menubar import (
+    _auto_check_updates_on_startup,
+    build_native_menu,
+    dismiss_ready_update,
+    install_ready_update,
+)
 from desktop.native_menu_backend import (
     configure_account_chip,
     install_windows_shell_menu,
     set_account_chip_hidden,
 )
-from desktop.process import DeepTutorProcess, DEFAULT_FRONTEND_PORT
+from desktop.process import DEFAULT_FRONTEND_PORT, DeepTutorProcess
 import desktop.runtime as rt
 from desktop.splash import splash_html
-from desktop.titlebar_account import AccountStatusSync
+from desktop.telemetry_reporter import (
+    TelemetryReporter,
+    os_description,
+    truncate_message,
+)
+from desktop.titlebar_account import AccountStatusSync, _fmt_balance
+from desktop.tray import SystemTray
 
 log = logging.getLogger("dt.main")
 
@@ -50,8 +72,13 @@ log = logging.getLogger("dt.main")
 # Set DEEPTUTOR_DESKTOP_DEBUG=1 to render it again for development.
 DEBUG = os.environ.get("DEEPTUTOR_DESKTOP_DEBUG", "") == "1"
 
-# 邀请活动页（走系统浏览器打开）
-INVITE_URL = "https://thinkbuddy.hanyoai.com/invite?utm_source=agent"
+# 邀请活动页（走系统浏览器打开）；域名走 endpoints 覆盖链
+# （环境变量 THINKBUDDY_API_BASE > endpoints.json#api_base > 内置生产默认），
+# 解析为空串时回退内置生产默认，避免拼出 "/invite?..." 相对路径。
+INVITE_URL = (
+    (auth_config.thinkbuddy_api_base(rt.ROOT) or "https://thinkbuddy.hanyoai.com")
+    + "/invite?utm_source=agent"
+)
 
 # --------------------------------------------------------------------------- #
 # logging -------------------------------------------------------------------- #
@@ -78,27 +105,6 @@ def _setup_logging() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# single instance ------------------------------------------------------------- #
-def _single_instance() -> bool:
-    """Return False if another instance already holds the lock."""
-    lock = rt.ROOT / "app.lock"
-    rt.ROOT.mkdir(parents=True, exist_ok=True)
-    try:
-        fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-        os.write(fd, str(os.getpid()).encode())
-        os.close(fd)
-        return True
-    except FileExistsError:
-        try:
-            pid = int(lock.read_text().strip())
-            os.kill(pid, 0)  # process alive -> still running
-            return False
-        except (ProcessLookupError, ValueError, OSError):
-            lock.unlink(missing_ok=True)
-            return _single_instance()
-
-
-# --------------------------------------------------------------------------- #
 # JS bridge / state ---------------------------------------------------------- #
 class Api:
     """Methods callable from the splash/gate page via `pywebview.api.*`."""
@@ -115,7 +121,7 @@ class Api:
         configured_website_url = (
             website_url
             if website_url is not None
-            else auth_config.thinkbuddy_website_url(rt.ROOT)
+            else auth_config.thinkbuddy_api_base(rt.ROOT)
         )
         self._website_url = configured_website_url.strip().rstrip("/")
         self._checkin = CheckinCoordinator(auth, self._website_url)
@@ -182,6 +188,10 @@ class Api:
         """重拉中继 /v1/models → 重写 model_catalog → 回写账号信息。"""
         return self._auth.refresh_models()
 
+    def refresh_user_info(self) -> dict:
+        """重拉平台 /v1/userinfo → 只更新用户名/余额（不动模型、不刷页面）。"""
+        return self._auth.refresh_user_info()
+
     def checkin_points(self) -> dict:
         """Use the OAuth subject to check in directly with thinkbuddy-website."""
         return self._checkin.checkin()
@@ -204,9 +214,14 @@ class Api:
             "relay": str(self._auth.status().get("relay_base") or ""),
         }
 
-    def toast(self, msg: str) -> None:
-        """在页面底部弹一条轻提示（右键菜单操作反馈用）。"""
-        js = "window.__edubuddyToast(%s)" % json.dumps(str(msg), ensure_ascii=False)
+    def toast(self, msg: str, kind: str = "info",
+              duration_ms: int = 2000) -> None:
+        """在页面底部弹一条轻提示（kind: 'info' | 'success' | 'error'）。"""
+        js = "window.__thinkbuddyToast(%s, %d, %s)" % (
+            json.dumps(str(msg), ensure_ascii=False),
+            duration_ms,
+            json.dumps(kind, ensure_ascii=False),
+        )
         for w in webview_windows:
             try:
                 w.evaluate_js(js)
@@ -216,6 +231,9 @@ class Api:
 
     @staticmethod
     def quit() -> None:
+        tray = _shared.get("tray")
+        if tray is not None:
+            tray.allow_exit()
         for w in webview_windows:
             try:
                 w.destroy()
@@ -267,15 +285,37 @@ def _chip_actions(api: Api) -> dict:
     def refresh() -> None:
         res = api.refresh_models()
         if res.get("ok"):
-            api.toast("模型已刷新 ✓")
+            api.toast("模型已刷新", kind="success")
             _reload_page()
         else:
-            api.toast(res.get("message") or res.get("error") or "刷新失败")
+            api.toast(res.get("message") or res.get("error") or "刷新失败",
+                      kind="error", duration_ms=3500)
+
+    def refresh_user() -> None:
+        """菜单头 ⟳ 图标：轻量刷新用户名/余额（/v1/userinfo）。
+
+        不动模型目录、不刷新页面；store 更新后 AccountStatusSync（0.4s
+        轮询）会自动把新余额推到菜单头行。toast 带上新余额给即时反馈。
+        """
+        res = api.refresh_user_info()
+        if res.get("ok"):
+            amount = _fmt_balance(res.get("balance"))
+            api.toast("用户信息已刷新" + (f"，余额 ¥{amount}" if amount else ""),
+                      kind="success")
+        else:
+            api.toast(res.get("message") or res.get("error") or "刷新失败",
+                      kind="error", duration_ms=3500)
 
     def checkin() -> None:
-        api.toast("正在签到...")
+        api.toast("正在签到…")
         result = api.checkin_points()
-        api.toast(checkin_message(result))
+        # 结果 toast 按成功/失败区分语义圆点与停留时长（成功 2s / 失败 3.5s）。
+        ok = bool(result.get("ok"))
+        api.toast(
+            checkin_message(result),
+            kind="success" if ok else "error",
+            duration_ms=2000 if ok else 3500,
+        )
 
     def logout() -> None:
         # MB_OKCANCEL | MB_ICONWARNING；IDOK == 1
@@ -283,17 +323,17 @@ def _chip_actions(api: Api) -> dict:
             return
         res = api.logout()
         if res.get("ok"):
-            api.toast("已退出登录")
+            api.toast("已退出登录", kind="success")
             evt = _shared.get("logout_requested")
             if isinstance(evt, threading.Event):
                 evt.set()  # 会话主循环将导航回登录门控页
         else:
-            api.toast("退出登录失败，请查看日志")
+            api.toast("退出登录失败，请查看日志", kind="error", duration_ms=3500)
 
     def about() -> None:
         info = api.about()
         lines = [
-            f"{info['app']}  v{info['app_version']}",
+            f"{APP_NAME} 桌面端：v{info['app_version']}",
             f"ThinkBuddy 引擎：v{info['deeptutor_version']}",
         ]
         if info.get("relay"):
@@ -307,9 +347,13 @@ def _chip_actions(api: Api) -> dict:
         "invite": invite,
         "checkin": checkin,
         "refresh": refresh,
+        "refresh_user": refresh_user,
         "copy": api.copy_relay,
         "logout": logout,
         "about": about,
+        # 更新角标（ADR-007）：角标主体 = 安装并重启；✕ = 收起继续用旧版
+        "update_restart": lambda: install_ready_update(api),
+        "update_dismiss": dismiss_ready_update,
     }
 
 
@@ -445,23 +489,102 @@ def bootstrap(window, api: Api, auth: AuthManager) -> None:
         # 2. workspace
         home = rt.default_workspace()
         home.mkdir(parents=True, exist_ok=True)
+        try:
+            ensure_default_search(home)
+        except (OSError, ValueError, TypeError, AttributeError):
+            log.exception("默认搜索配置初始化失败，保留现有设置")
         api.set_status("boot", "正在启动 ThinkBuddy 本地服务…", f"工作区：{home}")
 
-        # 3. spawn hidden subprocess
-        proc = DeepTutorProcess(
-            deeptutor, home, node_dir, on_line=api.push_line
+        # 3.5 直报不走本地队列。错误数据来自引擎 JSONL 增量 tail。
+        #     （不依赖子进程，置于 spawn 重试循环之外，只建一次。）
+        reporter = TelemetryReporter(
+            auth_config.telemetry_url(rt.ROOT),
+            {
+                "machine_id": auth.machine_id(),
+                "session_id": str(uuid.uuid4()),
+                "app_ver": __version__,
+                "os": os_description(),
+            },
+            access_token=auth.telemetry_access_token,
         )
-        _shared["proc"] = proc
-        proc.start()
-        api.set_status(
-            "boot",
-            "正在启动本地服务…",
-            f"{proc.frontend_url}（后端 :{proc.backend_port} + 前端 :{proc.frontend_port}）",
-        )
+        _shared["reporter"] = reporter
+        _shared["boot_t0"] = time.monotonic()
 
-        # 4. health check until the frontend answers
-        log.info("waiting for frontend readiness (timeout=%ss)...", 150)
-        url, _status = proc.wait_ready(timeout=150)
+        def _on_engine_error(entry: dict) -> None:
+            reporter.report(
+                "error_backend",
+                {
+                    "logger": truncate_message(entry.get("logger", ""), 120),
+                    "message": truncate_message(entry.get("message", "")),
+                    # exception 全文含本机路径（用户名属 PII 边缘），只报
+                    # 首行异常类型做聚合指纹。
+                    "error_kind": truncate_message(
+                        str(entry.get("exception", "")).splitlines()[-1] if entry.get("exception") else "",
+                        120,
+                    ),
+                },
+                occurred_at=entry.get("timestamp"),
+            )
+
+        tail = EngineLogTail(
+            home / "data" / "user" / "logs" / "deeptutor.jsonl",
+            on_error=_on_engine_error,
+        )
+        _shared["engine_log_tail"] = tail
+        tail.start()
+
+        # 3+4. spawn + 就绪等待，带一次有界自动重试（2026-10-24）。
+        # 旧路径首启失败直接弹「启动失败」横幅：supervise 在 wait_ready 成功
+        # 之后才启动，管不到首启；而冷机/杀软扫描/更新后首启确实可能超时，
+        # 用户机实证「再点一次就能进」——把这个自愈变成自动行为（最多 1 次）。
+        proc = None
+        url = ""
+        last_exc: Exception | None = None
+        for attempt in (1, 2):
+            if attempt == 2:
+                api.set_status(
+                    "boot",
+                    "首次启动较慢，正在自动重试…",
+                    "已重置本地服务再试一次，无需手动操作",
+                )
+                log.warning(
+                    "bootstrap: first spawn/wait attempt failed (%s); retrying once",
+                    last_exc,
+                )
+                time.sleep(2.0)
+            proc = DeepTutorProcess(deeptutor, home, node_dir, on_line=api.push_line)
+            _shared["proc"] = proc
+            try:
+                proc.start()
+                api.set_status(
+                    "boot",
+                    "正在启动本地服务…",
+                    f"{proc.frontend_url}（后端 :{proc.backend_port} + 前端 :{proc.frontend_port}）",
+                )
+                log.info(
+                    "waiting for frontend readiness (attempt %d, timeout=%ss)...",
+                    attempt, 150,
+                )
+                url, _status = proc.wait_ready(timeout=150)
+                # 前端就绪 ≠ 后端就绪：Next standalone 不依赖后端即可应答，
+                # 而后端监听后的首个请求会触发应用栈惰性初始化（实测 ~13s），
+                # 直接切主界面会让首屏 API 全 500。这里 HTTP 探活后端，任何
+                # 应答即过；失败走与上面相同的 spawn 重试链路。
+                proc.wait_backend_ready(timeout=180)
+                break
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                log.exception("bootstrap: spawn/wait attempt %d failed", attempt)
+                try:
+                    proc.stop()
+                except Exception:  # noqa: BLE001
+                    log.exception(
+                        "bootstrap: proc.stop cleanup failed after attempt %d", attempt
+                    )
+                _shared["proc"] = None
+                proc = None
+        if proc is None:
+            raise RuntimeError(f"本地服务未能启动：{last_exc}") from last_exc
         _shared["deeptutor_version"] = rt.resolve_deeptutor_version() or "未知"
 
         # 4.5 Sync Tokengine user info / balance / models in the background so
@@ -474,6 +597,10 @@ def bootstrap(window, api: Api, auth: AuthManager) -> None:
                     log.warning("Tokengine refresh skipped or failed")
             except Exception:
                 log.exception("Tokengine boot refresh failed")
+            finally:
+                # One event per launch; wait for the existing background token
+                # refresh so saved sessions can be identified after a restart.
+                reporter.report("app_start")
 
         threading.Thread(target=_boot_refresh, daemon=True, name="dt-boot-refresh").start()
 
@@ -494,6 +621,13 @@ def bootstrap(window, api: Api, auth: AuthManager) -> None:
             )
             _shared["account_chip_injector"] = _account_chip_injector
             _account_chip_injector.run()  # 主线程内初始化（callAfter 派发）
+            # 应用菜单（屏幕顶部第一项）中文化：等 pywebview 建好菜单后派发
+            from desktop import menubar as _menubar
+
+            threading.Thread(
+                target=_menubar._localize_app_menu_later,
+                daemon=True, name="dt-appmenu-localize",
+            ).start()
 
         sync = AccountStatusSync(
             chip_fn=lambda: native_menu_backend.account_chip() or _account_chip_injector,
@@ -507,6 +641,21 @@ def bootstrap(window, api: Api, auth: AuthManager) -> None:
         toaster = ToastInjector(window, expect_url=url)
         _shared["toast_injector"] = toaster
         threading.Thread(target=toaster.run, daemon=True, name="dt-toast").start()
+
+        # 5.5 稳态监督：子进程（后端/前端）被外杀或崩溃时自动拉起，恢复后
+        #     重载页面——否则 WebView 会停在 ERR_CONNECTION_REFUSED 死页上
+        #     直到用户手动重启（2026-10-20 用户机 app.log 实证：前端 14:28
+        #     被外部 TerminateProcess 杀死，死页挂了近 1 小时无人知晓）。
+        def _on_service_event(kind: str, message: str) -> None:
+            log.info("service event: %s — %s", kind, message)
+            if kind == "recovered":
+                try:
+                    window.load_url(url)
+                except Exception:  # noqa: BLE001
+                    log.exception("reload after service recovery failed")
+            api.set_status("error" if kind == "gave_up" else "boot", message, "")
+
+        proc.supervise(on_event=_on_service_event)
 
         # 6. 登录门控会话主循环（门控 ↔ 应用，退出登录即回门控页）
         stop_evt = threading.Event()
@@ -533,8 +682,13 @@ def bootstrap(window, api: Api, auth: AuthManager) -> None:
 def main() -> int:
     _setup_logging()
 
-    if not _single_instance():
-        log.warning("another instance is already running")
+    outcome = single_instance.acquire_or_activate(rt.ROOT / "app.lock", APP_NAME)
+    if outcome == single_instance.ACTIVATED:
+        # 已有实例：已把它的窗口带到前台，本进程静默退出（点快捷方式的预期行为）
+        log.info("another instance is running; its window was brought to front")
+        return 0
+    if outcome != single_instance.PRIMARY:
+        log.warning("another instance is already running; window not activatable")
         # 用跨平台 dialogs.message_box（mac 走 tkinter/osascript）。
         # 之前直接调 ctypes.windll.user32.MessageBoxW，在 mac 上抛
         # AttributeError 被吞掉后静默 return 1 —— 表现就是“图标闪一下没窗口”。
@@ -554,14 +708,22 @@ def main() -> int:
 
     # Keep downloads in the authenticated WebView and use its native save dialog.
     webview.settings["ALLOW_DOWNLOADS"] = True
+    # macOS：不追加 pywebview 默认的英文 Edit / View 菜单，顶部菜单栏只保留
+    # build_native_menu 的 文件 / 编辑 / 视图 / 帮助（避免中英文菜单重复）。
+    webview.settings["SHOW_DEFAULT_MENUS"] = False
 
     frontend_url = f"http://127.0.0.1:{DEFAULT_FRONTEND_PORT}"
-    auth = AuthManager()
+    def _on_login(access_token: str) -> None:
+        reporter = _shared.get("reporter")
+        if reporter is not None:
+            reporter.report("login", access_token=access_token)
+
+    auth = AuthManager(on_login=_on_login)
     api = Api(
         frontend_url,
         auth,
         debug=DEBUG,
-        website_url=auth_config.thinkbuddy_website_url(rt.ROOT),
+        website_url=auth_config.thinkbuddy_api_base(rt.ROOT),
     )
 
     # 端点对齐要赶在 DeepTutor 后端起来之前做：catalog 改写完成后，
@@ -580,13 +742,16 @@ def main() -> int:
         html=splash_html(debug=DEBUG, version=__version__),
         width=1280,
         height=860,
-        min_size=(1024, 680),
+        min_size=(450, 450),
         js_api=api,
         background_color="#ffffff",
         menu=build_native_menu(api),
     )
     webview_windows.append(window)
 
+    tray = SystemTray(window, api.quit)
+    _shared["tray"] = tray
+    window.events.closing += tray.on_closing
     window.events.closed += _on_closed
     # 标题栏图标与菜单位置由 native_menu_backend 的自定义标题栏方案在窗口
     # 创建期统一处理（ShowIcon=False + WM_NCCALCSIZE 抹掉标题栏，菜单条
@@ -594,8 +759,8 @@ def main() -> int:
     # 曾引发 Python 工作线程集体冻结（2026-09-23），那套代码已删除。
 
     try:
-        # webview.start(func) runs func after the event loop is ready →
-        # the bootstrap thread only starts once the window object exists.
+        # webview.start(func) 的 func 在独立线程跑，与原生窗口创建并发；
+        # bootstrap 内部有健康检查兜底，托盘平台钩子则等 events.shown。
         def _on_window_ready() -> None:
             threading.Thread(
                 target=bootstrap, args=(window, api, auth), daemon=True
@@ -607,7 +772,10 @@ def main() -> int:
                 daemon=True,
                 name="dt-auto-update",
             ).start()
+            # 平台钩子（mac delegate / 关机放行）须等 pywebview 建完窗口再装。
+            tray.on_window_ready()
 
+        tray.start()
         webview.start(_on_window_ready, debug=False)
     except Exception as exc:  # noqa: BLE001
         # mac 打包 console=False，任何窗口创建/事件循环阶段的崩溃都会被
@@ -629,6 +797,9 @@ def main() -> int:
 
 def _on_closed() -> None:
     log.info("window closed; stopping deeptutor")
+    tray = _shared.pop("tray", None)
+    if tray is not None:
+        tray.stop()
     stop_evt = _shared.get("session_stop")
     if isinstance(stop_evt, threading.Event):
         stop_evt.set()
@@ -647,15 +818,37 @@ def _on_closed() -> None:
         except Exception:  # noqa: BLE001
             pass
         _shared["proc"] = None
+    tail = _shared.get("engine_log_tail")
+    if tail is not None:
+        try:
+            tail.stop()
+        except Exception:  # noqa: BLE001
+            pass
+        _shared["engine_log_tail"] = None
+    reporter = _shared.get("reporter")
+    if reporter is not None:
+        try:
+            # app_exit 走同步短超时（护栏3）：daemon 线程在进程退出时被硬杀，
+            # 退出原因事件必须同步发。clean=True 仅覆盖用户主动关窗路径；
+            # 壳自身崩溃时无人发送（已知接受的极限场景）。
+            duration = time.monotonic() - _shared.get("boot_t0", time.monotonic())
+            reporter.flush_exit(
+                "app_exit",
+                {
+                    "reason": "window_closed",
+                    "clean": True,
+                    "session_duration_s": round(duration, 1),
+                },
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        reporter.close()
+        _shared["reporter"] = None
 
 
 def _shutdown() -> None:
     _on_closed()
-    lock = rt.ROOT / "app.lock"
-    try:
-        lock.unlink(missing_ok=True)
-    except Exception:  # noqa: BLE001
-        pass
+    single_instance.release(rt.ROOT / "app.lock")
     log.info("exited cleanly")
 
 

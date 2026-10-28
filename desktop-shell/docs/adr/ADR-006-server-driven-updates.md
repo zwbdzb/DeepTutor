@@ -109,6 +109,10 @@ https://thinkbuddy.hanyoai.com/update/ThinkBuddySetup-0.2.0_dt1.6.11.exe
 - 版本判定唯一锚点（DisplayVersion），不再困惑于壳版本/引擎版本哪来的。
 - 更新源可覆盖（`THINKBUDDY_UPDATE_URL` / `endpoints.json#update_url` / 默认
   `https://thinkbuddy.hanyoai.com/update`），内网/灰度/本地联调都能指过去。
+  **2026-10-22 更新**：随 endpoints 键值语义重定位（`api_base` 归主站、新增
+  `oauth_base`），`THINKBUDDY_UPDATE_URL` 与 `endpoints.json#update_url` 已废弃，
+  更新源改为**硬编码派生自主站** `<api_base>/update`（联调主站时自动跟随本地，
+  不会误弹生产更新）。
 - `build.ps1` 一键产出"安装包 + manifest"，上传即发布，无手工步骤。
 
 ### 变难 / 需要小心的
@@ -130,3 +134,17 @@ https://thinkbuddy.hanyoai.com/update/ThinkBuddySetup-0.2.0_dt1.6.11.exe
 - 安装包数字签名（Authenticode）尚未涉及；SHA256 已保证完整性，但防中间人
   篡改依赖 HTTPS 传输，签名可作后续加强。
 - 强制更新（低于 `min_version`）的 UI 目前是"提示用户更新"，未做"阻断使用"。
+
+## macOS 行为差异（2026-10-16）
+
+mac 侧复用同一套检查链路（`latest.json` + 版本比对），但**没有安装环节**：
+
+| 环节 | Windows | macOS |
+| --- | --- | --- |
+| 检查更新 | `urllib` + 系统 SSL | 同左，但 SSL context 用 `_system_ssl_context()`——导出系统钥匙串证书（System/SystemRoot/login）灌入，代理自签根证书（企业网关/Clash mitm）不再 `CERTIFICATE_VERIFY_FAILED`（Windows 的 WinHTTP 走系统信任库无此问题） |
+| 版本锚点 | 安装包版本（`__version__` 注入 `<引擎版本>.<MMDDHHmm>`，mac 由 `tools/inject_version.py` 同源注入） | 同左 |
+| 发现新版本 | 询问 → 下载 .exe → SHA256 → Inno 静默安装 → 自退重启 | 仅弹「发现新版本，请前往官网下载 macOS 版」——无 Inno/注册表链路，不自动下载安装（`menubar._check_updates` 的 darwin 分支） |
+| 已是最新 | toast | toast（同左；服务器版本低于本机构建时也稳定提示最新） |
+
+注意：mac 上发现新版本不会自动更新是**当前决策**（.app 分发 + 签名/公证
+链路未建），不是缺陷；后续若上 Sparkle 类框架需另立 ADR。

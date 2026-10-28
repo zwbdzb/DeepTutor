@@ -13,16 +13,18 @@
 # Prereqs: Python 3.11+ with PyInstaller, and Inno Setup 7 installed at the
 #          standard path (only needed for step 3).
 # Run:     powershell -ExecutionPolicy Bypass -File build\build.ps1
-#              [-SkipRuntime] [-MakePortable] [-MakeZip] [-SkipInstaller]
-#              [-StrictRuntime] [-FastInstaller]
+#              [-SkipRuntime] [-SkipWebBuild] [-MakePortable] [-MakeZip] [-SkipInstaller]
+#              [-StrictRuntime] [-FastInstaller] [-NoCompression]
 
 param(
     [switch]$SkipRuntime,       # kept for compatibility; the version gate ALWAYS runs (see below)
+    [switch]$SkipWebBuild,      # CI 已在独立步骤构建前端+打包 deeptutor_web，跳过 [0/3] 避免重复 npm run build
     [switch]$MakePortable,      # also build dist\ThinkBuddyPortable.zip (slow, ~8 min)
     [switch]$MakeZip,           # also build dist\runtime.zip (slow, for Inno path)
     [switch]$SkipInstaller,     # do not compile the Inno .iss
     [switch]$StrictRuntime,     # content-hash runtime sources (slower; release-time assurance)
     [switch]$FastInstaller,     # Inno lzma2/fast（开发迭代用，安装包体积 +10~15%，压缩时间大幅缩短）
+    [switch]$NoCompression,    # Inno Compression=none（CI 日常 push 用，秒级完成，安装包 ~500MB）
     # ADR-006 更新发布参数：出包后自动生成「带版本名安装包 + latest.json」（dist/）
     [string]$UpdateBase = "https://thinkbuddy.hanyoai.com/update",
     [string]$MinVersion = "0.1.0",
@@ -31,7 +33,7 @@ param(
 $ErrorActionPreference = "Stop"
 $Root   = Split-Path -Parent $PSScriptRoot
 $VenPy  = Join-Path $Root ".venv\Scripts\python.exe"
-if (-not (Test-Path $VenPy)) { Write-Host "venv missing. run:  python -m venv .venv && .\.venv\Scripts\pip install pywebview pillow pyinstaller" -ForegroundColor Red; exit 1 }
+if (-not (Test-Path $VenPy)) { Write-Host "venv missing. run:  python -m venv .venv && .\.venv\Scripts\pip install pywebview pystray pillow pyinstaller" -ForegroundColor Red; exit 1 }
 
 # 每阶段计时：优化/定位耗时靠数据，不靠猜。
 $script:StageStart = Get-Date
@@ -41,6 +43,9 @@ function Stop-Stage($name) { Write-Host ("  [{0}] done in {1:mm\:ss}" -f $name, 
 
 Push-Location $Root
 
+if ($SkipWebBuild) {
+    Write-Host "[0/3] skipped - CI pre-built frontend and deeptutor_web package"
+} else {
 Write-Host "[0/3] building and packaging the web frontend ..."
 $WebDir = Join-Path (Split-Path -Parent $Root) "web"
 $StampFile = Join-Path $WebDir ".web-build-stamp"
@@ -103,6 +108,7 @@ if ($webFresh -and ($pkgStamp -eq $fp)) {
     if ($fp) { try { Set-Content -LiteralPath $PkgStampFile -Value $fp -Encoding ASCII -NoNewline } catch {} }
     Stop-Stage "web package copy"
 }
+}  # end if (-not $SkipWebBuild)
 try {
     # ---------- 1. offline runtime (staging tree) ---------------------------
     # 无条件跑 build_runtime.py（幂等增量）；版本门禁不可跳过——曾因跳过把旧运行时打进新包。
@@ -180,6 +186,74 @@ try {
         Write-Host "[2b] skip ThinkBuddyPortable.zip (default). pass -MakePortable to build it."
     }
 
+    # ---------- 2c. runtime 单归档（安装提速） --------------------------------
+    # 实测依据（2026-10-27 用户机 ThinkBuddySetup-*.install.log 逐行计时）：
+    #   Inno 逐文件写入 40620 个文件耗时 337s，摊到每个文件 6.21ms，且与文件
+    #   大小无关（anthropic 平均 5KB/文件同样是 5ms）——瓶颈是安装器的逐文件
+    #   解压调度 + 卸载记录写入，不是磁盘也不是杀软（同机直写 2000 个同尺寸
+    #   文件仅 0.75s = 0.38ms/文件）。
+    #   同一批 40837 个文件交给系统 bsdtar 解压实测 30.06s（快 11 倍）。
+    # 做法：把整棵 staging 打成单个 runtime.tar.xz，installer.iss 的 [Files]
+    # 只投递这一个文件，解包由 CurStepChanged(ssPostInstall) 调 {sys}\tar.exe
+    # 完成。归档保留文件秒级 mtime —— CPython 的 pyc 校验按整秒比较时间戳，
+    # 实测解压后不会触发重编译（否则首启会退回 4 分钟编译）。
+    if (-not $SkipInstaller) {
+        Write-Host "[2c] packing runtime.tar.xz (single-archive install path) ..."
+        Start-Stage
+        $stageRoot = Join-Path $Root "runtime-build\staging"
+        $arcPath   = Join-Path $Root "build\runtime.tar.xz"
+        $tarPath   = Join-Path $Root "build\runtime.tar"
+        if (-not (Test-Path -LiteralPath $stageRoot)) { throw "runtime staging missing: $stageRoot (run build_runtime.py first)" }
+
+        # 增量：归档比 staging 里最新的文件还新 → 直接复用（遍历 4 万文件约 2-4s）。
+        $needPack = $true
+        if (Test-Path -LiteralPath $arcPath) {
+            $arcTime = (Get-Item -LiteralPath $arcPath).LastWriteTimeUtc
+            $newestFile = Get-ChildItem -LiteralPath $stageRoot -Recurse -File -Force -ErrorAction SilentlyContinue |
+                          Measure-Object -Property LastWriteTimeUtc -Maximum
+            if ($newestFile.Maximum -and ($newestFile.Maximum -le $arcTime)) {
+                $needPack = $false
+                Write-Host ("  reused runtime.tar.xz ({0:N1} MB, newer than staging)" -f ((Get-Item -LiteralPath $arcPath).Length / 1MB))
+            }
+        }
+
+        if ($needPack) {
+            $tarExe = (Get-Command tar.exe -ErrorAction SilentlyContinue).Source
+            if (-not $tarExe) { $tarExe = Join-Path $env:SystemRoot "System32\tar.exe" }
+            if (-not (Test-Path -LiteralPath $tarExe)) { throw "tar.exe not found (need Windows 10 1803+ to build this package)" }
+
+            # 多线程 xz 优先（1.2GB 约 72s）；找不到就用 bsdtar 内置 liblzma 单线程
+            # 回退（慢数倍但不依赖外部工具）。CI 上 Git for Windows 的 xz 不在 PATH。
+            $xzExe = (Get-Command xz.exe -ErrorAction SilentlyContinue).Source
+            if (-not $xzExe) {
+                foreach ($cand in @(
+                    "$env:ProgramFiles\Git\usr\bin\xz.exe",
+                    "$env:ProgramFiles\Git\mingw64\bin\xz.exe",
+                    "$env:ProgramFiles\Git\mingw64\usr\bin\xz.exe"
+                )) { if (Test-Path -LiteralPath $cand) { $xzExe = $cand; break } }
+            }
+
+            if (Test-Path -LiteralPath $tarPath) { Remove-Item -LiteralPath $tarPath -Force }
+            & $tarExe -cf $tarPath -C $stageRoot .
+            if ($LASTEXITCODE -ne 0) { throw "tar packing failed (rc=$LASTEXITCODE)" }
+
+            if ($xzExe) {
+                Write-Host "  compressing with $xzExe -T0 -3 ..."
+                & $xzExe -T0 -3 -f $tarPath
+                if ($LASTEXITCODE -ne 0) { throw "xz compression failed (rc=$LASTEXITCODE)" }
+            } else {
+                Write-Host "  xz.exe not found - falling back to bsdtar built-in xz (single-threaded, slower)"
+                & $tarExe -cJf $arcPath -C $stageRoot .
+                if ($LASTEXITCODE -ne 0) { throw "tar+xz packing failed (rc=$LASTEXITCODE)" }
+            }
+            if (-not (Test-Path -LiteralPath $arcPath)) { throw "runtime.tar.xz missing after packing" }
+            # xz -f 会删掉中间 .tar；-cJf 路径不会有。兜底清一次防残留。
+            if (Test-Path -LiteralPath $tarPath) { Remove-Item -LiteralPath $tarPath -Force -ErrorAction SilentlyContinue }
+            Write-Host ("  runtime.tar.xz = {0:N1} MB" -f ((Get-Item -LiteralPath $arcPath).Length / 1MB))
+        }
+        Stop-Stage "runtime archive"
+    }
+
     # ---------- 3. click-installer (Inno Setup) ------------------------------
     if (-not $SkipInstaller) {
         $iscc = @(
@@ -205,7 +279,8 @@ try {
                 catch { Write-Host "  WARN: cannot remove stale dist\ThinkBuddySetup.exe: $_" }
             }
             $isccArgs = @()
-            if ($FastInstaller) { $isccArgs += "/DFastCompression" }
+            if ($NoCompression) { $isccArgs += "/DNoCompression" }
+            elseif ($FastInstaller) { $isccArgs += "/DFastCompression" }
             $isccArgs += @("/DMyAppVersion=$appVer", "/DMyOutputName=$safeVer", "build\installer.iss")
             & $iscc @isccArgs
             if ($LASTEXITCODE -ne 0) { throw "iscc failed" }

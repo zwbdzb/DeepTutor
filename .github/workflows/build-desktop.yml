@@ -1,22 +1,41 @@
 # ThinkBuddy Desktop 打包流水线（Windows + macOS）
 #
-# Windows 与本地 desktop-shell\build\build.ps1 完全等价的三步：
-#   1. 前端 standalone 构建 + prepare_web_package.py -> deeptutor_web/
-#   2. build_runtime.py -> runtime-build/staging (embeddable Python + deeptutor 源码 + Node 22)
-#   3. PyInstaller -> dist\ThinkBuddyDesktop.exe；Inno Setup -> dist\ThinkBuddySetup-<ver>.<ts>.exe
+# 四 job 流水线（web -> build / mac{arm64,x86_64} -> latest），各构建 job
+# 尾部内嵌 release step，latest job 汇总生成 unified latest.json：
 #
-# macOS（arm64 + x86_64）平行流程，同样是三步：
-#   1. 前端 standalone 构建 + prepare_web_package.py -> deeptutor_web/
-#   2. build_runtime.py --arch <arm64|x86_64> -> runtime-build/staging (python-build-standalone + deeptutor 源码 + Node 22)
-#   3. PyInstaller -> dist/ThinkBuddyDesktop.app；hdiutil -> dist/ThinkBuddyDesktop-mac-<arch>.dmg
+#   web（ubuntu-latest）：前端 standalone 只构建一次。
+#     npm ci + next build -> 上传 web-standalone artifact。
+#     产物（web/.next/standalone、web/.next/static、web/public）是纯 JS/静态
+#     资源、架构无关（web 无原生依赖，@next/swc 仅构建期使用、不进 standalone
+#     产物），省去三个平台各 2-4 分钟的重复前端构建。
+#
+#   build（windows-latest）与本地 desktop-shell\build\build.ps1 完全等价的三步：
+#     1. 下载 web-standalone artifact + prepare_web_package.py -> deeptutor_web/
+#     2. build_runtime.py -> runtime-build/staging (embeddable Python + deeptutor 源码 + Node 22)
+#     3. PyInstaller -> dist\ThinkBuddyDesktop.exe；Inno Setup -> dist\ThinkBuddySetup-<ver>.<ts>.exe
+#
+#   mac（matrix: arm64 -> macos-15, x86_64 -> macos-15-intel）平行流程，同样是三步：
+#     1. 下载 web-standalone artifact + prepare_web_package.py -> deeptutor_web/
+#     2. build_runtime.py --arch <arm64|x86_64> -> runtime-build/staging (python-build-standalone + deeptutor 源码 + Node 22)
+#     3. PyInstaller -> dist/ThinkBuddyDesktop.app；hdiutil -> dist/ThinkBuddyDesktop-mac-<arch>.dmg
 #
 # 触发：
-#   - push 到 main/dev 且改动涉及 desktop-shell/**、web/**、deeptutor/** 等打包输入
+#   - push 到 main/dev/dev1019 且改动涉及 desktop-shell/**、web/**、deeptutor/** 等打包输入
 #   - 手动 workflow_dispatch（可勾选 release 额外发布 GitHub Release）
 #
-# 发布模型：三个构建 job（Windows / macOS arm64 / macOS x86_64）只负责
-# 产出并上传 artifact；勾选 release 时由统一的 release job 汇总【所有】
-# Windows + macOS 包到【同一个】GitHub Release（desktop-N tag）。
+# 发布模型（各平台独立发布，互不等待）：
+#   不设独立 release job，发布 step 直接内嵌在 build / mac job 尾部。
+#   勾选 release 时，谁先打完谁就把自己的产物追加到同一个 GitHub Release
+#   （desktop-${{ github.run_number }}）：
+#     - Windows build 打完 → 追加 exe + 安装包
+#     - macOS arm64 打完  → 追加 arm64 dmg
+#     - macOS x86_64 打完 → 追加 x86_64 dmg
+#   softprops/action-gh-release@v2 自带 create-or-update 语义 + append_body，
+#   哪个先跑完哪个先创建 release，后跑完的自动追加文件和 body 段落。
+#
+#   latest job（needs build+mac，仅勾选 release 时运行）：等三个平台都打完，
+#   下载全部构建产物生成 unified latest.json（Windows + macOS 双平台更新清单），
+#   追加到同一个 desktop-N release，并同时上传为 run artifact。
 #
 # macOS MVP 阶段不做 codesigning：用户首次打开需右键 → 打开 → 仍要打开 绕过 Gatekeeper。
 # 后续接 APPLE_DEVELOPER_ID secrets + codesign --deep + notarytool。
@@ -30,7 +49,7 @@ on:
         type: boolean
         default: false
   push:
-    branches: [main, develop]
+    branches: [main, develop, dev1019]
     paths:
       - "desktop-shell/**"
       - "web/**"
@@ -43,19 +62,90 @@ on:
 permissions:
   contents: write
 
+# 并发语义（2026-10-23 修复「取消-冷缓存」死循环）：
+# 实证连续 7 个 run 被 cancel-in-progress 掐死（run#85-#91，2026-10-23）——
+# 被取消的 run 不执行 actions/cache 的保存后置步骤，最慢的 mac x86_64 job
+# （Intel 全冷构建 10-30 分钟）永远跑不完、缓存永远存不上，每次触发都全量
+# 冷装，形成死循环；而跑得快的 arm64（~2.5 分钟）总能存活，缓存越来越热。
+# 修复：按事件类型分组 + 仅 push 互杀。
+#   - push vs push：同组，新的取消旧的（保留快速迭代语义；缓存变热后单次
+#     构建只要几分钟，被掐概率大幅下降）；
+#   - 手动 workflow_dispatch（验证/发版）：独立分组且永不取消、也不取消
+#     push run——手动构建是明确意图，不该被无关 push 掐死；与 push 并行
+#     最多多花一份 runner 时长，但两条 run 都能跑完、都能存缓存。
 concurrency:
-  group: build-desktop-${{ github.ref }}
-  cancel-in-progress: true
+  group: build-desktop-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
 
 jobs:
+  # ---------- 共享前端构建（架构无关，只跑一次） ----------
+  # 原 Windows / macOS 各自的 npm ci + next build + prepare_web_package 前两步
+  # 抽到这里。Next.js 增量编译缓存也从各平台一份收敛为一份共享缓存（standalone
+  # 产物架构无关，编译缓存同样可跨平台复用）。
+  web:
+    name: Web · Next.js standalone (shared)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22 (frontend build)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # Next.js 增量编译缓存：冷构建 3-5 分钟 → 增量 1-2 分钟。
+      - name: Cache Next.js build cache
+        uses: actions/cache@v4
+        with:
+          path: web/.next/cache
+          key: next-web-${{ hashFiles('web/package-lock.json') }}
+          restore-keys: next-web-
+
+      - name: Install frontend dependencies
+        working-directory: web
+        run: npm ci --legacy-peer-deps
+
+      - name: Build frontend (Next.js standalone)
+        working-directory: web
+        run: npm run build
+
+      # upload-artifact@v4 的 artifact 根目录 = 多个 path 的最小公共祖先（web/），
+      # 所以 artifact 内部结构是 .next/standalone/**、.next/static/**、public/**。
+      # 平台 job 用 download-artifact path: web 解压，正好还原原始目录布局。
+      # include-hidden-files 必须为 true：v4.4.0 起默认排除隐藏文件（任何以 .
+      # 开头的文件【及其所在目录内的所有文件】），.next/ 目录内容会被静默排除，
+      # 产物变成空壳（if-no-files-found: error 会兜住，但流水线直接失败）。
+      - name: Upload web standalone artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-standalone
+          include-hidden-files: true
+          path: |
+            web/.next/standalone/
+            web/.next/static/
+            web/public/
+          if-no-files-found: error
+
   build:
     name: Windows · runtime + exe + installer
     runs-on: windows-latest
+    needs: web
     env:
       PYTHONIOENCODING: utf-8
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # 前端产物由共享 web job 构建好，这里只下载解压（正好还原成
+      # web/.next/standalone、web/.next/static、web/public），不再重复 npm build。
+      - name: Download web standalone artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: web-standalone
+          path: web
 
       # cp312 wheel 解析器：build_runtime.py 通过 BUILD_PY 找到它，
       # 把依赖 wheel 安装进 embeddable 运行时（构建期用，不随包分发）。
@@ -65,41 +155,54 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Set up Node.js 22 (frontend build)
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-
-      # 缓存 build_runtime.py 下载的 python-3.12.7-embed + node zip（约 60MB）。
-      # build_runtime.py 里的 PY_VER / NODE_VER 变了记得同步 bump 这个 key。
-      - name: Cache runtime downloads
+      # 缓存【整个 runtime-build/】：staging 树（装好依赖的 python+node）+ 下载缓存
+      # + .source-state.json（pip 增量指纹状态——缺了它每次触发全量依赖安装）。
+      # key 含 pyproject 哈希：依赖变更 → 换 key。restore-keys 兜底：pyproject
+      # 变更导致 key miss 时恢复上一个旧 staging 树做增量——build_runtime.py 检测
+      # 到 deps_sig 变化会先清空 site-packages 再全量重装（pip 下载缓存命中，
+      # 不慢），省下 python/node 下载解压的冷启动时间；只改源码 → 走 --no-deps
+      # 快速路径秒装。PY_VER / NODE_VER 变了记得同步 bump key。
+      - name: Cache runtime tree
         uses: actions/cache@v4
         with:
-          path: desktop-shell/runtime-build/cache
-          key: edubuddy-runtime-dl-py3127-node2222
+          path: desktop-shell/runtime-build
+          key: thinkbuddy-runtime-win-py3127-node2222-${{ hashFiles('pyproject.toml') }}
+          restore-keys: |
+            thinkbuddy-runtime-win-py3127-node2222-
 
-      - name: Install frontend dependencies
-        working-directory: web
-        run: npm ci --legacy-peer-deps
+      # pip 下载缓存：首次冷装 / 依赖变更重建时省去跨洋下载大包。
+      - name: Cache pip downloads
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: pip-win-${{ hashFiles('pyproject.toml') }}
+          restore-keys: pip-win-
 
-      # Windows 上 subprocess 解析不了 npm.cmd，所以先在 shell 里构建前端，
-      # 再用 --skip-build 让脚本只做拷贝（校验 web/.next/standalone/server.js）。
-      - name: Build frontend (Next.js standalone)
-        working-directory: web
-        run: npm run build
+      # PyInstaller 分析缓存（spec 无 workpath 覆盖，产物在 build/<spec名>/）。
+      # 壳输入几乎不变，命中省 1-3 分钟冷分析；spec 变更时自动重分析。
+      - name: Cache PyInstaller analysis
+        uses: actions/cache@v4
+        with:
+          path: desktop-shell/build/ThinkBuddyDesktop
+          key: pyinstaller-win
 
+      # --skip-build：web job 已构建前端并随 artifact 下载还原，此步只校验
+      # web/.next/standalone/server.js 存在并把三个目录拷进 deeptutor_web/。
       - name: Refresh deeptutor_web package
         run: python scripts/prepare_web_package.py --skip-build
 
-      # build.ps1 硬性要求 desktop-shell\.venv 存在（pywebview/pillow/pyinstaller）。
+      # build.ps1 硬性要求 desktop-shell\.venv 存在（pywebview/pystray/pillow/pyinstaller）。
+      # 同时给 BUILD_PY（setup-python 的 python，即 PATH 上的 python）补装
+      # setuptools+wheel：setup-python 3.12 自带 pip 但不带 setuptools，而
+      # pyproject build-system 需要 setuptools>=61 —— 不补装的话 build_runtime
+      # 的 --no-build-isolation 每次必失败，回退隔离构建多花 30-60s（2026-10-24）。
       - name: Create shell venv
         working-directory: desktop-shell
         run: |
+          python -m pip install --upgrade setuptools wheel
           python -m venv .venv
           .\.venv\Scripts\python -m pip install --upgrade pip
-          .\.venv\Scripts\pip install pywebview pillow pyinstaller
+          .\.venv\Scripts\pip install pywebview pystray pillow pyinstaller
 
       # choco 提供的是 Inno Setup 6（>=6.3），installer.iss 的语法全部兼容，
       # build.ps1 会自动探测 ISCC.exe 的安装路径。
@@ -117,7 +220,12 @@ jobs:
         working-directory: desktop-shell
         env:
           BUILD_PY: ${{ steps.py312.outputs.python-path }}
-        run: powershell -ExecutionPolicy Bypass -File build\build.ps1
+          # runner 在海外：覆盖 build_runtime.py 默认的清华镜像，直连官方 pypi 更快。
+          PIP_INDEX_URL: https://pypi.org/simple
+        # -SkipWebBuild：web job 已构建前端、prepare_web_package 已打包 deeptutor_web，
+        # 跳过 build.ps1 [0/3] 避免重复 npm run build。
+        # 日常 push 和 release 都用 -FastInstaller（lzma2/fast，安装包 ~220MB，1 分钟级）。
+        run: powershell -ExecutionPolicy Bypass -File build\build.ps1 -SkipWebBuild -FastInstaller
 
       - name: List outputs
         working-directory: desktop-shell
@@ -137,6 +245,24 @@ jobs:
           path: desktop-shell/dist/ThinkBuddySetup-*.exe
           if-no-files-found: error
 
+      # 内嵌发布：build 跑完立即把 Windows 产物追加到同一个 desktop-N release。
+      # softprops/action-gh-release@v2 自带 create-or-update + append_body，
+      # 如果 mac 某个子 job 先跑完已创建 release，这里追加 Windows 文件即可。
+      - name: Publish Windows to GitHub Release
+        if: inputs.release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: desktop-${{ github.run_number }}
+          name: ThinkBuddy Desktop build ${{ github.run_number }}
+          append_body: true
+          body: |
+            ## Windows
+            - `ThinkBuddySetup-<ver>.<ts>.exe` — 安装包（Inno Setup）
+            - `ThinkBuddyDesktop.exe` — 便携单文件（含离线运行时）
+          files: |
+            desktop-shell/dist/ThinkBuddySetup-*.exe
+            desktop-shell/dist/ThinkBuddyDesktop.exe
+
   mac:
     name: macOS ${{ matrix.arch }} · runtime + app + dmg
     strategy:
@@ -148,11 +274,20 @@ jobs:
           - arch: x86_64
             runner: macos-15-intel
     runs-on: ${{ matrix.runner }}
+    needs: web
     env:
       PYTHONIOENCODING: utf-8
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # 前端产物由共享 web job 构建好，这里只下载解压（正好还原成
+      # web/.next/standalone、web/.next/static、web/public），不再重复 npm build。
+      - name: Download web standalone artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: web-standalone
+          path: web
 
       # cp312 解释器：build_runtime.py 通过 BUILD_PY 找到它，把依赖 wheel
       # 安装进 staging 的 python-build-standalone 运行时（构建期用，不随包分发）。
@@ -162,21 +297,40 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Set up Node.js 22 (frontend build)
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-
-      # 缓存 build_runtime.py 下载的 python-build-standalone tarball + node darwin tarball（约 80MB）。
-      # key 含 arch：arm64 和 x86_64 下载的 tarball 不同，缓存不能混用。
-      # build_runtime.py 里的 PY_VER / NODE_VER 变了记得同步 bump 这个 key。
-      - name: Cache runtime downloads
+      # 缓存【整个 runtime-build/】：staging 树（装好依赖的 python+node）+ 下载缓存
+      # + .source-state.json（pip 增量指纹状态——缺了它每次触发全量依赖安装）。
+      # key 含 arch：arm64 和 x86_64 的 staging 不能混用。key 另含 pyproject 哈希：
+      # 依赖变更 → 换 key。restore-keys 兜底：pyproject 变更导致 key miss 时恢复
+      # 同架构的上一个旧 staging 树做增量——build_runtime.py 检测到 deps_sig 变化
+      # 会先清空 site-packages 再全量重装（pip 下载缓存命中，不慢），省下
+      # python/node 下载解压的冷启动时间；只改源码 → 走 --no-deps 快速路径秒装。
+      # deps_sig 语义（2026-10-24）：只哈希 pyproject 的依赖相关段
+      # （build-system / project.dependencies / PIP_EXTRAS 对应 extra），
+      # ruff/pytest 等工具配置改动不再触发全量重装。
+      # PY_VER / NODE_VER 变了记得同步 bump key。
+      - name: Cache runtime tree
         uses: actions/cache@v4
         with:
-          path: desktop-shell/runtime-build/cache
-          key: thinkbuddy-runtime-mac-${{ matrix.arch }}-py3127-node2222
+          path: desktop-shell/runtime-build
+          key: thinkbuddy-runtime-mac-${{ matrix.arch }}-py3127-node2222-${{ hashFiles('pyproject.toml') }}
+          restore-keys: |
+            thinkbuddy-runtime-mac-${{ matrix.arch }}-py3127-node2222-
+
+      # pip 下载缓存：首次冷装 / 依赖变更重建时省去跨洋下载大包。
+      - name: Cache pip downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/pip
+          key: pip-mac-${{ hashFiles('pyproject.toml') }}
+          restore-keys: pip-mac-
+
+      # PyInstaller 分析缓存（spec 无 workpath 覆盖，产物在 build/<spec名>/）。
+      # 不加 --clean，命中省 1-3 分钟冷分析；spec 变更时自动重分析。
+      - name: Cache PyInstaller analysis
+        uses: actions/cache@v4
+        with:
+          path: desktop-shell/build/ThinkBuddyDesktop-mac
+          key: pyinstaller-mac-${{ matrix.arch }}
 
       # 从 icon.png 生成 .icns（macOS 自带 sips + iconutil，无需额外依赖）。
       # spec 引用 assets/icon.icns；本地开发可手动跑同样命令生成后签入。
@@ -198,81 +352,105 @@ jobs:
           sips -z 1024 1024 "$SRC" --out "$ICONSET/icon_512x512@2x.png"  > /dev/null
           iconutil -c icns "$ICONSET" -o desktop-shell/assets/icon.icns
 
-      - name: Install frontend dependencies
-        working-directory: web
-        run: npm ci --legacy-peer-deps
-
-      # macOS 上 subprocess 能直接解析 npm，所以构建 + 拷贝可走一条命令；
-      # prepare_web_package.py --skip-build 让脚本只做拷贝（校验 web/.next/standalone/server.js）。
-      - name: Build frontend (Next.js standalone)
-        working-directory: web
-        run: npm run build
-
+      # --skip-build：web job 已构建前端并随 artifact 下载还原，此步只校验
+      # web/.next/standalone/server.js 存在并把三个目录拷进 deeptutor_web/。
       - name: Refresh deeptutor_web package
         run: python scripts/prepare_web_package.py --skip-build
 
-      # build_runtime.py 的硬性要求：desktop-shell/.venv 存在（pywebview/pillow/pyinstaller）。
+      # build_runtime.py 的硬性要求：desktop-shell/.venv 存在
+      # （pywebview/pystray/pillow/pyinstaller；pystray 是两端共用的托盘实现）。
+      # 同时给 BUILD_PY（setup-python 的 python3）补装 setuptools+wheel：
+      # setup-python 3.12 自带 pip 但不带 setuptools，而 pyproject build-system
+      # 需要 setuptools>=61 —— 不补装的话 build_runtime 的 --no-build-isolation
+      # 每次必失败，回退隔离构建多花 30-60s（2026-10-24，x86_64 提速项之一）。
       - name: Create shell venv
         working-directory: desktop-shell
         run: |
+          python3 -m pip install --upgrade setuptools wheel
           python3 -m venv .venv
           .venv/bin/python -m pip install --upgrade pip
-          .venv/bin/pip install pywebview pillow pyinstaller
+          .venv/bin/pip install pywebview pystray pillow pyinstaller
 
       # build_runtime.py --arch：下载对应架构的 python-build-standalone + node darwin tarball。
       # **不带** --no-zip：mac 没有安装器（无 Inno），runtime.zip 必须内嵌进 .app，
       # shell 首启自解压到 ~/Library/Application Support/ThinkBuddy/runtime/。
+      # build_runtime 内置「zip 前 rebrand + 安全自检」（2026-10-19 修复：
+      # 此处原 rebrand 在 zip 之后才跑，dmg 里品牌未换）。
       - name: Build runtime + zip
         working-directory: desktop-shell
         env:
           BUILD_PY: ${{ steps.py312.outputs.python-path }}
+          # runner 在海外：覆盖 build_runtime.py 默认的清华镜像，直连官方 pypi 更快。
+          PIP_INDEX_URL: https://pypi.org/simple
         run: .venv/bin/python tools/build_runtime.py --arch ${{ matrix.arch }}
 
-      # 只重写 staging 产物里的用户可见品牌名；包名/类名/URL 受保护。幂等。
-      - name: Rebrand staging (DeepTutor -> ThinkBuddy)
+      # 不设独立的 "Rebrand staging" 步骤（2026-10-24 删除）：PyInstaller spec
+      # 只打包壳代码 + dist/runtime.zip + 图标，staging 磁盘目录不进 .app；
+      # zip 内品牌由上一步 build_runtime 内置的「zip 前 rebrand + 安全自检」
+      # 保证（2026-10-19 修复）。此前在这里对 staging 再 rebrand 一遍纯属
+      # 重复劳动——全树 .py 改写 + compileall 重编译，Intel runner 上白烧
+      # 1-3 分钟。便携 zip 流程（make_portable.py）若需要磁盘品牌再单独跑。
+
+      # 不加 --clean：分析缓存（build/ThinkBuddyDesktop-mac/）对几乎不变的壳输入
+      # 完全可复用，--clean 每次强制全量重分析，纯浪费 1-3 分钟。
+      - name: Inject shell version
         working-directory: desktop-shell
-        run: .venv/bin/python tools/rebrand.py
+        run: .venv/bin/python tools/inject_version.py
 
       - name: Build .app with PyInstaller
         working-directory: desktop-shell
-        run: .venv/bin/python -m PyInstaller --noconfirm --clean build/ThinkBuddyDesktop-mac.spec
+        run: .venv/bin/python -m PyInstaller --noconfirm build/ThinkBuddyDesktop-mac.spec
 
-      # artifact 保持 zip（和 Windows 一致，Actions 构建结果即 zip）。
-      - name: Zip .app bundle
-        working-directory: desktop-shell/dist
-        run: ditto -c -k --keepParent ThinkBuddyDesktop.app ThinkBuddyDesktop-mac-${{ matrix.arch }}.zip
-
-      # 仅勾选 release 时，额外把 .app 包成 .dmg 发布到 GitHub Release。
-      - name: Create DMG (release only)
-        if: inputs.release
-        working-directory: desktop-shell/dist
-        run: |
-          hdiutil create -volname "ThinkBuddy" -srcfolder ThinkBuddyDesktop.app \
-            -ov -format UDZO ThinkBuddyDesktop-mac-${{ matrix.arch }}.dmg
+      # mac 只出 dmg，不打 zip——日常 push 和 release 均使用 dmg，
+      # 与 Windows Inno 安装包对标（都是"安装包"而非"压缩包"）。
+      # make_dmg.sh 生成标准拖拽安装布局（app + Applications 符号链接），
+      # 文件名自动带 dt<版本>.<北京时间MMddHHmm>（与 Windows 安装包命名对齐）。
+      - name: Create DMG
+        working-directory: desktop-shell
+        run: bash tools/make_dmg.sh
 
       - name: List outputs
         working-directory: desktop-shell/dist
         run: ls -lh ThinkBuddyDesktop-mac-*
 
-      - name: Upload mac zip
-        uses: actions/upload-artifact@v4
-        with:
-          name: ThinkBuddyDesktop-mac-${{ matrix.arch }}-zip
-          path: desktop-shell/dist/ThinkBuddyDesktop-mac-${{ matrix.arch }}.zip
-          if-no-files-found: error
-
-      - name: Upload mac dmg (release only)
-        if: inputs.release
+      - name: Upload mac dmg
         uses: actions/upload-artifact@v4
         with:
           name: ThinkBuddyDesktop-mac-${{ matrix.arch }}-dmg
-          path: desktop-shell/dist/ThinkBuddyDesktop-mac-${{ matrix.arch }}.dmg
+          path: desktop-shell/dist/ThinkBuddyDesktop-mac-*.dmg
           if-no-files-found: error
 
-  # 统一发布：把 Windows + macOS 的所有包汇总到【同一个】GitHub Release。
-  # 只在上游构建 job 全部成功且勾选 release 时运行；日常 push 构建不触发。
-  release:
-    name: Release · 汇总 Windows + macOS 包发布
+      # 内嵌发布：mac 每个 matrix 子 job（arm64 / x86_64）打完立即把自己的 dmg
+      # 追加到同一个 desktop-N release，不等待另一个架构，也不等待 Windows。
+      # append_body=true：arm64 先发就先建 release + 写 arm64 段 + 通用说明，
+      # x86_64 后发再 append 自己那一段（通用说明会再写一次，可接受）。
+      - name: Publish macOS ${{ matrix.arch }} to GitHub Release
+        if: inputs.release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: desktop-${{ github.run_number }}
+          name: ThinkBuddy Desktop build ${{ github.run_number }}
+          append_body: true
+          body: |
+            ## macOS ${{ matrix.arch }}
+            - `ThinkBuddyDesktop-mac-${{ matrix.arch }}.dmg` — ${{ matrix.arch == 'arm64' && 'Apple Silicon' || 'Intel' }}
+
+            **macOS 首次打开方式**（未签名应用绕过 Gatekeeper）：
+            1. 下载对应架构的 `ThinkBuddyDesktop-mac-${{ matrix.arch }}.dmg` 并双击挂载
+            2. 把 `ThinkBuddy.app` 拖入「应用程序」
+            3. **右键** → 「打开」→ 弹窗点「仍要打开」
+            4. 之后双击即可正常启动
+
+            首次启动会自解压运行时（python + node），可能需要 10-30 秒。
+          files: desktop-shell/dist/ThinkBuddyDesktop-mac-${{ matrix.arch }}-*.dmg
+
+  # 汇总清单：等 Windows + macOS【三个平台都打完】才生成 unified latest.json。
+  # 平台包发布走 build / mac job 尾部内嵌的 Publish step（谁先打完谁先追加，
+  # 互不等待）；latest.json 需要聚合全部平台产物，必须等 needs（build, mac）
+  # 全部成功后下载各自 artifact 再生成，只上传 latest.json 到同一个
+  # desktop-N release（附件 + run artifact 双份），不重复上传平台包文件。
+  latest:
+    name: Latest · 汇总双平台产物生成 latest.json
     runs-on: ubuntu-latest
     needs: [build, mac]
     if: inputs.release
@@ -280,34 +458,47 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # pattern 必须排除 web-standalone：不带 name 的 download-artifact 会拉取
+      # 本次 run 的【所有】artifact。所有平台构建产物 artifact 名均以 ThinkBuddy
+      # 开头（ThinkBuddyDesktop-windows / ThinkBuddySetup-windows /
+      # ThinkBuddyDesktop-mac-<arch>-dmg），一个 pattern 即可精准圈定，
+      # 且 web 共享 job 的 web-standalone 不会污染 release-artifacts 目录。
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
         with:
+          pattern: ThinkBuddy*
           path: release-artifacts
           merge-multiple: true
+
+      # 汇总双平台更新清单：顶层 = Windows（老客户端兼容），mac.<arch> = macOS。
+      # 客户端 updater.check_latest 按平台读取；发布时把 latest.json 与安装包
+      # 一起上传到更新源（上传顺序铁律：先安装包，后 latest.json）。
+      - name: Build unified latest.json
+        run: |
+          python3 desktop-shell/tools/build_update_manifest.py \
+            --win-exe "release-artifacts/ThinkBuddySetup-dt*.exe" \
+            --mac-dmg "release-artifacts/ThinkBuddyDesktop-mac-arm64-*.dmg" \
+            --mac-dmg "release-artifacts/ThinkBuddyDesktop-mac-x86_64-*.dmg" \
+            --out release-artifacts/latest.json
 
       - name: List release artifacts
         run: ls -lh release-artifacts
 
-      - name: Publish GitHub Release
+      # latest.json 上传为 run artifact：不勾 release 时更新源也能从 Artifacts 下载。
+      - name: Upload unified latest.json
+        uses: actions/upload-artifact@v4
+        with:
+          name: ThinkBuddy-latest-json
+          path: release-artifacts/latest.json
+
+      # 只追加 latest.json 到同一个 desktop-N release，不重复上传平台包文件。
+      - name: Publish unified latest.json
         uses: softprops/action-gh-release@v2
         with:
           tag_name: desktop-${{ github.run_number }}
           name: ThinkBuddy Desktop build ${{ github.run_number }}
+          append_body: true
           body: |
-            ## Windows
-            - `ThinkBuddyDesktop.exe` — 便携单文件（含离线运行时）
-            - `ThinkBuddySetup-<ver>.<ts>.exe` — 安装包（Inno Setup）
 
-            ## macOS
-            - `ThinkBuddyDesktop-mac-arm64.dmg` — Apple Silicon
-            - `ThinkBuddyDesktop-mac-x86_64.dmg` — Intel
-
-            **macOS 首次打开方式**（未签名应用绕过 Gatekeeper）：
-            1. 下载对应架构的 `ThinkBuddyDesktop-mac-<arch>.dmg` 并双击挂载
-            2. 把 `ThinkBuddyDesktop.app` 拖入「应用程序」
-            3. **右键** → 「打开」→ 弹窗点「仍要打开」
-            4. 之后双击即可正常启动
-
-            首次启动会自解压运行时（python + node），可能需要 10-30 秒。
-          files: release-artifacts/*
+            **更新清单**：`latest.json`（Windows + macOS 全平台）
+          files: release-artifacts/latest.json

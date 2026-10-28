@@ -2,7 +2,7 @@
 
 把港大开源的学习工作区 **DeepTutor**（[deeptutor.info](https://deeptutor.info/zh-cn/)）一键装成桌面客户端 **ThinkBuddy**。
 以前要 `pip install -U deeptutor && deeptutor init && deeptutor start` 再开浏览器；
-现在双击 `ThinkBuddyDesktop.exe`，弹出原生窗口，本地服务自动静默拉起，关窗口即停止。
+现在双击 `ThinkBuddyDesktop.exe`，弹出原生窗口，本地服务自动静默拉起；关窗后收进系统托盘（Windows 通知区域 / macOS 菜单栏），选「退出」才真正结束。
 
 ## 它做了什么
 
@@ -13,8 +13,8 @@
   DeepTutor 并进入应用。**退出登录即回到登录页，软件功能不可用**，重新登录后恢复
   （详见 [`docs/tokengine-integration.md`](docs/tokengine-integration.md) 与
   [`docs/adr/ADR-003-login-gate.md`](docs/adr/ADR-003-login-gate.md)）
-- `deeptutor start` 以**隐藏子进程**运行；关闭窗口用 `taskkill /T` 连后端(:8001)+前端(:3782)一起停
-- **单实例**
+- `deeptutor start` 以**隐藏子进程**运行；关窗后后台服务继续运行（Windows 收进通知区域，macOS 收进菜单栏），点托盘图标 / 菜单「打开」/ 点 Dock 图标恢复窗口；托盘或文件菜单「退出」（macOS 也可 Cmd+Q）才停止服务。托盘不可用时关闭窗口直接退出。
+- **单实例**（再次启动不重复开窗，而是把已打开的窗口带到前台）
 - 工作区数据在 `~/ThinkBuddy`, 日志落盘 `%LOCALAPPDATA%\ThinkBuddy\logs\app.log`、
 
 ## Tokengine 登录（三步）
@@ -43,12 +43,57 @@
   回环地址按本地派生 `/v1`）→ userinfo 下发的中继地址。行为完全可预测。
 - 只有**业务令牌**（`sk-Tok...`）会写进 DeepTutor；`access_token`/`refresh_token` 仅用于换码与吊销，
   DPAPI 加密落盘，**绝不进入对话请求**。
-- 联调期指向本地平台：把 `api_base` 写进 `%LOCALAPPDATA%\ThinkBuddy\endpoints.json`，
-  或设 `TOKENGINE_API_BASE=http://127.0.0.1:3000`。**装好的包无需重新打包即可改指向。**
-- thinkbuddy-website 默认地址为 `https://thinkbuddy.hanyoai.com`。可在同一个
-  `endpoints.json` 中设置 `"thinkbuddy_website_url"`，或用环境变量
-  `THINKBUDDY_WEBSITE_URL` 覆盖。
 - 登录按钮默认就绪，无需额外开关；界面调试可用 `DEEPTUTOR_DESKTOP_DEBUG=1` 打开登录页的技术面板。
+
+## 站点与联调配置（endpoints.json）
+
+客户端连接两个正式站点，两者都用**同一个覆盖文件**指向联调环境，装好的包**无需重新打包**：
+
+| 站点 | 生产地址 | 角色 |
+|---|---|---|
+| **ThinkBuddy 主站** | `https://thinkbuddy.hanyoai.com` | 产品主站：官网跳转、签到、邀请页、更新源、遥测 |
+| **Tokengine 平台** | `https://tokengine.hanyoai.com` | 登录认证（OAuth）+ token 服务（模型中继） |
+
+**文件位置**：`%LOCALAPPDATA%\ThinkBuddy\endpoints.json`
+（即 `C:\Users\<用户名>\AppData\Local\ThinkBuddy\endpoints.json`；macOS 为
+`~/Library/Application Support/ThinkBuddy/endpoints.json`）。文件缺失或损坏时
+静默回退到内置生产默认；改完保存后**重启应用生效**（启动时 toast 会提示
+「API 地址已按 endpoints.json 对齐」）。
+
+```json
+{
+  "api_base": "http://127.0.0.1:8000",
+  "oauth_base": "http://127.0.0.1:3000"
+}
+```
+
+可覆写的全部键（只写需要的键，没写的键继续用生产默认）：
+
+| 键 | 站点 | 作用 | 缺省值 |
+|---|---|---|---|
+| `api_base` | ThinkBuddy 主站 | 主站根地址；更新源/遥测/邀请页**硬编码派生**自它 | `https://thinkbuddy.hanyoai.com` |
+| `oauth_base` | Tokengine | 认证+token 服务根地址，派生全部 OAuth 端点与中继 | `https://tokengine.hanyoai.com` |
+| `authorize_url` / `token_url` / `userinfo_url` / `revoke_url` | Tokengine | 单独覆盖某个 OAuth 端点（少用） | `<oauth_base>/oauth/<name>` |
+| `relay_base` | Tokengine | OpenAI 兼容模型中继地址 | `<oauth_base>/v1` |
+
+> 更新源固定为 `<api_base>/update`、遥测固定为 `<api_base>/v1/events`——**不占
+> 环境变量和 endpoints.json 键位**，跟着主站走（联调主站时更新检查自动指向本地，
+> 不会误弹生产更新）。
+
+**优先级（高 → 低）**：环境变量 > `endpoints.json` > 内置生产默认。对应环境变量：
+主站为 `THINKBUDDY_API_BASE`；Tokengine 键为 `TOKENGINE_<键名大写>`
+（如 `TOKENGINE_OAUTH_BASE`）。环境变量适合临时联调（不改文件），
+`endpoints.json` 适合长期指向——**两个站点用同一种方式调试**。
+
+> ⚠️ 2026-10-22 键值语义迁移：旧键 `api_base`（原指 Tokengine）已由
+> `oauth_base` 取代，`api_base` 现指 ThinkBuddy 主站；旧键
+> `thinkbuddy_website_url`/`update_url`/`telemetry_url` 已废弃。旧文件中的废弃键
+> 会被忽略并在日志提示；若你的 endpoints.json 仍用旧语义写了 `api_base`，
+> 请手工改为 `oauth_base`。
+
+联调细节（OAuth 回调、签到链路、更新源自测）见
+[`docs/tokengine-integration.md`](docs/tokengine-integration.md)；
+端点解析实现见 [`desktop/auth/config.py`](desktop/auth/config.py)。
 
 ## 三种运行形态
 
@@ -62,7 +107,7 @@
 
 ```powershell
 py -3.12 -m venv .venv
-.\.venv\Scripts\python -m pip install -U pip pywebview pillow pyinstaller
+.\.venv\Scripts\python -m pip install -U pip pywebview pystray pillow pyinstaller
 .\.venv\Scripts\python -m desktop.main        # 开发跑起来
 ```
 
@@ -149,7 +194,8 @@ desktop/           桌面壳(Python，pywebview)
 tools/
   build_runtime.py 构建离线运行时
   make_portable.py 组装便携包
-  make_icon.py     生成图标
+  （图标更新：品牌资产事实源在仓库根 brand/logo/，
+    同步 cp brand/logo/thinkbuddy-icon.ico → assets/icon.ico）
 build/
   ThinkBuddyDesktop.spec   PyInstaller 配置
   installer.iss            Inno Setup 安装向导

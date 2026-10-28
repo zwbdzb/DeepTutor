@@ -104,7 +104,7 @@ cd D:\studio\DeepTutor\desktop-shell   # （迁移后：cd D:\studio\DeepTutor\d
 py -3.12 -m venv .venv
 
 # 装依赖
-.\.venv\Scripts\python -m pip install -U pip pywebview pillow pyinstaller
+.\.venv\Scripts\python -m pip install -U pip pywebview pystray pillow pyinstaller
 
 # 以后跑任何东西都是这个前缀：
 .\.venv\Scripts\python <你的命令>
@@ -216,21 +216,25 @@ Get-ChildItem dist\*.exe | Select-Object Name, Length, LastWriteTime
 | OAuth 请求的构造 | `desktop\auth\client.py` |
 | 启动流程/窗口行为 | `desktop\main.py` |
 | 启动页样式 | `desktop\splash.py` |
-| 打包配置 | `build\ThinkBuddyDesktop.spec`（PyInstaller）、`build\installer.iss`（安装器） |
+| 打包配置 | `build\ThinkBuddyDesktop.spec`（PyInstaller，Windows）、`build\ThinkBuddyDesktop-mac.spec`（macOS）、`build\installer.iss`（安装器） |
 
 ### 5.3 指向哪个平台（联调 vs 线上）
 
 ```powershell
 # 方式一（推荐，装好的包也能改）：写配置文件
 # %LOCALAPPDATA%\ThinkBuddy\endpoints.json
-{ "api_base": "http://127.0.0.1:3000" }        # 本地联调
-{ "api_base": "https://tokengine.hanyoai.com" } # 线上
+{ "oauth_base": "http://127.0.0.1:3000" }         # Tokengine 认证/token 服务 → 本地联调
+{ "oauth_base": "https://tokengine.hanyoai.com" } # 线上
+{ "api_base": "http://127.0.0.1:8000" }           # ThinkBuddy 主站 → 本地联调（可选）
 
-# 方式二：环境变量
-$env:TOKENGINE_API_BASE = "http://127.0.0.1:3000"
+# 方式二：环境变量（临时单次）
+$env:TOKENGINE_OAUTH_BASE = "http://127.0.0.1:3000"   # Tokengine
+$env:THINKBUDDY_API_BASE = "http://127.0.0.1:8000"    # ThinkBuddy 主站
 ```
 
 **不要**为了换平台地址重新打包——配置文件优先级高于内置默认值。
+（2026-10-22 键值语义迁移：旧 `api_base`（原指 Tokengine）已改名 `oauth_base`，
+`api_base` 现指 ThinkBuddy 主站。）
 
 ### 5.4 登录后的账号菜单（ADR-004：原生标题栏账号区）
 
@@ -242,12 +246,20 @@ $env:TOKENGINE_API_BASE = "http://127.0.0.1:3000"
 |---|---|---|
 | splash 启动中 | 隐藏 | — |
 | 登录门控页（未登录/已配置令牌/登录中） | 隐藏 | 登录走页面中间按钮 |
-| 应用页（已登录） | 显示用户名 | 点击弹菜单：账号头行（用户名 · 余额 · 模型数）／**刷新可用模型**／打开 Tokengine 平台／切换账号／**退出登录**（MessageBox 确认）／关于 ThinkBuddy |
+| 应用页（已登录） | 显示用户名 | 点击弹菜单：账号头行（用户名 · 余额，右侧 ⟳ 点击重拉 /v1/userinfo，只更新用户名/余额，不动模型目录、不刷新页面）／邀请好友赢积分／签到得积分／**刷新可用模型**（重拉模型目录并刷新页面）／打开 Tokengine 平台／切换账号／**退出登录**（MessageBox 确认）／关于 ThinkBuddy |
 
 点击路由与菜单内容由状态模型决定（`desktop/titlebar_account.py` 的
 `chip_model` / `account_menu_model`），动作接线在 `main.py` 的
 `_chip_actions`，账号区自绘与命中在 `native_menu_backend.py` 的
 `AccountChip`。关闭方式：再点账号区 / Esc / 点菜单外。
+
+> **macOS 实现（2026-10-16）**：账号区不用 WinForms，走
+> `desktop/inject.py` 的 `AccountChipInjector`——标题栏右侧
+> `NSTitlebarAccessoryViewController` 里的 borderless `NSButton`，点击弹
+> 原生 `NSMenu`。状态模型、动作分发表（`_chip_actions`）、显示时序与
+> Windows 完全共用。菜单动作在后台线程执行；系统弹窗走 osascript
+> （tkinter 会在 pywebview 进程里再起 NSApplication，SIGILL 崩溃）。
+> 机制与踩坑记录见 `docs/adr/ADR-004-titlebar-account-chip.md` 末节。
 
 > **2026-09-24 交互打磨**：所有下拉面板已做圆角（Win11 走 DWM 原生圆角，
 > Win10 退化为 Region 裁剪）；「点菜单外收回」由 UI 线程看门狗兜底（物理
@@ -314,7 +326,8 @@ runtime-build\staging\python\python.exe -c "from deeptutor.__version__ import __
 1. **改前先建分支**：`git switch -c feat/xxx`。改坏了随时弃车保帅。
 2. **小步提交**：一个功能拆成几个小 commit，写清做了什么。
 3. **提交前自测**：至少跑通 §4.1 开发态 + 看一遍 `app.log` 无 ERROR。
-4. **不确定就看日志**：`%LOCALAPPDATA%\ThinkBuddy\logs\app.log` 是你的眼睛。
+4. **不确定就看日志**：Windows `%LOCALAPPDATA%\ThinkBuddy\logs\app.log`、
+   macOS `~/Library/Application Support/ThinkBuddy/logs/app.log` 是你的眼睛。
 5. **读代码顺序建议**：`main.py`（入口）→ `inject.py`（注入）→ `auth/manager.py`（登录编排）。
    每个文件开头都有中文注释讲设计取舍。
 6. **别怕 PyInstaller**：它只是把 Python 代码+依赖打成一个 exe。spec 文件就是配置，

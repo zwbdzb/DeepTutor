@@ -27,7 +27,7 @@ D:\studio\DeepTutor\
 ├── scripts/              # prepare_web_package.py 等
 ├── desktop-shell/        # ← 现在的 D:\studio\DeepTutor\desktop-shell 整体迁入
 │   ├── desktop/          # 壳代码（main/inject/auth/...）
-│   ├── tools/            # build_runtime.py / make_portable.py / make_icon.py
+│   ├── tools/            # build_runtime.py / make_portable.py
 │   ├── build/            # spec / installer.iss / build.ps1
 │   └── docs/
 └── ...

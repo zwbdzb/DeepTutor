@@ -113,14 +113,14 @@ export default function AppShell({ sidebar, children }: AppShellProps) {
             <Link href="/" className="flex items-center gap-1.5">
               <Image
                 src="/logo.png"
-                alt="EduBuddy"
+                alt="ThinkBuddy"
                 width={20}
                 height={20}
                 unoptimized
                 className="h-5 w-5"
               />
               <span className="text-[14px] font-semibold tracking-tight text-[var(--foreground)]">
-                EduBuddy
+                ThinkBuddy
               </span>
             </Link>
           </div>

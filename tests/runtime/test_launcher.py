@@ -7,6 +7,7 @@ import logging
 import os
 from pathlib import Path
 import signal
+import socket
 import subprocess
 import sys
 from threading import Thread
@@ -124,6 +125,37 @@ def test_packaged_web_cache_replaces_next_public_placeholders(tmp_path: Path) ->
         "const api='http://localhost:8001';"
     )
     assert "auth='true'" in (runtime / ".next" / "static" / "app.js").read_text(encoding="utf-8")
+
+
+def test_packaged_web_patch_does_not_write_through_hardlinks(tmp_path: Path) -> None:
+    """守住 _patch_packaged_web_placeholders 的 copy-on-write：防硬链接写穿 site-packages。"""
+    packaged = tmp_path / "pkg"
+    (packaged / ".next" / "static").mkdir(parents=True)
+    (packaged / "server.js").write_text(
+        "const api='__NEXT_PUBLIC_API_BASE_PLACEHOLDER__';",
+        encoding="utf-8",
+    )
+    (packaged / ".next" / "static" / "app.js").write_text(
+        "auth='__NEXT_PUBLIC_AUTH_ENABLED_PLACEHOLDER__'",
+        encoding="utf-8",
+    )
+
+    runtime = launcher._copy_packaged_web_if_needed(
+        packaged,
+        home=tmp_path / "home",
+        api_base="http://localhost:8001",
+        auth_enabled=False,
+    )
+
+    # 缓存侧已打补丁
+    patched_server = (runtime / "server.js").read_text(encoding="utf-8")
+    assert "http://localhost:8001" in patched_server
+    assert "__NEXT_PUBLIC_API_BASE_PLACEHOLDER__" not in patched_server
+    # 关键断言：源侧必须保留占位符原样。缓存用 os.link 硬链接物化，若补丁
+    # 改回原地 write_text 会穿透硬链接污染 site-packages 出货源——无论
+    # 当前实现是断链写（NTFS 链接生效）还是 copy2 回退，这里都必须成立。
+    source_server = (packaged / "server.js").read_text(encoding="utf-8")
+    assert "__NEXT_PUBLIC_API_BASE_PLACEHOLDER__" in source_server
 
 
 def test_runtime_home_rejects_project_data_paths(monkeypatch, tmp_path: Path) -> None:
@@ -313,7 +345,7 @@ def test_detect_existing_source_frontend_ignores_stale_lock(tmp_path: Path, monk
 
 
 def test_resolve_port_conflicts_passthrough_when_free(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(launcher, "_port_accepts_connection", lambda port: False)
+    monkeypatch.setattr(launcher, "_port_free", lambda port: True)
 
     result = launcher._resolve_port_conflicts(
         backend_port=8000,
@@ -326,7 +358,7 @@ def test_resolve_port_conflicts_passthrough_when_free(tmp_path: Path, monkeypatc
 
 
 def test_resolve_port_conflicts_non_tty_exits_with_message(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(launcher, "_port_accepts_connection", lambda port: port == 8000)
+    monkeypatch.setattr(launcher, "_port_free", lambda port: port != 8000)
     monkeypatch.setattr(launcher, "_port_listeners", lambda port: [(123, "python uvicorn")])
     monkeypatch.setattr(launcher.sys, "stdin", None)
 
@@ -448,7 +480,7 @@ def test_noninteractive_restart_reclaims_only_verified_orphans_once(tmp_path, mo
                 occupied.clear()
 
     monkeypatch.setattr(launcher.sys, "stdin", None)
-    monkeypatch.setattr(launcher, "_port_accepts_connection", lambda port: port in occupied)
+    monkeypatch.setattr(launcher, "_port_free", lambda port: port not in occupied)
     monkeypatch.setattr(launcher, "_port_listeners", lambda _port: entries)
     monkeypatch.setattr(launcher, "_owned_orphan_started_at", identity)
     monkeypatch.setattr(launcher, "_kill_port_listeners", reclaim)
@@ -539,7 +571,7 @@ def test_resolve_port_conflicts_kill_option_frees_port(tmp_path: Path, monkeypat
         killed.append(pid)
         occupied.discard(8000)
 
-    monkeypatch.setattr(launcher, "_port_accepts_connection", lambda port: port in occupied)
+    monkeypatch.setattr(launcher, "_port_free", lambda port: port not in occupied)
     monkeypatch.setattr(launcher, "_port_listeners", lambda port: [(123, "python uvicorn")])
     monkeypatch.setattr(launcher, "_send_tree_signal", fake_kill)
     monkeypatch.setattr(launcher.sys, "stdin", _FakeTty())
@@ -568,7 +600,7 @@ def test_resolve_port_conflicts_change_option_prompts_and_persists(
 
     answers = iter(["1", "8002", "3785"])
 
-    monkeypatch.setattr(launcher, "_port_accepts_connection", lambda port: port == 8000)
+    monkeypatch.setattr(launcher, "_port_free", lambda port: port != 8000)
     monkeypatch.setattr(launcher, "_port_listeners", lambda port: [(123, "python uvicorn")])
     monkeypatch.setattr(launcher, "_persist_ports", fake_persist)
     monkeypatch.setattr(launcher.sys, "stdin", _FakeTty())
@@ -583,6 +615,232 @@ def test_resolve_port_conflicts_change_option_prompts_and_persists(
 
     assert result == (8002, 3785)
     assert saved == {"backend": 8002, "frontend": 3785}
+
+
+def test_port_free_bind_probe_tracks_real_listener() -> None:
+    """A live listener must count as occupied; releasing it frees the port."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        port = listener.getsockname()[1]
+        assert launcher._port_free(port) is False
+    assert launcher._port_free(port) is True
+
+
+@pytest.mark.skipif(
+    sys.platform == "darwin",
+    reason="BSD allows wildcard/specific coexistence under SO_REUSEADDR",
+)
+def test_port_free_detects_ipv6_only_listener() -> None:
+    """nginx-on-[::]:8001 regression (2026-10-20): a foreign v6-only listener
+    must count as occupied even though 0.0.0.0:P would still bind — the
+    browser resolves localhost to ::1 first and would land on the wrong
+    server. The connect probe missed this entirely."""
+    try:
+        listener = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+    except OSError:
+        pytest.skip("no IPv6 stack")
+    with listener:
+        listener.bind(("::1", 0))
+        listener.listen(1)
+        port = listener.getsockname()[1]
+        assert launcher._port_free(port) is False
+    assert launcher._port_free(port) is True
+
+
+def test_pick_ephemeral_port_returns_bindable_port() -> None:
+    port = launcher._pick_ephemeral_port(avoid={3782})
+
+    assert 1 <= port <= 65535
+    assert port != 3782
+    assert launcher._port_free(port)
+
+
+def test_resolve_port_conflicts_skips_backend_probe_in_shell_managed_mode(
+    tmp_path: Path, monkeypatch
+) -> None:
+    probed: list[int] = []
+
+    def fake_free(port: int) -> bool:
+        probed.append(port)
+        return port != 8000  # the (soon irrelevant) backend port is occupied
+
+    monkeypatch.setattr(launcher, "_port_free", fake_free)
+    monkeypatch.setattr(launcher.sys, "stdin", None)
+
+    result = launcher._resolve_port_conflicts(
+        backend_port=8000,
+        frontend_port=3784,
+        check_frontend=True,
+        check_backend=False,
+        settings_dir=tmp_path,
+    )
+
+    assert result == (8000, 3784)
+    assert 8000 not in probed, "ephemeral backend port must not be probed"
+
+
+def test_explicit_env_override_distinguishes_operator_from_launcher_derived(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("DEEPTUTOR_SETTINGS_DERIVED_ENV_KEYS", raising=False)
+    monkeypatch.delenv("BACKEND_PORT", raising=False)
+    assert launcher._explicit_env_override("BACKEND_PORT") is False
+
+    monkeypatch.setenv("BACKEND_PORT", "9000")
+    assert launcher._explicit_env_override("BACKEND_PORT") is True
+
+    # A relaunching launcher hands its rendered ports to the worker tagged as
+    # settings-derived (#1536); those must not count as operator overrides.
+    monkeypatch.setenv("DEEPTUTOR_SETTINGS_DERIVED_ENV_KEYS", "BACKEND_PORT,FRONTEND_PORT")
+    assert launcher._explicit_env_override("BACKEND_PORT") is False
+
+
+def _harness_shell_managed_start(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    settings,
+    resolved_ports: tuple[int, int],
+) -> dict[str, object]:
+    """Spin launcher.start() up to the frontend wait, capturing decisions."""
+    from deeptutor.services import config as config_module
+    from deeptutor.services import setup as setup_module
+
+    captured: dict[str, object] = {
+        "envs": {},
+        "conflict": None,
+        "frontend_api_base": None,
+        "termination": [],
+    }
+
+    def fake_resolve_frontend(_home, _port, *, api_base, auth_enabled, dev=False):
+        captured["frontend_api_base"] = api_base
+        return launcher.FrontendRuntime("source-production", ["node"], tmp_path)
+
+    def fake_conflicts(**kwargs):
+        captured["conflict"] = dict(kwargs)
+        return resolved_ports
+
+    def wait_for_http(**kwargs):
+        if kwargs["process"].name == "frontend":
+            raise RuntimeError("captured launch environment")
+
+    def fake_terminate(process):
+        if process is not None:
+            captured["termination"].append(process.name)  # type: ignore[union-attr]
+
+    def _capture_spawn(_command, *, cwd, env, name):
+        assert cwd == tmp_path
+        captured["envs"][name] = dict(env)  # type: ignore[index]
+        return launcher.ManagedProcess(name, object(), None)
+
+    monkeypatch.setattr(launcher, "_relax_console_encoding", lambda: None)
+    monkeypatch.setattr(launcher, "_reset_runtime_singletons", lambda: None)
+    monkeypatch.setattr(config_module, "ensure_runtime_settings_files", lambda: None)
+    monkeypatch.setattr(config_module, "load_launch_settings", lambda _home: settings)
+    monkeypatch.setattr(config_module, "export_runtime_settings_to_env", lambda **_kwargs: {})
+    monkeypatch.setattr(config_module, "load_auth_settings", lambda: {"enabled": False})
+    monkeypatch.setattr(config_module, "get_ws_max_size", lambda: 1024)
+    monkeypatch.setattr(setup_module, "init_user_directories", lambda _home: None)
+    monkeypatch.setattr(launcher, "resolve_language", lambda: "en")
+    monkeypatch.setattr(launcher, "print_banner", lambda **_kwargs: None)
+    monkeypatch.setattr(launcher, "_log", lambda _message: None)
+    monkeypatch.setenv("DEEPTUTOR_NEXT_DIST_DIR", ".next-inherited")
+    monkeypatch.setenv(launcher.DETACHED_WORKER_ENV, "1")
+    monkeypatch.setenv(launcher.DETACHED_TOKEN_ENV, "secret-token")
+    monkeypatch.delenv("BACKEND_PORT", raising=False)
+    monkeypatch.delenv("DEEPTUTOR_SETTINGS_DERIVED_ENV_KEYS", raising=False)
+    monkeypatch.setattr(launcher, "_resolve_frontend", fake_resolve_frontend)
+    monkeypatch.setattr(launcher, "_detect_existing_source_frontend", lambda _runtime: None)
+    monkeypatch.setattr(launcher, "_resolve_port_conflicts", fake_conflicts)
+    monkeypatch.setattr(launcher, "_install_signal_handlers", lambda _callback, **_kwargs: None)
+    monkeypatch.setattr(launcher.atexit, "register", lambda _callback: None)
+    monkeypatch.setattr(launcher, "_wait_for_http", wait_for_http)
+    monkeypatch.setattr(launcher, "_terminate", fake_terminate)
+    monkeypatch.setattr(launcher, "_spawn", _capture_spawn)
+    return captured
+
+
+def test_start_shell_managed_assigns_ephemeral_backend_port(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Shell-managed mode: the kernel picks the backend port and everything
+    downstream (conflict checks, spawn env, proxy base URL) follows it."""
+    from deeptutor.services import config as config_module
+
+    settings_dir = tmp_path / "data" / "user" / "settings"
+    settings = config_module.LaunchSettings(
+        backend_port=8001,
+        frontend_port=3782,
+        language="en",
+        source="test",
+        settings_dir=settings_dir,
+        interface_json_path=settings_dir / "interface.json",
+        system_json_path=settings_dir / "system.json",
+    )
+    monkeypatch.setenv(launcher.SHELL_MANAGED_ENV, "1")
+    monkeypatch.setattr(launcher, "_pick_ephemeral_port", lambda **_kwargs: 52341)
+    captured = _harness_shell_managed_start(
+        monkeypatch, tmp_path, settings=settings, resolved_ports=(52341, 3782)
+    )
+
+    with pytest.raises(RuntimeError, match="captured launch environment"):
+        launcher.start(tmp_path)
+
+    assert captured["conflict"]["check_backend"] is False
+    assert captured["conflict"]["backend_port"] == 52341
+    # Build-time baking stays on the nominal settings port so the web cache
+    # marker and build fingerprints are stable across launches.
+    assert captured["frontend_api_base"] == "http://127.0.0.1:8001"
+    envs = captured["envs"]
+    assert envs["frontend"]["BACKEND_PORT"] == "52341"
+    assert envs["frontend"]["DEEPTUTOR_API_BASE_URL"] == "http://127.0.0.1:52341"
+    assert envs["frontend"]["NEXT_PUBLIC_API_BASE"] == "http://127.0.0.1:52341"
+    assert envs["frontend"]["FRONTEND_PORT"] == "3782"
+
+
+def test_start_shell_managed_respects_explicit_backend_port(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """An operator-pinned BACKEND_PORT (Docker mapping, reverse proxy) keeps
+    the strict fixed-port conflict checks even in shell-managed mode."""
+    from deeptutor.services import config as config_module
+
+    settings_dir = tmp_path / "data" / "user" / "settings"
+    settings = config_module.LaunchSettings(
+        backend_port=9000,
+        frontend_port=3782,
+        language="en",
+        source="test",
+        settings_dir=settings_dir,
+        interface_json_path=settings_dir / "interface.json",
+        system_json_path=settings_dir / "system.json",
+    )
+    monkeypatch.setenv(launcher.SHELL_MANAGED_ENV, "1")
+    captured = _harness_shell_managed_start(
+        monkeypatch, tmp_path, settings=settings, resolved_ports=(9000, 3782)
+    )
+    monkeypatch.setenv("BACKEND_PORT", "9000")  # after the harness clears it
+    monkeypatch.setattr(
+        launcher,
+        "_pick_ephemeral_port",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("operator-pinned BACKEND_PORT must not be replaced")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="captured launch environment"):
+        launcher.start(tmp_path)
+
+    assert captured["conflict"]["check_backend"] is True
+    assert captured["conflict"]["backend_port"] == 9000
+    assert captured["frontend_api_base"] == "http://127.0.0.1:9000"
+    envs = captured["envs"]
+    assert envs["frontend"]["BACKEND_PORT"] == "9000"
+    assert envs["frontend"]["DEEPTUTOR_API_BASE_URL"] == "http://127.0.0.1:9000"
 
 
 class _RecordingStream:

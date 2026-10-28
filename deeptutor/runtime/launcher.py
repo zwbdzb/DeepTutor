@@ -35,6 +35,10 @@ from deeptutor.services.app_update import LAUNCHER_PID_ENV
 
 BACKEND_READY_TIMEOUT_ENV = "DEEPTUTOR_BACKEND_READY_TIMEOUT"
 FRONTEND_READY_TIMEOUT_ENV = "DEEPTUTOR_FRONTEND_READY_TIMEOUT"
+# Set by the desktop shell: the backend's only consumer is this machine's
+# frontend proxy, so the launcher lets the kernel assign an ephemeral port
+# instead of competing for a fixed one. See start() and _pick_ephemeral_port.
+SHELL_MANAGED_ENV = "DEEPTUTOR_SHELL_MANAGED"
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +142,30 @@ class DetachedLauncherPaths:
 
 def _log(message: str) -> None:
     print(message, flush=True)
+
+
+#: Abnormal exit-code prefixes → banner label key carrying the mechanism hint.
+#: Keys compare against the unsigned 32-bit view of the code. Forensic value:
+#: an external TerminateProcess kill exits 1 with zero output; a shutdown /
+#: console-control kill exits 0x40010004; an in-process crash exits 0xC0000005.
+_EXIT_HINT_KEYS: tuple[tuple[int, str], ...] = (
+    (0x00000001, "start.exit_hint.external"),
+    (0x40010004, "start.exit_hint.shutdown"),
+    (0xC000013A, "start.exit_hint.ctrl"),
+    (0xC0000005, "start.exit_hint.crash"),
+    (0xC0000409, "start.exit_hint.crash"),
+)
+
+
+def _exit_hint(code: object) -> str:
+    try:
+        normalized = int(code) & 0xFFFFFFFF  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return ""
+    for prefix, key in _EXIT_HINT_KEYS:
+        if normalized == prefix:
+            return _t(key)
+    return ""
 
 
 def _reset_runtime_singletons() -> None:
@@ -353,6 +381,82 @@ def _port_accepts_connection(port: int) -> bool:
     return any(_host_accepts_connection(host, port) for host in LOOPBACK_HOSTS)
 
 
+def _port_free(port: int) -> bool:
+    """True when a server could listen on ``port`` right now (bind probe).
+
+    A connect probe answers "is somebody accepting"; this answers "can a
+    listener bind here", which is the decision the launcher actually makes.
+    The nginx-on-8001 incident (2026-10-20) showed the gap: a foreign listener
+    on ``[::]:P`` does not block ``0.0.0.0:P`` on Windows (V6ONLY=1 default),
+    yet ``localhost`` prefers IPv6 and lands on the wrong server — so both
+    families must be free. The socket options mirror what asyncio's
+    ``create_server`` (uvicorn) sets per platform, so the probe predicts the
+    real bind outcome instead of a stricter or looser fiction.
+    """
+    probes: list[tuple[int, str]] = [(socket.AF_INET, "0.0.0.0")]
+    try:
+        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM):
+            pass
+        probes.append((socket.AF_INET6, "::"))
+    except OSError:
+        pass  # no IPv6 stack: the IPv4 verdict is authoritative
+    for family, host in probes:
+        sock = socket.socket(family, socket.SOCK_STREAM)
+        try:
+            if os.name == "nt":
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            else:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind((host, port))
+        except OSError:
+            return False
+        finally:
+            sock.close()
+    return True
+
+
+def _pick_ephemeral_port(*, avoid: set[int] | None = None, attempts: int = 8) -> int:
+    """Ask the kernel for a free TCP port by binding to port 0.
+
+    Shell-managed mode uses this for the backend, whose only consumer is the
+    frontend's proxy on the same machine (a one-shot env handshake) — nobody
+    needs the port to be stable, so the kernel allocator beats any probe: the
+    port is free *at bind time* by construction. The close-then-rebind window
+    before uvicorn starts remains, but it is strictly narrower than any
+    fixed-port scheme and uvicorn still fails loud if it loses the race.
+    """
+    avoid = avoid or set()
+    for _ in range(attempts):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("0.0.0.0", 0))
+            port = int(sock.getsockname()[1])
+        if port not in avoid and _port_free(port):
+            return port
+    raise SystemExit(
+        f"unable to obtain a free local port for the backend after {attempts} attempts"
+    )
+
+
+def _explicit_env_override(key: str) -> bool:
+    """True when ``key`` was set by the operator, not rendered by a launcher.
+
+    A relaunching launcher hands its rendered ``BACKEND_PORT``/``FRONTEND_PORT``
+    to the worker together with ``SETTINGS_DERIVED_ENV_KEYS`` (#1536); those are
+    derived values rather than deployment overrides and must not pin the port.
+    """
+    from deeptutor.services.config import SETTINGS_DERIVED_ENV_KEYS
+
+    value = os.environ.get(key, "").strip()
+    if not value:
+        return False
+    derived = {
+        part.strip()
+        for part in os.environ.get(SETTINGS_DERIVED_ENV_KEYS, "").split(",")
+        if part.strip()
+    }
+    return key not in derived
+
+
 def _port_listeners(port: int) -> list[tuple[int, str]]:
     """Best-effort list of ``(pid, command)`` for processes listening on ``port``."""
     if os.name == "nt":
@@ -439,7 +543,7 @@ def _port_listeners_windows(port: int) -> list[tuple[int, str]]:
 
 def _suggest_free_port(preferred: int, taken: set[int]) -> int:
     for candidate in range(preferred, min(preferred + 200, 65536)):
-        if candidate not in taken and not _port_accepts_connection(candidate):
+        if candidate not in taken and _port_free(candidate):
             return candidate
     return preferred
 
@@ -456,7 +560,7 @@ def _prompt_port(label: str, *, default: int, taken: set[int]) -> int:
             port = int(value)
         except ValueError:
             port = -1
-        if 1 <= port <= 65535 and port not in taken and not _port_accepts_connection(port):
+        if 1 <= port <= 65535 and port not in taken and _port_free(port):
             return port
         _log(_t("start.port_invalid", value=value))
 
@@ -494,7 +598,7 @@ def _prompt_new_ports(
     check_frontend: bool,
     settings_dir: Path,
 ) -> tuple[int, int]:
-    backend_occupied = _port_accepts_connection(backend_port)
+    backend_occupied = not _port_free(backend_port)
     new_backend = _prompt_port(
         _t("init.backend_port"),
         default=_suggest_free_port(backend_port + 1, {frontend_port})
@@ -504,7 +608,7 @@ def _prompt_new_ports(
     )
     new_frontend = frontend_port
     if check_frontend:
-        frontend_occupied = _port_accepts_connection(frontend_port)
+        frontend_occupied = not _port_free(frontend_port)
         new_frontend = _prompt_port(
             _t("init.frontend_port"),
             default=_suggest_free_port(frontend_port + 1, {new_backend})
@@ -613,18 +717,24 @@ def _resolve_port_conflicts(
     settings_dir: Path,
     runtime_home: Path | None = None,
     frontend_cwd: Path | None = None,
+    check_backend: bool = True,
 ) -> tuple[int, int]:
     """Return free ``(backend_port, frontend_port)``, resolving conflicts interactively.
 
     Without a TTY, reclaim verified orphaned children of this deployment once;
     unknown or foreign listeners retain the historical port-conflict failure.
+    ``check_backend=False`` skips the backend probe entirely: shell-managed
+    mode assigns the backend an OS-ephemeral port, which no pre-check can
+    usefully second-guess.
     """
     reclaimed = False
     while True:
-        roles = [("start.backend", backend_port)]
+        roles = []
+        if check_backend:
+            roles.append(("start.backend", backend_port))
         if check_frontend:
             roles.append(("start.frontend", frontend_port))
-        occupied = [(key, port) for key, port in roles if _port_accepts_connection(port)]
+        occupied = [(key, port) for key, port in roles if not _port_free(port)]
         if not occupied:
             return backend_port, frontend_port
 
@@ -727,6 +837,95 @@ def _packaged_web_dir() -> Path | None:
     return path if (path / "server.js").exists() else None
 
 
+def _web_cache_marker_payload(
+    packaged: Path,
+    *,
+    api_base: str,
+    auth_enabled: bool,
+) -> dict[str, object]:
+    source_server = packaged / "server.js"
+    return {
+        "source": str(packaged),
+        "source_mtime_ns": source_server.stat().st_mtime_ns,
+        "api_base": api_base,
+        "auth_enabled": bool(auth_enabled),
+    }
+
+
+def _web_cache_is_current(
+    packaged: Path,
+    cache: Path,
+    *,
+    api_base: str,
+    auth_enabled: bool,
+) -> bool:
+    """True when the runtime web cache already matches the packaged source."""
+    if not (cache / "server.js").exists():
+        return False
+    try:
+        payload = json.loads(
+            (cache / ".deeptutor-web-runtime.json").read_text(encoding="utf-8")
+        )
+    except Exception:  # noqa: BLE001 - corrupt/missing marker falls through to rebuild
+        return False
+    return payload == _web_cache_marker_payload(
+        packaged, api_base=api_base, auth_enabled=auth_enabled
+    )
+
+
+def _materialize_web_cache(
+    packaged: Path,
+    cache: Path,
+    *,
+    api_base: str,
+    auth_enabled: bool,
+) -> None:
+    """Materialize the writable web cache from the packaged standalone tree.
+
+    首装/更新后的首次物化曾是 92.9MB / 3541 个文件的 ``shutil.copytree``：
+    小文件 + 杀软逐文件内容扫描实测拖到 ~78s（2026-10-24 用户机启动时间线，
+    占首装 139s 的大头），还串行挡在后端启动之前。NTFS 同卷上 ``os.link``
+    是纯元数据操作（不写文件内容，杀软无需逐个重扫），秒级完成；跨卷/
+    链接数上限等 OSError 逐文件回退 ``copy2``，行为与旧实现等价。占位符
+    改写必须走「先断链再写」的 copy-on-write（见 _patch_packaged_web_
+    placeholders），绝不能原地写硬链接——那会把缓存内容写穿到 site-packages
+    的出货源文件上。
+    """
+    if cache.exists():
+        shutil.rmtree(cache)
+    cache.mkdir(parents=True, exist_ok=True)
+    linked = 0
+    copied = 0
+    for src_root, _dirs, files in os.walk(packaged):
+        dst_root = cache / Path(src_root).relative_to(packaged)
+        dst_root.mkdir(parents=True, exist_ok=True)
+        for name in files:
+            src = Path(src_root) / name
+            dst = dst_root / name
+            try:
+                os.link(src, dst)
+                linked += 1
+            except OSError:
+                shutil.copy2(src, dst)
+                copied += 1
+    _patch_packaged_web_placeholders(
+        cache,
+        api_base=api_base,
+        auth_enabled="true" if auth_enabled else "false",
+    )
+    marker = cache / ".deeptutor-web-runtime.json"
+    marker.write_text(
+        json.dumps(
+            _web_cache_marker_payload(
+                packaged, api_base=api_base, auth_enabled=auth_enabled
+            ),
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    _log(f"web cache materialized: {linked} hardlinked, {copied} copied -> {cache}")
+
+
 def _copy_packaged_web_if_needed(
     packaged: Path,
     *,
@@ -734,39 +933,20 @@ def _copy_packaged_web_if_needed(
     api_base: str,
     auth_enabled: bool,
 ) -> Path:
-    """Copy packaged Next.js standalone files into a writable runtime cache.
+    """Materialize packaged Next.js standalone files into a writable runtime cache.
 
     Next public variables are inlined at build time, so placeholders must be
     replaced before ``server.js`` starts. The installed package may live in a
     read-only site-packages directory; the cache keeps mutation local to the
-    active workspace.
+    active workspace. Marker hit（暖启动）→ no-op，秒回。
     """
-
     cache = home / WEB_CACHE_DIR
-    marker = cache / ".deeptutor-web-runtime.json"
-    source_server = packaged / "server.js"
-    marker_payload = {
-        "source": str(packaged),
-        "source_mtime_ns": source_server.stat().st_mtime_ns,
-        "api_base": api_base,
-        "auth_enabled": bool(auth_enabled),
-    }
-    if (cache / "server.js").exists():
-        try:
-            if json.loads(marker.read_text(encoding="utf-8")) == marker_payload:
-                return cache
-        except Exception:
-            pass
-
-    if cache.exists():
-        shutil.rmtree(cache)
-    shutil.copytree(packaged, cache)
-    _patch_packaged_web_placeholders(
-        cache,
-        api_base=api_base,
-        auth_enabled="true" if auth_enabled else "false",
-    )
-    marker.write_text(json.dumps(marker_payload, indent=2), encoding="utf-8")
+    if not _web_cache_is_current(
+        packaged, cache, api_base=api_base, auth_enabled=auth_enabled
+    ):
+        _materialize_web_cache(
+            packaged, cache, api_base=api_base, auth_enabled=auth_enabled
+        )
     return cache
 
 
@@ -794,6 +974,10 @@ def _patch_packaged_web_placeholders(
             for placeholder, value in replacements.items():
                 updated = updated.replace(placeholder, value)
             if updated != text:
+                # 硬链接安全（copy-on-write）：先断链再写。_materialize_web_cache
+                # 用 os.link 物化缓存，原地 write_text 会穿透硬链接，把改写内容
+                # 写进 site-packages 的出货源文件、静默污染安装运行时。
+                path.unlink()
                 path.write_text(updated, encoding="utf-8")
 
 
@@ -1441,6 +1625,9 @@ def start(
 
     init_user_directories(runtime_home)
     ensure_runtime_settings_files()
+    # Snapshot deployment overrides before any settings export rewrites
+    # os.environ: an operator-pinned BACKEND_PORT must outlive that export.
+    explicit_backend_env = _explicit_env_override("BACKEND_PORT")
     settings = load_launch_settings(runtime_home)
     backend_workers = max(1, int(load_system_settings().get("backend_workers") or 1))
     runtime_env = export_runtime_settings_to_env(overwrite=True)
@@ -1448,16 +1635,36 @@ def start(
 
     backend_port = settings.backend_port
     frontend_port = settings.frontend_port
+    settings_backend_port = backend_port
+    # Shell-managed mode (desktop shell): the backend's only consumer is this
+    # machine's frontend proxy, which receives the port in its spawn env, so
+    # let the kernel assign it and port conflicts disappear. An operator-pinned
+    # BACKEND_PORT (Docker mapping, reverse proxy) still pins as before.
+    backend_ephemeral = (
+        os.environ.get(SHELL_MANAGED_ENV, "") == "1" and not explicit_backend_env
+    )
+    if backend_ephemeral:
+        backend_port = _pick_ephemeral_port(avoid={frontend_port})
+        _log(f"shell-managed mode: OS assigned backend port {backend_port}")
     backend_url = f"http://127.0.0.1:{backend_port}"
     api_base = (
         runtime_env.get("NEXT_PUBLIC_API_BASE_EXTERNAL")
         or runtime_env.get("NEXT_PUBLIC_API_BASE")
         or backend_url
     )
+    # Build-time baking (the packaged-web cache marker, the source-build
+    # fingerprint) must stay stable in shell-managed ephemeral mode, or every
+    # launch would recopy the web cache / force a rebuild. Nothing baked ever
+    # dials the backend — the client bundle uses relative paths and proxy.ts
+    # resolves the real backend from DEEPTUTOR_API_BASE_URL/BACKEND_PORT at
+    # request time — so the nominal settings port is a harmless placeholder.
+    bake_api_base = api_base
+    if backend_ephemeral and api_base == backend_url:
+        bake_api_base = f"http://127.0.0.1:{settings_backend_port}"
     frontend = _resolve_frontend(
         runtime_home,
         frontend_port,
-        api_base=api_base,
+        api_base=bake_api_base,
         auth_enabled=auth_enabled,
         dev=dev,
     )
@@ -1479,6 +1686,7 @@ def start(
         backend_port=backend_port,
         frontend_port=frontend_port,
         check_frontend=existing_frontend is None,
+        check_backend=not backend_ephemeral,
         settings_dir=settings.settings_dir,
         runtime_home=runtime_home,
         frontend_cwd=frontend.cwd,
@@ -1492,10 +1700,13 @@ def start(
             or runtime_env.get("NEXT_PUBLIC_API_BASE")
             or backend_url
         )
+        bake_api_base = api_base
+        if backend_ephemeral and api_base == backend_url:
+            bake_api_base = f"http://127.0.0.1:{settings_backend_port}"
         frontend = _resolve_frontend(
             runtime_home,
             frontend_port,
-            api_base=api_base,
+            api_base=bake_api_base,
             auth_enabled=auth_enabled,
             dev=dev,
         )
@@ -1698,7 +1909,11 @@ def start(
                 break
             for proc in processes:
                 if proc.process.poll() is not None:
-                    _log(_t("start.exited", name=proc.name, code=proc.process.returncode))
+                    code = proc.process.returncode
+                    _log(_t("start.exited", name=proc.name, code=code))
+                    hint = _exit_hint(code)
+                    if hint:
+                        _log(_t("start.exited_hint", code=code, hint=hint))
                     exit_code = 1
                     shutdown_requested = True
                     break
