@@ -52,7 +52,8 @@ from desktop.menubar import (
 )
 from desktop.native_menu_backend import (
     configure_account_chip,
-    install_windows_shell_menu,
+    install_native_menu,
+    install_windows_shell_menu as install_windows_shell_menu,
     set_account_chip_hidden,
 )
 from desktop.process import DEFAULT_FRONTEND_PORT, DeepTutorProcess
@@ -701,7 +702,7 @@ def main() -> int:
 
     try:
         import webview  # lazy so a missing dep still yields a readable error
-        install_windows_shell_menu()
+        install_native_menu()
     except Exception as exc:  # noqa: BLE001
         log.error("pywebview missing: %s", exc)
         return 2
