@@ -417,25 +417,13 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
-# ---- window: 置顶小窗，标题栏只留最小化（× 见下面 RemoveMenu(SC_CLOSE)）------
+# ---- window: small borderless top-most dialog, centered on screen ----------
 $form = New-Object System.Windows.Forms.Form
-$form.Text = '正在安装更新'
-$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedSingle
-$form.MinimizeBox = $true
-$form.MaximizeBox = $false
-$form.ControlBox = $true
+$form.Text = 'ThinkBuddy Update'
+$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::None
 $form.TopMost = $true
 $form.BackColor = [System.Drawing.Color]::White
-$form.ClientSize = New-Object System.Drawing.Size(420, 210)
-# HandleCreated 时摘掉 SC_CLOSE：标题栏只剩「-」，× 与 Alt+F4 一并失效
-$form.Add_HandleCreated({
-    try {
-        $hmenu = [W.U32]::GetSystemMenu($form.Handle, $false)
-        if ($hmenu -ne [IntPtr]::Zero) {
-            [void][W.U32]::RemoveMenu($hmenu, 0xF060, 0)   # SC_CLOSE, MF_BYCOMMAND
-        }
-    } catch { }
-})
+$form.ClientSize = New-Object System.Drawing.Size(380, 190)
 try {
     $wa = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
     $form.StartPosition = [System.Windows.Forms.FormStartPosition]::Manual
@@ -447,14 +435,17 @@ try {
     $form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
 }
 
-# ---- drag support ------------------------------------------------------------
-# 客户区任意位置左键拖动窗体（原生移动循环）
+# ---- borderless drag support ------------------------------------------------
+# A None-border form has no caption to drag by (user feedback 2026-10-27).
+# Standard fix: on left MouseDown anywhere on the form or its child controls,
+# release mouse capture and send WM_NCLBUTTONDOWN(0xA1)/HTCAPTION(2) so
+# Windows itself runs the native move loop. TopMost stays: an updater window
+# is expected to stay visible above app windows being installed. Cosmetic
+# only -- any Add-Type failure must not take the update window down.
 try {
     Add-Type -Name U32 -Namespace W -MemberDefinition @'
 [DllImport("user32.dll")] public static extern bool ReleaseCapture();
 [DllImport("user32.dll")] public static extern int SendMessage(IntPtr h, int m, IntPtr w, IntPtr l);
-[DllImport("user32.dll")] public static extern IntPtr GetSystemMenu(IntPtr hWnd, bool bRevert);
-[DllImport("user32.dll")] public static extern int RemoveMenu(IntPtr hMenu, int uPosition, int uFlags);
 '@
     $dragHandler = {
         if ($_.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
@@ -467,38 +458,32 @@ try {
 } catch { }
 
 $lblTitle = New-Object System.Windows.Forms.Label
-$lblTitle.Text = '正在安装更新'
-$lblTitle.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 14.25, [System.Drawing.FontStyle]::Bold)
+$title = '正在更新 ThinkBuddy'
+if ($NewVersion -and $NewVersion.Trim().Length -gt 0) {
+    $title = '正在更新 ThinkBuddy v' + $NewVersion.Trim()
+}
+$lblTitle.Text = $title
+$lblTitle.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 11.75, [System.Drawing.FontStyle]::Bold)
 $lblTitle.ForeColor = [System.Drawing.Color]::FromArgb(32, 33, 36)
 $lblTitle.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-$lblTitle.Size = New-Object System.Drawing.Size(400, 44)
-$lblTitle.Location = New-Object System.Drawing.Point(10, 20)
+$lblTitle.Size = New-Object System.Drawing.Size(360, 36)
+$lblTitle.Location = New-Object System.Drawing.Point(10, 24)
 $form.Controls.Add($lblTitle)
-
-# 副标题（对齐截图）：一句话说明安装期间的行为。
-$lblSub = New-Object System.Windows.Forms.Label
-$lblSub.Text = '更新即将完成，应用将自动重启，请稍候…'
-$lblSub.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 9.75)
-$lblSub.ForeColor = [System.Drawing.Color]::FromArgb(32, 33, 36)
-$lblSub.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-$lblSub.Size = New-Object System.Drawing.Size(400, 24)
-$lblSub.Location = New-Object System.Drawing.Point(10, 66)
-$form.Controls.Add($lblSub)
 
 $bar = New-Object System.Windows.Forms.ProgressBar
 $bar.Style = [System.Windows.Forms.ProgressBarStyle]::Marquee
 $bar.MarqueeAnimationSpeed = 30
-$bar.Size = New-Object System.Drawing.Size(340, 12)
-$bar.Location = New-Object System.Drawing.Point(40, 108)
+$bar.Size = New-Object System.Drawing.Size(300, 10)
+$bar.Location = New-Object System.Drawing.Point(40, 72)
 $form.Controls.Add($bar)
 
 $lblStage = New-Object System.Windows.Forms.Label
 $lblStage.Text = '正在准备安装…'
 $lblStage.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 9.75)
-$lblStage.ForeColor = [System.Drawing.Color]::Gray
+$lblStage.ForeColor = [System.Drawing.Color]::FromArgb(32, 33, 36)
 $lblStage.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-$lblStage.Size = New-Object System.Drawing.Size(400, 26)
-$lblStage.Location = New-Object System.Drawing.Point(10, 132)
+$lblStage.Size = New-Object System.Drawing.Size(360, 60)
+$lblStage.Location = New-Object System.Drawing.Point(10, 92)
 $form.Controls.Add($lblStage)
 
 $lblHint = New-Object System.Windows.Forms.Label
@@ -506,9 +491,24 @@ $lblHint.Text = '预计 2-6 分钟（取决于磁盘与杀毒软件），完成�
 $lblHint.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 8.25)
 $lblHint.ForeColor = [System.Drawing.Color]::Gray
 $lblHint.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-$lblHint.Size = New-Object System.Drawing.Size(400, 22)
-$lblHint.Location = New-Object System.Drawing.Point(10, 176)
+$lblHint.Size = New-Object System.Drawing.Size(360, 22)
+$lblHint.Location = New-Object System.Drawing.Point(10, 158)
 $form.Controls.Add($lblHint)
+
+# ---- 右上角最小化按钮（原版窗体上唯一新增的控件，其余保持不变）---------------
+$btnMin = New-Object System.Windows.Forms.Label
+$btnMin.Text = '–'
+$btnMin.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 11.0)
+$btnMin.ForeColor = [System.Drawing.Color]::FromArgb(95, 99, 104)
+$btnMin.BackColor = [System.Drawing.Color]::White
+$btnMin.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+$btnMin.Size = New-Object System.Drawing.Size(32, 24)
+$btnMin.Location = New-Object System.Drawing.Point(348, 0)
+$btnMin.Cursor = [System.Windows.Forms.Cursors]::Hand
+$btnMin.Add_Click({ $form.WindowState = [System.Windows.Forms.FormWindowState]::Minimized })
+$form.Controls.Add($btnMin)
+$btnMin.BringToFront()
+
 
 # ---- helpers ----------------------------------------------------------------
 function Read-UpdateLog {
@@ -605,14 +605,7 @@ $timer.Add_Tick({
     }
 })
 
-# 兜底：钩子若因 Add-Type 时机未生效，ShowDialog 前再摘一次（幂等）
-try {
-    $sysMenu = [W.U32]::GetSystemMenu($form.Handle, $false)
-    if ($sysMenu -ne [IntPtr]::Zero) {
-        [void][W.U32]::RemoveMenu($sysMenu, 0xF060, 0)   # SC_CLOSE, MF_BYCOMMAND
-    }
-} catch { }
-
+# User may close the window (Alt+F4) at any time: harmless to the install.
 [void]$timer.Start()
 [void]$form.ShowDialog()
 """  # ← _UPDATE_UI_PS1 收尾（必须与开头的 r""" 配对）
