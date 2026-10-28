@@ -417,10 +417,7 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
-# ---- window: small top-most dialog with minimize button, centered -----------
-# 带标题栏 + 最小化按钮（用户反馈 2026-10-28：杀进程后要出现一个「可最小化」
-# 的安装进度窗，对齐参考截图）：FixedSingle 边框、只留最小化，不允许关窗取消
-# 更新（Alt+F4 仍无害，安装由独立 bat 编排）。TopMost 保留：安装期始终可见。
+# ---- window: 置顶小窗，标题栏只留最小化（× 见下面 RemoveMenu(SC_CLOSE)）------
 $form = New-Object System.Windows.Forms.Form
 $form.Text = '正在安装更新'
 $form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedSingle
@@ -430,6 +427,15 @@ $form.ControlBox = $true
 $form.TopMost = $true
 $form.BackColor = [System.Drawing.Color]::White
 $form.ClientSize = New-Object System.Drawing.Size(420, 210)
+# HandleCreated 时摘掉 SC_CLOSE：标题栏只剩「-」，× 与 Alt+F4 一并失效
+$form.Add_HandleCreated({
+    try {
+        $hmenu = [W.U32]::GetSystemMenu($form.Handle, $false)
+        if ($hmenu -ne [IntPtr]::Zero) {
+            [void][W.U32]::RemoveMenu($hmenu, 0xF060, 0)   # SC_CLOSE, MF_BYCOMMAND
+        }
+    } catch { }
+})
 try {
     $wa = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
     $form.StartPosition = [System.Windows.Forms.FormStartPosition]::Manual
@@ -442,12 +448,13 @@ try {
 }
 
 # ---- drag support ------------------------------------------------------------
-# 现在已带标题栏（可按住标题栏拖动/最小化）；这里保留窗体客户区任意位置左键
-# 拖动（WM_NCLBUTTONDOWN/HTCAPTION 原生移动循环），小窗任意处都能拖走。
+# 客户区任意位置左键拖动窗体（原生移动循环）
 try {
     Add-Type -Name U32 -Namespace W -MemberDefinition @'
 [DllImport("user32.dll")] public static extern bool ReleaseCapture();
 [DllImport("user32.dll")] public static extern int SendMessage(IntPtr h, int m, IntPtr w, IntPtr l);
+[DllImport("user32.dll")] public static extern IntPtr GetSystemMenu(IntPtr hWnd, bool bRevert);
+[DllImport("user32.dll")] public static extern int RemoveMenu(IntPtr hMenu, int uPosition, int uFlags);
 '@
     $dragHandler = {
         if ($_.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
@@ -598,7 +605,14 @@ $timer.Add_Tick({
     }
 })
 
-# User may close the window (Alt+F4) at any time: harmless to the install.
+# 兜底：钩子若因 Add-Type 时机未生效，ShowDialog 前再摘一次（幂等）
+try {
+    $sysMenu = [W.U32]::GetSystemMenu($form.Handle, $false)
+    if ($sysMenu -ne [IntPtr]::Zero) {
+        [void][W.U32]::RemoveMenu($sysMenu, 0xF060, 0)   # SC_CLOSE, MF_BYCOMMAND
+    }
+} catch { }
+
 [void]$timer.Start()
 [void]$form.ShowDialog()
 """  # ← _UPDATE_UI_PS1 收尾（必须与开头的 r""" 配对）
