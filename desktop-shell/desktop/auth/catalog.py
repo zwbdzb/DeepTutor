@@ -18,6 +18,7 @@ import os
 import tempfile
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -83,6 +84,8 @@ def _load_catalog(path: Path) -> dict[str, Any]:
 def _model_entries(
     entries: "list[dict[str, Any]] | list[str]",
     prefix: str = "llm",
+    previous: Optional[dict[str, dict[str, Any]]] = None,
+    model_context_windows: Optional[dict[str, int]] = None,
 ) -> list[dict[str, Any]]:
     """Build catalog model rows from split entries.
 
@@ -94,6 +97,7 @@ def _model_entries(
     embedding/rerank model that merely lost its tag in transit).
     """
     ts = int(time.time() * 1000)
+    detected_at = datetime.now(timezone.utc).isoformat()
     rows: list[dict[str, Any]] = []
     for idx, entry in enumerate(entries):
         if isinstance(entry, dict):
@@ -111,9 +115,22 @@ def _model_entries(
         }
         if isinstance(model_type, int) and not isinstance(model_type, bool):
             row["model_type"] = model_type
-        if prefix == "tts" and name == "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice":
+        row.update((previous or {}).get(name, {}))
+        if (prefix == "tts" and name == "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
+                and not row.get("voice")):
             # 登录导入时直接保存默认音色，无需进入设置页生成草稿。
             row["voice"] = "Eric"
+        if model_context_windows is not None:
+            window = model_context_windows.get(name)
+            if isinstance(window, int) and not isinstance(window, bool) and window > 0:
+                row["context_window"] = str(window)
+                row["context_window_source"] = "metadata"
+                row["context_window_detected_at"] = detected_at
+                row.pop("context_window_tokens", None)
+            elif row.get("context_window_source") == "metadata":
+                for key in ("context_window", "context_window_tokens",
+                            "context_window_source", "context_window_detected_at"):
+                    row.pop(key, None)
         rows.append(row)
     return rows
 
@@ -270,6 +287,7 @@ def _upsert_tokengine_profile(
     base_url: str,
     api_key: str,
     model_entries: "list[dict[str, Any]] | list[str]",
+    model_context_windows: Optional[dict[str, int]] = None,
 ) -> None:
     """在某服务下创建/刷新 tokengine profile（只动我们自己写的那条）。
 
@@ -321,15 +339,10 @@ def _upsert_tokengine_profile(
     # 默认 profile 的音色和模型 ID 优先保留，避免刷新重置用户选择。
     previous.update({m.get("model"): m for m in profile.get("models", [])
                      if isinstance(m, dict)})
-    models = _model_entries(model_entries, service_name)
-    for model in models:
-        saved = previous.get(model["model"])
-        if saved:
-            default_voice = model.get("voice")
-            model.update(saved)
-            if default_voice and not model.get("voice"):
-                model["voice"] = default_voice
-    profile["models"] = models
+    profile["models"] = _model_entries(
+        model_entries, service_name, previous=previous,
+        model_context_windows=model_context_windows,
+    )
     if not service.get("active_profile_id"):
         service["active_profile_id"] = profile["id"]
         service["active_model_id"] = profile["models"][0]["id"]
@@ -483,6 +496,7 @@ def ensure_tokengine_catalog(
     models: Optional[list[str]] = None,
     connection_id: str = "tokengine",
     model_types: Optional[dict[str, Any]] = None,
+    model_context_windows: Optional[dict[str, int]] = None,
 ) -> Path:
     """把业务令牌写入 DeepTutor model catalog，返回被修改的文件路径。
 
@@ -497,6 +511,7 @@ def ensure_tokengine_catalog(
     某服务授权为空时摘除我们之前写的 profile。
 
     models 未传（None）时不碰模型列表（如端点对齐路径）。
+    ``model_context_windows`` 将平台容量写入已有的 context_window 配置。
     """
     path = catalog_path(home)
     catalog = _load_catalog(path)
@@ -560,8 +575,14 @@ def ensure_tokengine_catalog(
     split = (split_models_by_service(models, model_types)
              if models is not None else None)
     if split is not None and split["llm"]:
-        profile["models"] = _model_entries(split["llm"])
-        llm["active_model_id"] = profile["models"][0]["id"]
+        previous = {row.get("model"): row for row in profile.get("models", [])
+                    if isinstance(row, dict)}
+        profile["models"] = _model_entries(
+            split["llm"], previous=previous,
+            model_context_windows=model_context_windows,
+        )
+        if not any(row["id"] == llm.get("active_model_id") for row in profile["models"]):
+            llm["active_model_id"] = profile["models"][0]["id"]
     elif split is not None:
         # 授权名单里没有对话类型模型：llm 留空并清掉活动指针（诚实呈现，
         # 绝不把向量/图像模型混进对话列表——那正是本次要修的污染）
@@ -569,7 +590,7 @@ def ensure_tokengine_catalog(
         llm["active_model_id"] = None
         log.warning("授权模型中无对话类型，llm 服务留空")
     elif models:
-        profile["models"] = _model_entries(models)
+        profile["models"] = _model_entries(models, model_context_windows=model_context_windows)
         llm["active_model_id"] = profile["models"][0]["id"]
     elif not llm.get("active_model_id") and profile.get("models"):
         first = (profile["models"] or [{}])[0]
@@ -585,7 +606,9 @@ def ensure_tokengine_catalog(
             if split.get(service_name):
                 _upsert_tokengine_profile(
                     catalog, service_name, connection_id, base_url,
-                    api_key, split[service_name])
+                    api_key, split[service_name],
+                    model_context_windows=model_context_windows,
+                )
             else:
                 _remove_tokengine_profile(catalog, service_name, connection_id)
 
