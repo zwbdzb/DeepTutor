@@ -573,6 +573,21 @@ $lblHint.Size = New-Object System.Drawing.Size(360, 22)
 $lblHint.Location = New-Object System.Drawing.Point(10, 158)
 $form.Controls.Add($lblHint)
 
+# ---- 右上角最小化按钮（原版窗体上唯一新增的控件，其余保持不变）---------------
+$btnMin = New-Object System.Windows.Forms.Label
+$btnMin.Text = '–'
+$btnMin.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 11.0)
+$btnMin.ForeColor = [System.Drawing.Color]::FromArgb(95, 99, 104)
+$btnMin.BackColor = [System.Drawing.Color]::White
+$btnMin.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+$btnMin.Size = New-Object System.Drawing.Size(32, 24)
+$btnMin.Location = New-Object System.Drawing.Point(348, 0)
+$btnMin.Cursor = [System.Windows.Forms.Cursors]::Hand
+$btnMin.Add_Click({ $form.WindowState = [System.Windows.Forms.FormWindowState]::Minimized })
+$form.Controls.Add($btnMin)
+$btnMin.BringToFront()
+
+
 # ---- helpers ----------------------------------------------------------------
 function Read-UpdateLog {
     # Read the whole update log. The bat appends to it concurrently, so the

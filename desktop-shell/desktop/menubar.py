@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 import urllib.parse
 
@@ -135,13 +136,26 @@ def _download_progress(received: int, total: int) -> None:
         _toast(f"正在下载更新…（{received // 1024 // 1024} MB）")
 
 
-def _download_and_verify(manifest: dict, notify: bool = True):
+def _download_and_verify(manifest: dict, notify: bool = True,
+                         job: dict | None = None):
     """下载到 ROOT/updates 并做 SHA256 校验；失败返回 None。
 
     ``notify`` 只影响「用户主动检查」时的进度 toast 与失败弹框；启动后的
     自动下载全程静默（只写日志），下好由标题栏角标提示。
+
+    ``job`` 非 None 时表示这是全局唯一下载任务（见 ``_start_update_download``）：
+    是否显示进度 / 失败弹框改成**按 job["notify"] 动态判断**——自动检查先静默
+    下载，用户中途点「确定」把 notify 置 True 后，同一份下载立刻开始报进度，
+    不会出现第二份下载。
     """
     from desktop import dialogs
+
+    def _should_notify() -> bool:
+        return bool(job.get("notify")) if job is not None else notify
+
+    def _on_progress(received: int, total: int) -> None:
+        if _should_notify():
+            _download_progress(received, total)
 
     dest_dir = ROOT / "updates"
     filename = os.path.basename(urllib.parse.urlparse(manifest["url"]).path) \
@@ -152,11 +166,11 @@ def _download_and_verify(manifest: dict, notify: bool = True):
             manifest["url"],
             dest,
             expected_sha256=manifest.get("sha256"),
-            on_progress=_download_progress if notify else None,
+            on_progress=_on_progress if (job is not None or notify) else None,
         )
     except updater.UpdateError as exc:
         log.warning("update download failed: %s", exc)
-        if notify:
+        if _should_notify():
             dialogs.message_box("更新失败", str(exc), 0x10)  # MB_ICONERROR
         return None
     finally:
@@ -164,18 +178,98 @@ def _download_and_verify(manifest: dict, notify: bool = True):
     return dest
 
 
-def _check_updates(api, manual: bool = True) -> None:
-    """自动更新链路（ADR-007）：检查 → 后台静默下载 → 标题栏角标提示。
+# --------------------------------------------------------------------------- #
+# 更新下载任务：同一版本全局只下载一次
+# --------------------------------------------------------------------------- #
+_UPDATE_LOCK = threading.Lock()
+# {
+#   "version": str,
+#   "dest": Path | None,      # 下载成功的安装包路径
+#   "error": str | None,      # 失败原因
+#   "done": threading.Event,  # 下载结束（成功或失败都会 set）
+#   "notify": bool,           # 是否显示底部下载进度（手动点确定后置 True）
+#   "suppress_pill": bool,    # 本次会话下完不亮黄色药丸（手动取消后置 True）
+# }
+_UPDATE_JOB: dict = {}
 
-    与 ADR-006 相比只改了**交互**：发现新版本不再弹询问框，直接下好；随后
-    账号区左侧亮出「有新版本，点击重启」（见 titlebar_account / AccountChip）。
-    用户点角标 → 静默安装 + 自退重启；点 ✕ → 收起，继续用旧版本。
+
+def _update_job_for(version: str) -> dict | None:
+    """取该版本已有的下载任务（可能正在下载或已结束）。"""
+    with _UPDATE_LOCK:
+        return _UPDATE_JOB.get(version)
+
+
+def _start_update_download(manifest: dict, version: str) -> dict:
+    """启动（或复用）该版本的唯一下载任务。
+
+    自动检查与手动「确定」共用同一份下载：已有进行中的任务直接复用；已成功
+    下载过且安装包还在磁盘上也直接复用（不重复下）。只有失败或包被删掉才重下。
+    """
+    with _UPDATE_LOCK:
+        job = _UPDATE_JOB.get(version)
+        if job is not None:
+            dest = job.get("dest")
+            if not job["done"].is_set() or (dest and os.path.exists(str(dest))):
+                return job
+        job = {
+            "version": version,
+            "dest": None,
+            "error": None,
+            "done": threading.Event(),
+            "notify": False,
+            "suppress_pill": False,
+        }
+        _UPDATE_JOB.clear()
+        _UPDATE_JOB[version] = job
+
+    def _run() -> None:
+        try:
+            job["dest"] = _download_and_verify(manifest, job=job)
+            if job["dest"] is None:
+                job["error"] = "下载失败"
+        except Exception as exc:  # noqa: BLE001  下载线程里兜底，别静默丢线程
+            job["error"] = str(exc)
+            log.exception("update download task failed")
+        finally:
+            job["done"].set()
+
+    threading.Thread(target=_run, name=f"update-download-{version}",
+                     daemon=True).start()
+    return job
+
+
+def _cancel_manual_update(version: str) -> None:
+    """手动检查点「取消」：只影响本次会话（进程内），不做任何持久化。
+
+    - 本次会话的自动检查不再下载该版本、也不再亮药丸；
+    - 若后台下载正进行中，则下完不亮药丸（只标记 suppress_pill，不中断下载）；
+    - **已经亮着的药丸保持不动**（用户要求：已下载好时取消，药丸继续亮）。
+    """
+    global _DISMISSED_VERSION
+    _DISMISSED_VERSION = version
+    job = _update_job_for(version)
+    if job is not None and not job["done"].is_set():
+        job["suppress_pill"] = True
+
+
+def _check_updates(api, manual: bool = True) -> None:
+    """更新链路（ADR-007）：检查 → 下载 → 标题栏角标提示。
 
     检查 / 下载 / SHA256 校验 / 安装的实现全部沿用原链路，不重复造轮子。
-    manual=False 为启动自动检查：无更新 / 网络失败 / 开发态一律静默；
-    manual=True（文件菜单「检查更新...」）：给 toast 与下载进度反馈。
+
+    manual=False 为启动自动检查：发现新版本 → 后台静默下载，下好账号区左侧
+    亮出「有新版本，点击重启」（见 titlebar_account / AccountChip）；无更新 /
+    网络失败 / 开发态一律静默。
+
+    manual=True（文件菜单「检查更新...」）：发现新版本先弹「发现新版本」确认
+    框。确定后：已下载好 → 直接安装重启；没下载好 → 复用/启动后台唯一下载并
+    显示进度，下完直接安装。取消：只关弹框，本次会话不再下载、不再亮药丸
+    （已亮的药丸保持不动，用户要求）。
+
+    下载任务全局唯一（``_start_update_download``）：自动检查的后台下载与手动
+    「确定」共用同一份，不会并发下两份。
     """
-    global _READY_UPDATE
+    global _READY_UPDATE, _DISMISSED_VERSION
     from desktop import titlebar_account
 
     if not getattr(sys, "frozen", False):
@@ -242,28 +336,70 @@ def _check_updates(api, manual: bool = True) -> None:
     if (str(_READY_UPDATE.get("version") or "") == version
             and cached and os.path.exists(cached)):
         if manual:
-            _prompt_restart_now(version, api)
+            if _prompt_download_install(version, installed, api):
+                install_ready_update(api)
+            else:
+                _cancel_manual_update(version)  # 已亮的药丸保持不动
         else:
             titlebar_account.set_update_ready(version)
         return
     if version and version == titlebar_account.update_ready_version():
         if manual:
-            _prompt_restart_now(version, api)
+            if _prompt_download_install(version, installed, api):
+                install_ready_update(api)
+            else:
+                _cancel_manual_update(version)  # 已亮的药丸保持不动
         return
 
     if manual:
-        _toast(f"正在下载新版本 v{version}…", duration_ms=3000)
-
-    dest = _download_and_verify(manifest, notify=manual)
-    if dest is None:
+        if not _prompt_download_install(version, installed, api):
+            # 取消：本次会话不再下载/不再亮药丸；后台若正在下载，下完也不亮。
+            _cancel_manual_update(version)
+            return
+        # 确定：复用（或启动）全局唯一下载任务；后台已在下载时只把进度显示
+        # 打开并等它下完，绝不会再下第二份。
+        job = _start_update_download(manifest, version)
+        job["notify"] = True
+        job["suppress_pill"] = False
+        job["done"].wait()
+        if job.get("dest") is None:
+            return
+        _READY_UPDATE = {"version": version, "path": str(job["dest"])}
+        log.info("update v%s downloaded to %s", version, job["dest"])
+        install_ready_update(api)
         return
 
-    _READY_UPDATE = {"version": version, "path": str(dest)}
-    log.info("update v%s downloaded to %s", version, dest)
-    if manual:
-        _prompt_restart_now(version, api)
-    else:
-        titlebar_account.set_update_ready(version)
+    # 自动检查：后台静默下载（同版本复用已有下载，绝不并发下两份）。
+    job = _start_update_download(manifest, version)
+    job["done"].wait()
+    if job.get("dest") is None:
+        return
+    _READY_UPDATE = {"version": version, "path": str(job["dest"])}
+    log.info("update v%s downloaded to %s", version, job["dest"])
+    if job.get("suppress_pill") or job.get("notify"):
+        # 手动取消（suppress_pill）或手动「确定」已接管安装（notify）：
+        # 下载完成也不亮黄色药丸。
+        log.info("v%s 下载完成：手动流程接管/已取消，不亮药丸", version)
+        return
+    titlebar_account.set_update_ready(version)
+
+
+def _prompt_download_install(version: str, installed: str, api) -> bool:
+    """手动检查时弹框确认：发现新版本，是否立即下载并安装。
+
+    返回 True 表示用户点「确定」（下载并安装）；False 表示点「取消」或 ✕。
+    """
+    from desktop import dialogs
+
+    # MB_OKCANCEL | MB_ICONQUESTION == 0x21；IDOK == 1, IDCANCEL == 2
+    # 用 OKCANCEL 而非 YESNO：YESNO 的 ✕ 按钮不可点，OKCANCEL 的 ✕ 等同取消。
+    return dialogs.message_box(
+        "发现新版本",
+        f"发现新版本 v{version}\n"
+        f"当前版本：v{installed}\n"
+        f"是否立即下载并安装？",
+        0x21,
+    ) == 1
 
 
 def _prompt_restart_now(version: str, api) -> None:
