@@ -266,9 +266,10 @@ export function SidebarShell({
             unoptimized
             className="h-[22px] w-[22px] transition-transform duration-200 group-hover:scale-105"
           />
+          {/* 光学对齐：Geist 的降部（y）让 cap 带在行盒居中下仍偏高约 1px，向下补偿 1px 使 cap 带与徽标视觉居中 */}
           <span
             aria-label="ThinkBuddy"
-            className="text-[15px] font-semibold tracking-tight text-[var(--foreground)] transition-transform duration-200 group-hover:scale-105"
+            className="text-[15px] relative top-[1px] font-semibold tracking-tight text-[var(--foreground)] transition-transform duration-200 group-hover:scale-105"
           >
             ThinkBuddy
           </span>
