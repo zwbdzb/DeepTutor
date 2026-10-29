@@ -137,6 +137,13 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; \
   Flags: uninsdeletevalue; Tasks: autostart
 
 [InstallDelete]
+; 前端运行时缓存（<workspace>\data\user\runtime\web）：应用窗口**内部**的图标
+; （侧边栏 logo、网页标签 favicon）都从这里加载，不从 exe 读。它是纯派生数据
+; —— launcher 判定缓存失效时本就会自行 rmtree 重建，删掉零用户数据损失（学习
+; 数据在 <workspace> 的其他子目录）。删了才能保证更新后窗口里必然是新图标，
+; 详见 [Code] 段 PurgeWebRuntimeCache 的注释（那里还覆盖 DEEPTUTOR_DESKTOP_HOME
+; 改过 workspace 位置的情况）。
+Type: filesandordirs; Name: "{userprofile}\ThinkBuddy\data\user\runtime\web"
 ; 安装新版时清掉本机遗留的托管运行时缓存（%LOCALAPPDATA%\ThinkBuddy\runtime）。
 ; 它是旧版 runtime.zip 自解压的历史产物，版本可能停在任意旧版（曾以 1.6.9
 ; 遮蔽新装的 1.6.10，见 docs/adr/ADR-005）。本安装器自带完整 runtime/ 树，
@@ -198,6 +205,159 @@ var
 // Inno 的 DLL 导入语法；setuponly 表示仅安装器进程加载。
 procedure SleepMs(Milliseconds: Longint);
   external 'Sleep@kernel32.dll stdcall setuponly';
+
+(* ===== 更新后强制刷新图标（RefreshShellIcons，ssDone 触发） ================
+   背景（换标后用户实测反馈）：升级安装完成，桌面/开始菜单快捷方式仍然显示
+   **旧图案**。根因是 Windows Shell 的图标缓存以「图标文件路径 + 图标索引」
+   为键 —— 升级时 {app}\assets\icon.ico 的内容确实被新版覆盖了，但**路径没
+   变**，缓存键也就不变，Explorer 不会重新去读文件，于是继续画旧图。托盘
+   图标另有一份独立缓存（TrayNotify 的 IconStreams，按 exe 路径缓存），同
+   路径换 exe 后同样残留旧图。
+
+   注意：光重建 .lnk **无效** —— 新快捷方式指向的还是同一个 ico 路径，照样
+   命中缓存。必须显式让缓存失效。
+
+   修复（ssDone 触发，交互安装与静默更新两条链路都覆盖）：
+     1) SHChangeNotify(SHCNE_ASSOCCHANGED | SHCNF_FLUSH)：通知 Shell「文件
+        关联/图标已变更」，Explorer 据此重建图标缓存；SHCNF_FLUSH 让通知
+        同步生效，不排到空闲时再处理。
+     2) ie4uinit.exe -show：微软官方的图标缓存刷新入口，补上 ASSOCCHANGED
+        在部分系统上刷不到桌面层的缺口（等价于让用户手动跑的那条命令）。
+     3) 删除 HKCU TrayNotify 的 IconStreams / PastIconsStream：托盘图标流
+        缓存。per-user 安装（PrivilegesRequired=lowest），HKCU 无需管理员。
+
+   best-effort：三步全部静默容错 —— 图标陈旧只影响观感，绝不阻断安装。
+   静默更新（/VERYSILENT）同样生效：本过程不依赖 WizardForm。
+   ====================================================================== *)
+
+const
+  SHCNE_ASSOCCHANGED = $08000000;   // 文件关联/图标已变更
+  SHCNF_IDLIST       = $0000;       // dwItem1/dwItem2 为 NULL 的全局通知
+  SHCNF_FLUSH        = $1000;       // 同步刷新，不排到空闲时再处理
+  TB_TRAY_KEY        = 'Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\TrayNotify';
+
+// shell32.SHChangeNotify：通知 Shell 某项已变更（这里用于作废旧图标缓存）。
+// setuponly：只在安装器进程加载，卸载器用不到。
+procedure TbSHChangeNotify(wEventId: Longint; uFlags: Longint;
+  dwItem1: Longint; dwItem2: Longint);
+  external 'SHChangeNotify@shell32.dll stdcall setuponly';
+
+(* 升级时强制重建桌面快捷方式：桌面上那个 .lnk 记录的图标来自旧 icon.ico，
+   其中 Tasks 段的 desktopicon 若未选中，Icons 段就不会重写它，用户看到的
+   仍是旧图案。这里检测到本机已装过旧版（卸载键存在 = 本次是升级而非首装）时
+   强制勾上该任务，保证 .lnk 被重写一遍；再配合 ssDone 的 RefreshShellIcons
+   清缓存，桌面图标必然换成新图案。
+
+    两个触发条件（任一满足即强制勾选）：
+      a) 卸载键存在 —— 本次是升级，.lnk 由本安装器维护，不重写就停在旧版状态；
+      b) 桌面上**已存在**同名 .lnk —— 覆盖旧包用别的 AppId 装的、或用户手动
+         建的快捷方式。这类 .lnk 本安装器从未记录过，不主动重写就会一直显示
+         旧图案，正是「旧包还在电脑上、桌面图标不换」的那一类场景。
+
+   两者都不满足（全新安装且桌面干净）时保持默认不勾选，不擅自给新用户塞桌面
+   图标。静默更新没有向导页（InitializeWizard 不触发），由 updater.py 的
+   /MERGETASKS="desktopicon,!autostart" 覆盖同一场景。 *)
+procedure InitializeWizard();
+begin
+  try
+    // 子键写法与 InitializeSetup 一致：Inno 对 HKCU 会自动前置
+    // Software\Microsoft\Windows\CurrentVersion\Uninstall\。
+    if RegKeyExists(HKEY_CURRENT_USER,
+         '{3B4FC0AE-E3E3-491F-B3B6-59BBBF1D6305}_is1')
+       or FileExists(ExpandConstant('{autodesktop}\{#MyAppName}.lnk'))
+       or FileExists(ExpandConstant('{userdesktop}\{#MyAppName}.lnk')) then
+      WizardSelectTasks('desktopicon');
+  except
+    // 纯 UI 状态调整，失败只影响图标刷新，不阻断安装。
+  end;
+end;
+
+procedure RefreshShellIcons;
+var
+  ErrorCode: Integer;   // Exec 返回码占位：只看成败，不判具体值
+  Ie4u: string;         // {sys}\ie4uinit.exe
+begin
+  // ---- 1) 通知 Shell 图标缓存失效（同步）----
+  try
+    TbSHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST or SHCNF_FLUSH, 0, 0);
+    Log('TB-ICON notify SHCNE_ASSOCCHANGED sent');
+  except
+    Log('TB-ICON notify failed (ignored)');
+  end;
+
+  // ---- 2) 官方刷新入口，覆盖桌面层 ----
+  try
+    Ie4u := ExpandConstant('{sys}\ie4uinit.exe');
+    if FileExists(Ie4u) then
+    begin
+      if Exec(Ie4u, '-show', '', SW_HIDE, ewWaitUntilTerminated, ErrorCode) then
+        Log('TB-ICON ie4uinit -show exit ' + IntToStr(ErrorCode))
+      else
+        Log('TB-ICON ie4uinit exec failed');
+    end
+    else
+      Log('TB-ICON ie4uinit not found: ' + Ie4u);
+  except
+    Log('TB-ICON ie4uinit failed (ignored)');
+  end;
+
+  // ---- 3) 托盘图标流缓存（旧托盘图标残留）----
+  try
+    RegDeleteValue(HKEY_CURRENT_USER, TB_TRAY_KEY, 'IconStreams');
+    RegDeleteValue(HKEY_CURRENT_USER, TB_TRAY_KEY, 'PastIconsStream');
+    Log('TB-ICON tray icon cache cleared');
+  except
+    Log('TB-ICON tray cache clear failed (ignored)');
+  end;
+end;
+
+(* ===== 清前端运行时缓存（PurgeWebRuntimeCache，ssDone 里先于刷新调用） =====
+   为什么需要：应用窗口**内部**的图标（侧边栏 logo、网页标签 favicon）不是从
+   exe 读的，而是从前端运行时缓存读 —— launcher.py 把 site-packages 里的
+   deeptutor_web 物化到 <workspace>\data\user\runtime\web（NTFS 硬链接，秒级），
+   是否重建由 .deeptutor-web-runtime.json 里 source_mtime_ns（打包源 server.js
+   的 mtime）的**全等比较**决定。
+
+   单靠 mtime 比对有两个缺口，任一命中都会让更新后窗口里继续显示旧图标：
+     1) 物化用的是硬链接。安装时 {app}\runtime 被 DelTree 重建，但缓存目录里
+        的硬链接仍指向旧 inode，旧内容原地保留；
+     2) 若新包 server.js 的 mtime 与缓存记录一致（tar 保留 mtime、或构建环境
+        归一化 mtime），直接判定「缓存仍有效」而不重建。
+
+   修复：安装收尾直接删掉该目录。它是纯派生数据（launcher 每次判定失效都会
+   自行 rmtree 重建），删除无用户数据损失 —— 学习数据在 <workspace> 的其他子
+   目录，不受影响；代价只是下次启动多一次物化（硬链接，秒级）。
+
+   路径：默认 %USERPROFILE%\ThinkBuddy；被 DEEPTUTOR_DESKTOP_HOME 覆盖时按该
+   环境变量解析（与 desktop/runtime.py 的 WORKSPACE_HOME 同一约定）。
+   InstallDelete 段里另有一条默认路径的静态规则作为双保险。
+   ====================================================================== *)
+procedure PurgeWebRuntimeCache;
+var
+  Home: string;    // workspace 根目录
+  Cache: string;   // <workspace>\data\user\runtime\web
+begin
+  try
+    Home := GetEnv('DEEPTUTOR_DESKTOP_HOME');
+    if Home = '' then
+      Home := ExpandConstant('{userprofile}\ThinkBuddy');
+    if Home = '' then
+      Exit;
+    // 去尾反斜杠，避免拼出双反斜杠。
+    while (Length(Home) > 0) and (Home[Length(Home)] = '\') do
+      SetLength(Home, Length(Home) - 1);
+    Cache := Home + '\data\user\runtime\web';
+    if DirExists(Cache) then
+    begin
+      DelTree(Cache, True, True, True);
+      Log('TB-ICON web runtime cache purged: ' + Cache);
+    end
+    else
+      Log('TB-ICON web runtime cache absent: ' + Cache);
+  except
+    Log('TB-ICON web runtime cache purge failed (ignored)');
+  end;
+end;
 
 function InitializeSetup(): Boolean;
 var
@@ -341,6 +501,19 @@ var
   T0: Longint;           // 分段计时起点（写进 setup 日志，供事后定位）
   PhaseTicks: Longint;   // 当前阶段的起始 tick
 begin
+  // 安装全部完成（含 [Icons] 重写 .lnk）后刷新图标缓存 —— 让桌面/开始菜单
+  // 快捷方式与托盘立刻显示新图标（详见 RefreshShellIcons 函数头注释）。
+  // 放 ssDone 而非 ssPostInstall：确保 .lnk 已重写完毕再清缓存，否则
+  // Explorer 可能在刷新后又把旧缓存写回去。
+  if CurStep = ssDone then
+  begin
+    // 先清前端运行时缓存（窗口内部图标的来源），再刷 Shell 图标缓存
+    // （快捷方式 / 托盘）。顺序无关，但两件都必须在 .lnk 重写之后做。
+    PurgeWebRuntimeCache;
+    RefreshShellIcons;
+    Exit;
+  end;
+
   if CurStep <> ssPostInstall then
     Exit;
 

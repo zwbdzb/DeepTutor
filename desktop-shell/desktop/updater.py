@@ -831,7 +831,11 @@ def run_installer(setup_path: str | os.PathLike, new_version: str | None = None)
         f"powershell -NoProfile -Command \"{ps_sweep}\" >nul 2>&1",
         ":runtime_swept",
         f"echo [%date% %time%] runtime children swept >> \"{update_log}\"",
-        f"\"{setup}\" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /FORCECLOSEAPPLICATIONS /MERGETASKS=\"!autostart\" /LOG=\"{install_log}\" /TBLOG=\"{update_log}\"",
+        # MERGETASKS 显式带上 desktopicon：静默更新没有向导页，installer.iss
+        # 的 InitializeWizard（升级时强制勾选桌面快捷方式）不会触发，只能靠
+        # 命令行补齐，否则 [Icons] 不重写 .lnk、桌面快捷方式继续沿用旧图标。
+        # 保留 !autostart：避免复用旧勾选把用户关掉的自启写回（原注释有述）。
+        f"\"{setup}\" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /FORCECLOSEAPPLICATIONS /MERGETASKS=\"desktopicon,!autostart\" /LOG=\"{install_log}\" /TBLOG=\"{update_log}\"",
         # 注意是单 %errorlevel%（bat 文件里 %%errorlevel%% 只会输出字面
         # 「%errorlevel%」，实测 2026-10-25）：进度窗按「setup exit <数字>」
         # 映射「正在完成收尾」与「错误码 N」失败态，日志里必须落真实数字。
