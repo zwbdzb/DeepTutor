@@ -37,6 +37,7 @@ import ctypes
 import logging
 import math
 import os
+import sys
 import threading
 import time
 
@@ -1906,11 +1907,73 @@ def _build_menu_strip(form, menu_list):
     return strip
 
 
+def install_native_menu() -> bool:
+    """Install the current platform's native shell menu."""
+    if sys.platform == "win32":
+        return install_windows_shell_menu()
+    if sys.platform == "darwin":
+        return install_macos_context_menu()
+    return False
+
+
+def _filter_context_menu(_sender, event) -> None:
+    allowed = {"copy"}
+    if event.ContextMenuTarget.IsEditable:
+        allowed.update({"undo", "redo", "cut", "paste", "selectAll"})
+
+    items = event.MenuItems
+    for index in range(items.Count - 1, -1, -1):
+        if items[index].Name not in allowed:
+            items.RemoveAt(index)
+    if items.Count == 0:
+        event.Handled = True
+
+
+def _filter_macos_context_menu(_webview, menu, _event) -> None:
+    from Foundation import NSStringFromSelector
+    import WebKit
+
+    # WKWebView forwards its commands through one selector; their tags identify edits.
+    allowed_tags = {
+        WebKit.WebMenuItemTagCopy,
+        WebKit.WebMenuItemTagCut,
+        WebKit.WebMenuItemTagPaste,
+    }
+    allowed_actions = {"copy:", "cut:", "paste:", "selectAll:", "undo:", "redo:"}
+    for index in range(menu.numberOfItems() - 1, -1, -1):
+        item = menu.itemAtIndex_(index)
+        action = item.action()
+        if item.tag() not in allowed_tags and (
+            not action or NSStringFromSelector(action) not in allowed_actions
+        ):
+            menu.removeItemAtIndex_(index)
+
+
+def install_macos_context_menu() -> bool:
+    if sys.platform != "darwin":
+        return False
+
+    try:
+        import objc
+        from webview.platforms import cocoa
+
+        callback = objc.selector(
+            _filter_macos_context_menu,
+            selector=b"willOpenMenu:withEvent:",
+            signature=b"v@:@@",
+        )
+        objc.classAddMethods(cocoa.BrowserView.WebKitHost, [callback])
+    except Exception:  # noqa: BLE001 - keep the window usable if Cocoa setup fails
+        log.exception("macOS context menu setup failed; using pywebview defaults")
+        return False
+    return True
+
+
 def install_windows_shell_menu() -> bool:
     """替换 pywebview 的菜单安装路径，并给窗体装自定义标题栏钩子。
 
-    Returns whether the backend was patched. On non-Windows platforms this is
-    an inert no-op; the shell currently targets Windows.
+    Returns whether the backend was patched. On non-Windows platforms this
+    adapter is an inert no-op.
     """
     global _WF, _Color, _Font, _Pen, _SolidBrush, _Size, _SmoothingMode, _Func, _Type
     global _Point, _Action, _GraphicsPath, _LinearGradientBrush, _Region
@@ -1970,6 +2033,15 @@ def install_windows_shell_menu() -> bool:
     def browser_form_init(form, *args, **kwargs):
         original_form_init(form, *args, **kwargs)
         try:
+            if winforms.is_chromium:
+                def _enable_context_menu(sender, event):
+                    if event.IsSuccess:
+                        # pywebview disables native context menus outside debug mode.
+                        sender.CoreWebView2.Settings.AreDefaultContextMenusEnabled = True
+                        sender.CoreWebView2.ContextMenuRequested += _filter_context_menu
+
+                form.webview.CoreWebView2InitializationCompleted += _enable_context_menu
+
             form.ShowIcon = False
             if not form.Text:
                 form.Text = "ThinkBuddy"  # Alt-Tab / 任务栏悬停显示
