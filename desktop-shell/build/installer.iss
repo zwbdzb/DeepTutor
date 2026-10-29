@@ -143,7 +143,7 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; \
 ; 数据在 <workspace> 的其他子目录）。删了才能保证更新后窗口里必然是新图标，
 ; 详见 [Code] 段 PurgeWebRuntimeCache 的注释（那里还覆盖 DEEPTUTOR_DESKTOP_HOME
 ; 改过 workspace 位置的情况）。
-Type: filesandordirs; Name: "{userprofile}\ThinkBuddy\data\user\runtime\web"
+Type: filesandordirs; Name: "{%USERPROFILE}\ThinkBuddy\data\user\runtime\web"
 ; 安装新版时清掉本机遗留的托管运行时缓存（%LOCALAPPDATA%\ThinkBuddy\runtime）。
 ; 它是旧版 runtime.zip 自解压的历史产物，版本可能停在任意旧版（曾以 1.6.9
 ; 遮蔽新装的 1.6.10，见 docs/adr/ADR-005）。本安装器自带完整 runtime/ 树，
@@ -340,7 +340,7 @@ begin
   try
     Home := GetEnv('DEEPTUTOR_DESKTOP_HOME');
     if Home = '' then
-      Home := ExpandConstant('{userprofile}\ThinkBuddy');
+      Home := ExpandConstant('{%USERPROFILE}\ThinkBuddy');
     if Home = '' then
       Exit;
     // 去尾反斜杠，避免拼出双反斜杠。
