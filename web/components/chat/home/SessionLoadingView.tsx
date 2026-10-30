@@ -59,7 +59,7 @@ export default function SessionLoadingView({
       {/* Logo + spinner (or the failure mark) */}
       <div className="flex items-center gap-3">
         <img
-          src="/logo.png"
+          src="/brand/color-logo.png"
           alt="ThinkBuddy"
           width={32}
           height={32}

@@ -18,6 +18,7 @@ import aiohttp
 from deeptutor.services.config import load_system_settings
 from deeptutor.services.provider_registry import effective_backend, find_by_name
 
+from .minimax_models import prioritize_model_names
 from .utils import build_auth_headers, collect_model_entries
 
 logger = logging.getLogger(__name__)
@@ -62,6 +63,20 @@ def _auth_binding(binding: str, api_format: str) -> str:
     return binding
 
 
+def _order_entries(entries: list[dict[str, Any]], binding: str) -> list[dict[str, Any]]:
+    """Apply the discovery ordering to typed entries without dropping metadata.
+
+    ``prioritize_model_names`` ranks plain names; this endpoint surface also
+    carries each model's ``model_type`` (see :func:`fetch_model_entries`), so
+    entries are reordered by the position their id takes in that ranking.
+    Names the ranking leaves alone keep the provider's own order.
+    """
+    order = prioritize_model_names([str(entry["id"]) for entry in entries], binding)
+    rank = {name: index for index, name in enumerate(order)}
+    fallback = len(order)
+    return sorted(entries, key=lambda entry: rank.get(str(entry["id"]), fallback))
+
+
 async def fetch_model_entries(
     base_url: str,
     api_key: str | None = None,
@@ -83,7 +98,7 @@ async def fetch_model_entries(
 
     Returns:
         List of ``{"id", "name"}`` dicts, plus ``model_type`` when the
-        provider supplies one.
+        provider supplies one, in the provider-discovery ranking order.
     """
     binding = binding.lower()
     base_url = base_url.rstrip("/")
@@ -107,9 +122,13 @@ async def fetch_model_entries(
                         mapping = cast(Mapping[str, object], payload)
                         items = mapping.get("data")
                         if isinstance(items, list):
-                            return collect_model_entries(cast(list[object], items))
+                            return _order_entries(
+                                collect_model_entries(cast(list[object], items)), binding
+                            )
                     elif isinstance(payload, list):
-                        return collect_model_entries(cast(list[object], payload))
+                        return _order_entries(
+                            collect_model_entries(cast(list[object], payload)), binding
+                        )
             return []
         except Exception as e:
             logger.error("Error fetching models from %s: %s", base_url, e)
