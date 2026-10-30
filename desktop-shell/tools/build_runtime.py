@@ -28,6 +28,7 @@ import argparse
 import hashlib
 import json
 import os
+from pathlib import Path
 import platform
 import shutil
 import stat
@@ -35,7 +36,6 @@ import subprocess
 import sys
 import urllib.request
 import zipfile
-from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 # monorepo 布局：desktop-shell/ 的上级就是 DeepTutor 源码根。
@@ -204,7 +204,7 @@ def enable_site(path: Path) -> None:
     if IS_MAC:
         return
     pth = next(path.glob("python*._pth"))
-    lines = [l.rstrip() for l in pth.read_text(encoding="utf-8").splitlines()]
+    lines = [line.rstrip() for line in pth.read_text(encoding="utf-8").splitlines()]
     out: list[str] = []
     has_sp, has_site = False, False
     for line in lines:
@@ -300,6 +300,43 @@ def _staging_py_exe(target: Path) -> Path:
     return target / "python.exe"
 
 
+def _runtime_module_plan(source_root: Path, extras: tuple[str, ...] = PIP_EXTRAS) -> dict:
+    """Resolve the desktop full profile using the source's module manifests."""
+    if not (source_root / "scripts/build_modules.py").is_file():
+        return {}  # Legacy (pre-1.7.0) source has a single distribution.
+    import tomllib
+
+    data = tomllib.loads((source_root / "pyproject.toml").read_text(encoding="utf-8"))
+    profiles = data["tool"]["deeptutor"]["optional-dependencies"]
+    modules = {
+        path.stem: json.loads(path.read_text(encoding="utf-8"))
+        for path in (source_root / "deeptutor/modules/manifests").glob("*.json")
+    }
+    distributions = {row["distribution"]: name for name, row in modules.items()}
+    selected: dict = {}
+
+    def add_module(name: str) -> None:
+        if name in selected:
+            return
+        selected[name] = modules[name]
+        for dependency in modules[name]["requires"]:
+            add_module(dependency)
+
+    def add_profile(name: str) -> None:
+        for raw in profiles[name]:
+            package = raw.split("==", 1)[0]
+            if package in distributions:
+                add_module(distributions[package])
+            elif package.startswith("deeptutor["):
+                for nested in package[len("deeptutor["):-1].split(","):
+                    add_profile(nested)
+
+    add_module("core")
+    for profile in ("full", *extras):
+        add_profile(profile)
+    return selected
+
+
 def install_deeptutor(target: Path, source_root: Path, *,
                       with_deps: bool = True,
                       extras: tuple[str, ...] = PIP_EXTRAS) -> None:
@@ -310,10 +347,8 @@ def install_deeptutor(target: Path, source_root: Path, *,
 
     with_deps=False（快速路径）：依赖声明未变时只装我们自己的包，跳过 ~500MB
     第三方依赖树的重新解析/下载/复制。
-    extras：随本地源一起安装的 pyproject extras（默认 PIP_EXTRAS，即
-    math-animator → manim），pip 目标写成 `<source_root>[extra1,extra2]`；
-    传 () 则退化为纯本地源安装。--no-deps 快速路径下 extras 照传（--no-deps
-    不会装 extras 的依赖树，但两条路径命令保持一致，避免行为漂移）。
+    1.7.0+ 通过已有模块构建器生成 full + extras 的本地 wheel 家族，并显式安装
+    每个 wheel；快速路径也保留完整模块。旧版源码继续安装本地目录。
     """
     if BUILD_PY is None or not BUILD_PY.exists():
         raise SystemExit("no cp312 build interpreter found (set BUILD_PY=...py)")
@@ -338,14 +373,37 @@ def install_deeptutor(target: Path, source_root: Path, *,
     env.setdefault("PIP_DEFAULT_TIMEOUT", "60")
     log(f"pip index: {env['PIP_INDEX_URL']}")
 
-    # pip 对本地目录的 extras 语法：D:\path\proj[extra1,extra2]（列表传参，
-    # 无 shell，无需引号转义）。
+    # Modular runtimes must install each locally built wheel explicitly, even
+    # with --no-deps: extras alone do not install feature wheels on that path.
     spec = f"{source_root}[{','.join(extras)}]" if extras else str(source_root)
+    specs = [spec]
+    modules = _runtime_module_plan(source_root, extras)
+    if modules:
+        wheelhouse = CACHE / "modules"
+        command = [sys.executable, str(source_root / "scripts/build_modules.py"),
+                   "--output", str(wheelhouse)]
+        for name in sorted(modules):
+            command.extend(["--module", name])
+        log(f"building {len(modules)} local module wheels (full desktop profile) ...")
+        result = subprocess.run(command, capture_output=True, text=True,
+                                encoding="utf-8", errors="replace", env=env)
+        if result.returncode:
+            raise SystemExit(f"local module build failed:\n{result.stdout}\n{result.stderr}")
+        version = _read_source_version(source_root)
+        specs = []
+        for name, row in sorted(modules.items()):
+            distribution = row["distribution"].replace("-", "_")
+            wheel = wheelhouse / f"{distribution}-{version}-py3-none-any.whl"
+            if not wheel.is_file():
+                raise SystemExit(f"local module wheel missing: {wheel}")
+            suffix = f"[full,{','.join(extras)}]" if extras else "[full]"
+            specs.append(str(wheel) + (suffix if name == "core" else ""))
 
     def _pip(extra: list[str]) -> subprocess.CompletedProcess:
         cmd = [str(BUILD_PY), "-m", "pip", "install", "--upgrade", "--no-compile",
-               "--target", str(dest), *extra, spec]
-        return subprocess.run(cmd, capture_output=True, text=True, env=env)
+               "--target", str(dest), *extra, *specs]
+        return subprocess.run(cmd, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", env=env)
 
     # --no-build-isolation：BUILD_PY 里已有 setuptools 时跳过每次建临时
     # 构建环境（省 ~30s 且不联网拉 setuptools/wheel）。失败（版本过老等）
@@ -402,6 +460,8 @@ def smoke_test(py_exe: Path) -> None:
     )
     res = subprocess.run([str(py_exe), "-c", code], capture_output=True, text=True, timeout=120)
     log("import check: " + (res.stdout.strip() or res.stderr.strip()))
+    if res.returncode:
+        raise SystemExit(f"IMPORT GATE FAILED: {res.stderr.strip()}")
 
     if not PIP_EXTRAS:
         return
@@ -449,6 +509,26 @@ def smoke_test(py_exe: Path) -> None:
             f"用 --clean 或 --force-deeptutor 触发全量重装。"
         )
     log(f"extras gate OK: {sorted(mapping)} present for extras {list(PIP_EXTRAS)}")
+
+
+def module_gate(py_exe: Path, source_root: Path) -> None:
+    """Reject incomplete or mismatched module families, including cached builds."""
+    modules = _runtime_module_plan(source_root)
+    if not modules:
+        return
+    code = (
+        "import json; from deeptutor.modules.catalog import module_enabled; "
+        f"missing = [name for name in {sorted(modules)!r} "
+        "if not module_enabled(name, selected={})]; print(json.dumps(missing))"
+    )
+    result = subprocess.run([str(py_exe), "-I", "-c", code],
+                            capture_output=True, text=True, timeout=120)
+    if result.returncode:
+        raise SystemExit(f"MODULE GATE FAILED: {result.stderr.strip()}")
+    missing = json.loads(result.stdout.strip())
+    if missing:
+        raise SystemExit(f"MODULE GATE FAILED: missing or mismatched modules: {missing}")
+    log(f"module gate OK: {len(modules)} same-version desktop modules available")
 
 
 # Runtime packages that are safe to drop from a packaged install:
@@ -558,8 +638,10 @@ def _iter_source_files(source_root: Path) -> list[Path]:
             path for path in root.rglob("*")
             if path.is_file() and path.suffix.lower() not in {".pyc", ".pyo"}
         )
-    if (source_root / "pyproject.toml").is_file():
-        files.append(source_root / "pyproject.toml")
+    for name in ("pyproject.toml", "setup.py", "build_metadata.py", "build_support.py",
+                 "scripts/build_modules.py"):
+        if (source_root / name).is_file():
+            files.append(source_root / name)
     return sorted(files, key=lambda item: item.as_posix())
 
 
@@ -601,7 +683,8 @@ def _dependency_relevant_payload(source_root: Path) -> bytes | None:
       [build-system].requires / .build-backend   — 隔离构建环境的内容
       [project].requires-python                  — 环境标记求值基准
       [project].dependencies                     — 主依赖集
-      [project.optional-dependencies][extra]     — 仅 PIP_EXTRAS 声明的 extra
+      [project.optional-dependencies][extra]     — 旧版 PIP_EXTRAS
+      模块 manifests / tool.deeptutor extras     — 1.7.0+ full 安装面
 
     其余段落（工具配置等）的改动只影响源码指纹（pyproject.toml 本身在
     _iter_source_files 里），走 --no-deps 快速路径秒装，不再触发全量重装。
@@ -631,6 +714,15 @@ def _dependency_relevant_payload(source_root: Path) -> bytes | None:
                    for extra in PIP_EXTRAS if extra in optional},
         "missing_extras": sorted(e for e in PIP_EXTRAS if e not in optional),
     }
+    modules = _runtime_module_plan(source_root)
+    if modules:
+        payload["desktop_module_profile"] = {
+            name: {"distribution": row["distribution"],
+                   "requirements": sorted(row["requirements"]),
+                   "requires": sorted(row["requires"])}
+            for name, row in sorted(modules.items())
+        }
+        payload["desktop_extras"] = data["tool"]["deeptutor"]["optional-dependencies"]
     return json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
 
 
@@ -773,8 +865,7 @@ def build(make_zip: bool = False, source_root: Path | None = None,
         # 快路径（已装且版本/指纹未变 → 跳过下方安装，见 installed_ok）不会
         # 重建 dist-info，若把唯一一份也删掉，打出的运行时只有代码没有元数据，
         # 关于页引擎会显示「未知」、select_runtime_base 的版本择优也会失明。
-        # cli/web 的 dist-info 壳不读取、无遮蔽风险，且快路径删除后不会重建，
-        # 故不在此清理（重装路径的移除循环会统一重建）。
+        # 功能模块的元数据也会影响可用性；需要重装时在下方统一清理、重建。
         for entry in sp.glob("deeptutor-*.dist-info"):
             if _distinfo_metadata_version(entry) == expected:
                 continue
@@ -793,8 +884,7 @@ def build(make_zip: bool = False, source_root: Path | None = None,
             log(f"reinstalling deeptutor: staging={current!r} source={expected!r} "
                 f"force={force_deeptutor} deps_changed={deps_changed}")
             for pat in ("deeptutor", "deeptutor-*.dist-info", "deeptutor_cli",
-                        "deeptutor_cli-*.dist-info", "deeptutor_web",
-                        "deeptutor_web-*.dist-info"):
+                        "deeptutor_web", "deeptutor_*.dist-info"):
                 for entry in sp.glob(pat):
                     # 清理失败必须响：ignore_errors 会静默残留旧文件，产出混合运行时
                     # 且能通过版本门禁。宁可构建失败，不可静默混合。
@@ -823,6 +913,7 @@ def build(make_zip: bool = False, source_root: Path | None = None,
     if did_install:
         smoke_test(_staging_py_exe(STAGING_PY))
     version_gate(STAGING_PY, expected)   # 版本门禁：不过这里直接构建失败
+    module_gate(_staging_py_exe(STAGING_PY), source_root)
     save_source_state(source_root, fp, deps_sig, mode)
 
     if did_install:

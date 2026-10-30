@@ -36,17 +36,17 @@ import hashlib
 import json
 import logging
 import os
+from pathlib import Path
 import platform
 import re
 import subprocess
 import sys
 import tempfile
 import time
+from typing import Callable
 import urllib.error
 import urllib.parse
 import urllib.request
-from pathlib import Path
-from typing import Callable
 
 log = logging.getLogger("dt.updater")
 
@@ -900,10 +900,14 @@ def run_installer(setup_path: str | os.PathLike, new_version: str | None = None)
     # 先拉进度窗、后放 bat：窗是独立 powershell.exe 进程，bat 随后 taskkill/
     # 安装器 RM 都伤不到它；窗若拉不起来只记 warning，更新照常进行。
     ui_proc = _spawn_update_ui(update_log, new_version or "", app_exe)
+    # A replacement EXE at the same path must extract its own DLLs/assets.
+    restart_env = os.environ.copy()
+    restart_env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
     try:
         subprocess.Popen(
             ["cmd", "/c", str(bat_path)],
             creationflags=0x08000000,  # CREATE_NO_WINDOW：全程隐藏，不弹黑窗
+            env=restart_env,
         )
     except OSError as exc:
         # bat 没放出去：回收刚拉起的进度窗进程，避免留下孤儿窗口。
