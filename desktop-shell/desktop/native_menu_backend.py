@@ -73,6 +73,11 @@ HTRIGHT = 11
 HTTOP = 12
 HTTOPLEFT = 13
 HTTOPRIGHT = 14
+# 下边三兄弟长期漏定义：WM_NCHITTEST 命中下边缘时 handler 抛 NameError，
+# ctypes 回调把异常打到 stderr（msg=0x84 反复刷屏），下边框拖拽缩放同时失效。
+HTBOTTOM = 15
+HTBOTTOMLEFT = 16
+HTBOTTOMRIGHT = 17
 SM_CXSIZEFRAME = 32
 SM_CXPADDEDBORDER = 92
 TPM_RETURNCMD = 0x0100
