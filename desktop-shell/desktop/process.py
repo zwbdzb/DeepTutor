@@ -22,6 +22,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib import request as urlrequest
 
+from desktop import __version__
+
 log = logging.getLogger("dt.process")
 
 # Invocation for a deeptutor that has no console entry-point .exe (e.g. an
@@ -416,6 +418,10 @@ class DeepTutorProcess:
         # 代价是错误横幅——取 180s。打包期预编译 .pyc（build_runtime.py
         # precompile_site_packages）才是首启提速的主力，这里是兜底。
         env["DEEPTUTOR_BACKEND_READY_TIMEOUT"] = "180"
+        # 注入壳自身版本：后端据此与 thinkbuddy 发布源比对，驱动 Web 侧边栏
+        # 左下角「设置」旁的更新提示点（橙点亮/灰）。与「关于」页同源，
+        # 优先取正在运行的壳版本而非安装器写入注册表的版本（见 menubar.py）。
+        env["DEEPTUTOR_DESKTOP_VERSION"] = __version__
 
         # 启动前清场：别让上次异常退出留下的孤儿把端口冲突顶到子进程面前。
         self._kill_stale_listeners()

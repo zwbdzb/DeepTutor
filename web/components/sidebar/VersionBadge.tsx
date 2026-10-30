@@ -43,24 +43,22 @@ export function VersionBadge({ onNavigate }: VersionBadgeProps) {
     };
   }, []);
 
+  // The badge reflects the ThinkBuddy desktop release feed (server-side check),
+  // not the PyPI/GitHub release feed that still drives the About page.
+  const desktop = status?.desktop_update;
   const state = error
     ? { dot: "bg-red-500", label: t("Status check failed") }
-    : status?.update_available
+    : desktop?.update_available
       ? { dot: "bg-amber-500", label: t("Update available") }
-      : status?.release
+      : desktop?.version
         ? {
             dot: "bg-[color-mix(in_srgb,var(--muted-foreground)_35%,transparent)]",
             label: t("Up to date"),
           }
-        : status && !status.check_enabled
-          ? {
-              dot: "bg-[color-mix(in_srgb,var(--muted-foreground)_35%,transparent)]",
-              label: t("Version checks are disabled."),
-            }
-          : {
-              dot: "bg-[color-mix(in_srgb,var(--muted-foreground)_35%,transparent)]",
-              label: status ? t("Not checked yet") : t("Checking..."),
-            };
+        : {
+            dot: "bg-[color-mix(in_srgb,var(--muted-foreground)_35%,transparent)]",
+            label: status ? t("Not checked yet") : t("Checking..."),
+          };
 
   return (
     <Tooltip label={state.label as string} side="right">

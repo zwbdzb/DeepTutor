@@ -224,8 +224,12 @@ jobs:
           PIP_INDEX_URL: https://pypi.org/simple
         # -SkipWebBuild：web job 已构建前端、prepare_web_package 已打包 deeptutor_web，
         # 跳过 build.ps1 [0/3] 避免重复 npm run build。
-        # 日常 push 和 release 都用 -FastInstaller（lzma2/fast，安装包 ~220MB，1 分钟级）。
-        run: powershell -ExecutionPolicy Bypass -File build\build.ps1 -SkipWebBuild -FastInstaller
+        # 日常 push 和 release 都用 -FastInstaller（lzma2/fast）。
+        # -MakeZip：额外让 build_runtime.py 产出 dist/runtime.zip，PyInstaller spec
+        # 探测到后会把 runtime.zip 内嵌进 onefile exe。exe 双击即跑，无需安装器解包
+        # runtime.tar.xz。代价：runtime 被重复投递（exe 内嵌 + Inno [Files] 仍塞 tar.xz），
+        # 安装包从 ~170MB 涨到 ~320MB，用户下载一次拿到完整离线运行时。
+        run: powershell -ExecutionPolicy Bypass -File build\build.ps1 -SkipWebBuild -FastInstaller -MakeZip
 
       - name: List outputs
         working-directory: desktop-shell

@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import importlib.metadata
 import json
 import os
+import platform
 from pathlib import Path
 import re
 import subprocess  # nosec B404 - every launched argv is generated internally
@@ -27,6 +28,17 @@ from deeptutor.services.file_io import atomic_write_json
 GITHUB_LATEST_RELEASE_URL = "https://api.github.com/repos/HKUDS/DeepTutor/releases/latest"
 GITHUB_LATEST_RELEASE_WEB_URL = "https://github.com/HKUDS/DeepTutor/releases/latest"
 VERSION_CHECK_TTL_SECONDS = 24 * 60 * 60
+
+# ThinkBuddy desktop release source. The desktop shell owns download/install
+# (see desktop-shell/desktop/updater.py); the backend only mirrors its manifest
+# so the web sidebar badge can light up without the browser crossing CORS.
+THINKBUDDY_UPDATE_MANIFEST_URL = "https://thinkbuddy.hanyoai.com/update/latest.json"
+# Set by the desktop shell when it spawns `deeptutor start` (see
+# desktop-shell/desktop/process.py). It marks the desktop install shape and
+# carries the shell's own four-segment version for comparison.
+DESKTOP_SHELL_MANAGED_ENV = "DEEPTUTOR_SHELL_MANAGED"
+DESKTOP_VERSION_ENV = "DEEPTUTOR_DESKTOP_VERSION"
+DESKTOP_VERSION_CHECK_TTL_SECONDS = 60 * 60
 LAUNCHER_PID_ENV = "DEEPTUTOR_LAUNCHER_PID"
 SYSTEMD_UPDATE_REASON = (
     "In-app updates are unavailable under a systemd service because systemd may stop "
@@ -82,6 +94,38 @@ class VersionCheckResult:
     @property
     def update_available(self) -> bool:
         return _version_tuple(self.release.version) > _version_tuple(self.current_version)
+
+
+@dataclass(frozen=True, slots=True)
+class DesktopReleaseInfo:
+    version: str
+    url: str
+    published_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class DesktopUpdateCheckResult:
+    enabled: bool
+    current_version: str
+    version: str
+    url: str
+    published_at: str
+    checked_at: str
+    cached: bool
+    error: str
+
+    @property
+    def update_available(self) -> bool:
+        return (
+            bool(self.enabled)
+            and bool(self.version)
+            and bool(self.current_version)
+            and _desktop_is_newer(self.version, self.current_version)
+        )
+
+
+class DesktopUpdateError(RuntimeError):
+    """Raised when the ThinkBuddy desktop manifest cannot be validated."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,6 +193,44 @@ def _normalise_stable_version(value: str) -> str:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _desktop_version_key(value: str) -> tuple[int, ...]:
+    """Parse a four-segment desktop version into a comparable tuple.
+
+    Mirrors desktop-shell ``updater.version_key``: leading ``dt`` prefixes,
+    build timestamps and plain semantic versions all collapse to their numeric
+    components. ``""``/garbage yields ``(0,)`` so an unparseable remote never
+    beats a real installed version.
+    """
+    parts = re.findall(r"\d+", value or "")
+    return tuple(int(part) for part in parts) or (0,)
+
+
+def _desktop_is_newer(remote: str, local: str) -> bool:
+    """Return whether ``remote`` is strictly newer than ``local``.
+
+    Aligned with desktop-shell ``updater.is_newer``: a missing remote is never
+    newer, while a missing local is treated as old so a first install prompts.
+    """
+    if not remote:
+        return False
+    if not local:
+        return True
+    return _desktop_version_key(remote) > _desktop_version_key(local)
+
+
+def desktop_update_enabled() -> bool:
+    """Whether the backend is running inside the desktop shell install shape."""
+    return os.getenv(DESKTOP_SHELL_MANAGED_ENV, "").strip() == "1"
+
+
+def _desktop_version() -> str:
+    return os.getenv(DESKTOP_VERSION_ENV, "").strip()
+
+
+def _desktop_mac_arch() -> str:
+    return "arm64" if platform.machine() == "arm64" else "x86_64"
 
 
 def _running_in_container() -> bool:
@@ -377,6 +459,153 @@ class VersionCheckService:
             # github.com".
             raise VersionCheckError(f"Unable to check for updates: {exc}") from None
         return _release_from_latest_url(release_url)
+
+
+class DesktopVersionCheckService:
+    """Mirror the ThinkBuddy desktop release manifest with a 1-hour cache.
+
+    This exists only for the sidebar badge: the desktop shell itself performs
+    the authoritative check/download/install flow. Failure therefore degrades
+    to "not available" rather than raising — an orange dot that does not light
+    up is always preferable to a false update prompt.
+    """
+
+    def __init__(
+        self,
+        *,
+        manifest_url: str = THINKBUDDY_UPDATE_MANIFEST_URL,
+        timeout: float = 8.0,
+        ttl_seconds: float = DESKTOP_VERSION_CHECK_TTL_SECONDS,
+        clock: Callable[[], float] = time.time,
+        client_factory: Callable[[], httpx.AsyncClient] | None = None,
+    ) -> None:
+        self._manifest_url = manifest_url
+        self._timeout = timeout
+        self._ttl_seconds = ttl_seconds
+        self._clock = clock
+        self._client_factory = client_factory
+        self._cache: DesktopUpdateCheckResult | None = None
+        self._cached_at: float | None = None
+        self._lock = asyncio.Lock()
+
+    def cached(self) -> DesktopUpdateCheckResult | None:
+        if self._cache is None or self._cached_at is None:
+            return None
+        if self._clock() - self._cached_at >= self._ttl_seconds:
+            return None
+        return replace(self._cache, cached=True)
+
+    async def check(self, *, force: bool = False) -> DesktopUpdateCheckResult:
+        enabled = desktop_update_enabled()
+        current_version = _desktop_version()
+        # Without the desktop shell (browser/PyPI deployments) or a known shell
+        # version there is nothing meaningful to compare — never hit the network.
+        if not enabled or not current_version:
+            return DesktopUpdateCheckResult(
+                enabled=enabled,
+                current_version=current_version,
+                version="",
+                url="",
+                published_at="",
+                checked_at="",
+                cached=False,
+                error="",
+            )
+        async with self._lock:
+            if not force and (cached := self.cached()) is not None:
+                return cached
+            try:
+                release = await self._fetch()
+            except DesktopUpdateError as exc:
+                result = DesktopUpdateCheckResult(
+                    enabled=True,
+                    current_version=current_version,
+                    version="",
+                    url="",
+                    published_at="",
+                    checked_at=_now(),
+                    cached=False,
+                    error=str(exc),
+                )
+            else:
+                result = DesktopUpdateCheckResult(
+                    enabled=True,
+                    current_version=current_version,
+                    version=release.version,
+                    url=release.url,
+                    published_at=release.published_at,
+                    checked_at=_now(),
+                    cached=False,
+                    error="",
+                )
+            self._cache = result
+            self._cached_at = self._clock()
+            return result
+
+    async def _fetch(self) -> DesktopReleaseInfo:
+        factory = self._client_factory or (
+            lambda: httpx.AsyncClient(
+                timeout=httpx.Timeout(self._timeout, connect=5.0),
+                follow_redirects=True,
+            )
+        )
+        async with factory() as client:
+            try:
+                response = await client.get(
+                    self._manifest_url,
+                    headers={
+                        "Accept": "application/json",
+                        "User-Agent": "DeepTutor-Desktop-Version-Check",
+                    },
+                )
+                response.raise_for_status()
+                payload = response.json()
+            except (httpx.HTTPError, ValueError) as exc:
+                raise DesktopUpdateError(
+                    f"Unable to check for desktop updates: {exc}"
+                ) from None
+        return _desktop_release_from_payload(payload)
+
+
+def _desktop_release_from_payload(payload: Any) -> DesktopReleaseInfo:
+    """Validate the ThinkBuddy latest.json and pick the current platform entry."""
+    if not isinstance(payload, dict):
+        raise DesktopUpdateError("The desktop update manifest is invalid")
+    if payload.get("app") not in (None, "ThinkBuddy"):
+        raise DesktopUpdateError("The desktop update manifest belongs to another app")
+
+    entry = payload
+    if sys.platform == "darwin":
+        mac_section = payload.get("mac")
+        if isinstance(mac_section, dict):
+            arch = _desktop_mac_arch()
+            entry = mac_section.get(arch)
+            if not isinstance(entry, dict):
+                raise DesktopUpdateError(
+                    f"The desktop update manifest has no macOS {arch} build"
+                )
+        # A legacy single-arch mac manifest keeps its fields at the top level.
+
+    version = entry.get("version")
+    url = entry.get("url")
+    if not (isinstance(version, str) and version.strip()) or not (
+        isinstance(url, str) and url.strip()
+    ):
+        raise DesktopUpdateError(
+            "The desktop update manifest is missing a version or download URL"
+        )
+    url = url.strip()
+    parsed = urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise DesktopUpdateError(
+            "The desktop update manifest has an invalid download URL"
+        )
+    published_at = entry.get("published_at") or payload.get("published_at") or ""
+    return DesktopReleaseInfo(
+        version=version.strip(),
+        url=url,
+        published_at=str(published_at).strip(),
+    )
 
 
 def _release_from_payload(payload: Any) -> ReleaseInfo:
@@ -663,7 +892,24 @@ def reset_version_check_service_for_tests(service: VersionCheckService | None = 
     _version_service = service or VersionCheckService()
 
 
+_desktop_version_service = DesktopVersionCheckService()
+
+
+def get_desktop_version_check_service() -> DesktopVersionCheckService:
+    return _desktop_version_service
+
+
+def reset_desktop_version_check_service_for_tests(
+    service: DesktopVersionCheckService | None = None,
+) -> None:
+    global _desktop_version_service
+    _desktop_version_service = service or DesktopVersionCheckService()
+
+
 __all__ = [
+    "DesktopUpdateCheckResult",
+    "DesktopUpdateError",
+    "DesktopVersionCheckService",
     "Installation",
     "LAUNCHER_PID_ENV",
     "ReleaseInfo",
@@ -675,11 +921,14 @@ __all__ = [
     "VersionCheckError",
     "VersionCheckResult",
     "VersionCheckService",
+    "desktop_update_enabled",
     "detect_installation",
+    "get_desktop_version_check_service",
     "get_version_check_service",
     "launch_update_worker",
     "launcher_available",
-    "running_under_systemd_service",
+    "reset_desktop_version_check_service_for_tests",
     "reset_version_check_service_for_tests",
+    "running_under_systemd_service",
     "update_store_root",
 ]

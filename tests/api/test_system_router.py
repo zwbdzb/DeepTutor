@@ -7,6 +7,7 @@ import pytest
 from deeptutor.api.routers import system as system_router
 from deeptutor.runtime.memory_probe import MemorySnapshot, ProcessMemory
 from deeptutor.services.app_update import (
+    DesktopUpdateCheckResult,
     Installation,
     ReleaseInfo,
     UpdateJobStore,
@@ -106,7 +107,56 @@ async def test_update_status_combines_cached_release_and_installation(
     assert payload["release"]["version"] == "1.7.0"
     assert payload["update_available"] is True
     assert payload["installation"]["mode"] == "pypi"
+    assert payload["desktop_update"]["enabled"] is False
     assert version_service.forces == [False]
+
+
+@pytest.mark.asyncio
+async def test_update_status_includes_desktop_badge_state(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    class _DesktopVersionService:
+        async def check(self, *, force: bool = False) -> DesktopUpdateCheckResult:
+            del force
+            return DesktopUpdateCheckResult(
+                enabled=True,
+                current_version="0.1.524.1030",
+                version="0.1.524.1100",
+                url="https://thinkbuddy.hanyoai.com/update/ThinkBuddySetup.exe",
+                published_at="2026-10-16T15:54:00+08:00",
+                checked_at="2026-10-16T15:54:00+08:00",
+                cached=False,
+                error="",
+            )
+
+    version_service = _VersionService(_update_result())
+    monkeypatch.setattr(system_router, "get_runtime_settings_service", _UpdateSettings)
+    monkeypatch.setattr(system_router, "get_version_check_service", lambda: version_service)
+    monkeypatch.setattr(system_router, "get_update_installation", _pypi_installation)
+    monkeypatch.setattr(system_router, "launcher_available", lambda: True)
+    monkeypatch.setattr(
+        system_router,
+        "get_update_job_store",
+        lambda: UpdateJobStore(tmp_path / "update"),
+    )
+    monkeypatch.setattr(
+        system_router,
+        "get_current_user",
+        lambda: SimpleNamespace(is_admin=True),
+    )
+    monkeypatch.setattr(
+        system_router,
+        "get_desktop_version_check_service",
+        _DesktopVersionService,
+    )
+
+    payload = await system_router.get_update_status()
+
+    assert payload["desktop_update"]["enabled"] is True
+    assert payload["desktop_update"]["update_available"] is True
+    assert payload["desktop_update"]["version"] == "0.1.524.1100"
+    assert payload["desktop_update"]["url"].startswith("https://")
 
 
 @pytest.mark.asyncio

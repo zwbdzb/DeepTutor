@@ -30,6 +30,18 @@ export interface UpdateJob {
   restart_count: number;
 }
 
+export interface DesktopUpdateStatus {
+  enabled: boolean;
+  current_version: string;
+  update_available: boolean;
+  version: string;
+  url: string;
+  published_at: string;
+  checked_at: string;
+  cached: boolean;
+  error: string;
+}
+
 export interface AppUpdateStatus {
   current_version: string;
   check_enabled: boolean;
@@ -37,6 +49,7 @@ export interface AppUpdateStatus {
   cached: boolean;
   check_error: string;
   update_available: boolean;
+  desktop_update: DesktopUpdateStatus;
   release: UpdateRelease | null;
   installation: {
     mode: InstallMode;
