@@ -695,11 +695,13 @@ $timer.Add_Tick({
         }
     }
     if ($text -match 'launching') {
-        $running = $null
+        # 必须等主窗口真冒出来才算活（bootloader 宿主解压期 MainWindowHandle=0）。
+        $visible = $null
         if ($procName) {
-            $running = Get-Process -Name $procName -ErrorAction SilentlyContinue
+            $visible = Get-Process -Name $procName -ErrorAction SilentlyContinue |
+                Where-Object { $_.MainWindowHandle -ne 0 }
         }
-        if ($running) {
+        if ($visible) {
             $lblStage.Text = '更新完成，正在打开新版本…'
             if ($script:launchSeenTick -lt 0) {
                 $script:launchSeenTick = $script:tickCount
@@ -707,6 +709,9 @@ $timer.Add_Tick({
                 $form.Close()
                 return
             }
+        } else {
+            # bootloader 解压中，明确反馈避免用户误以为卡死。
+            $lblStage.Text = '正在等待新版本窗口出现…'
         }
     }
 })
