@@ -22,6 +22,7 @@ from deeptutor.multi_user.context import get_current_user
 from deeptutor.runtime import memory_probe
 from deeptutor.services.app_update import (
     SYSTEMD_UPDATE_REASON,
+    DesktopUpdateCheckResult,
     Installation,
     UpdateInProgressError,
     UpdateJob,
@@ -30,6 +31,7 @@ from deeptutor.services.app_update import (
     VersionCheckError,
     VersionCheckResult,
     detect_installation,
+    get_desktop_version_check_service,
     get_version_check_service,
     launcher_available,
     running_under_systemd_service,
@@ -161,6 +163,39 @@ def _stored_job(store: UpdateJobStore | None = None) -> UpdateJob | None:
         return None
 
 
+def _desktop_update_payload(
+    result: DesktopUpdateCheckResult | None,
+) -> dict[str, Any]:
+    """Render the desktop release check for the sidebar badge.
+
+    A missing result means the check could not run at all; the badge treats it
+    the same as "no update" so the orange dot never lights up spuriously.
+    """
+    if result is None:
+        return {
+            "enabled": False,
+            "current_version": "",
+            "update_available": False,
+            "version": "",
+            "url": "",
+            "published_at": "",
+            "checked_at": "",
+            "cached": False,
+            "error": "",
+        }
+    return {
+        "enabled": result.enabled,
+        "current_version": result.current_version,
+        "update_available": result.update_available,
+        "version": result.version,
+        "url": result.url,
+        "published_at": result.published_at,
+        "checked_at": result.checked_at,
+        "cached": result.cached,
+        "error": result.error,
+    }
+
+
 def _update_payload(
     *,
     result: VersionCheckResult | None,
@@ -168,6 +203,7 @@ def _update_payload(
     check_enabled: bool,
     check_error: str = "",
     store: UpdateJobStore | None = None,
+    desktop_update: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     release = result.release if result is not None else None
     return {
@@ -177,6 +213,9 @@ def _update_payload(
         "cached": result.cached if result else False,
         "check_error": check_error,
         "update_available": result.update_available if result else False,
+        "desktop_update": (
+            desktop_update if desktop_update is not None else _desktop_update_payload(None)
+        ),
         "release": (
             {
                 "version": release.version,
@@ -201,16 +240,27 @@ def _update_payload(
     }
 
 
+async def _desktop_update_state() -> dict[str, Any]:
+    """Fetch the desktop badge state without ever failing the About payload."""
+    try:
+        result = await get_desktop_version_check_service().check()
+    except Exception:
+        result = None
+    return _desktop_update_payload(result)
+
+
 async def _checked_update_payload(*, force: bool = False) -> dict[str, Any]:
     settings = get_runtime_settings_service().load_system()
     enabled = bool(settings["version_check_enabled"])
     installation = get_update_installation()
     service = get_version_check_service()
+    desktop_update = await _desktop_update_state()
     if not enabled:
         return _update_payload(
             result=service.cached(),
             installation=installation,
             check_enabled=False,
+            desktop_update=desktop_update,
         )
     try:
         result = await service.check(force=force)
@@ -225,11 +275,13 @@ async def _checked_update_payload(*, force: bool = False) -> dict[str, Any]:
             installation=installation,
             check_enabled=True,
             check_error=str(exc),
+            desktop_update=desktop_update,
         )
     return _update_payload(
         result=result,
         installation=installation,
         check_enabled=True,
+        desktop_update=desktop_update,
     )
 
 

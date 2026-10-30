@@ -7,7 +7,12 @@ import httpx
 import pytest
 
 from deeptutor.services import app_update
-from deeptutor.services.app_update import UpdateJobStore, VersionCheckError, VersionCheckService
+from deeptutor.services.app_update import (
+    DesktopVersionCheckService,
+    UpdateJobStore,
+    VersionCheckError,
+    VersionCheckService,
+)
 
 
 def _client_factory(payload: dict, *, status_code: int = 200):
@@ -15,6 +20,23 @@ def _client_factory(payload: dict, *, status_code: int = 200):
         return httpx.Response(status_code, json=payload)
 
     return lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+def _desktop_client_factory(payload: dict, *, status_code: int = 200):
+    return _client_factory(payload, status_code=status_code)
+
+
+def _desktop_manifest(**overrides: object) -> dict:
+    payload = {
+        "app": "ThinkBuddy",
+        "version": "0.1.524.1100",
+        "url": "https://thinkbuddy.hanyoai.com/update/ThinkBuddySetup-dt0.1.524.1100.exe",
+        "sha256": "a" * 64,
+        "size": 1024,
+        "published_at": "2026-10-16T15:54:00+08:00",
+    }
+    payload.update(overrides)
+    return payload
 
 
 def _release(**overrides: object) -> dict:
@@ -298,3 +320,158 @@ def test_launcher_available_uses_the_read_only_process_probe(monkeypatch) -> Non
 
     assert app_update.launcher_available() is True
     assert probed == [4242]
+
+
+def _desktop_env(monkeypatch: pytest.MonkeyPatch, *, version: str | None = "0.1.524.1030") -> None:
+    monkeypatch.setenv(app_update.DESKTOP_SHELL_MANAGED_ENV, "1")
+    if version is None:
+        monkeypatch.delenv(app_update.DESKTOP_VERSION_ENV, raising=False)
+    else:
+        monkeypatch.setenv(app_update.DESKTOP_VERSION_ENV, version)
+
+
+@pytest.mark.asyncio
+async def test_desktop_check_reports_available_for_newer_manifest(monkeypatch) -> None:
+    _desktop_env(monkeypatch)
+    service = DesktopVersionCheckService(
+        client_factory=_desktop_client_factory(_desktop_manifest()),
+    )
+
+    result = await service.check()
+
+    assert result.enabled is True
+    assert result.update_available is True
+    assert result.version == "0.1.524.1100"
+    assert result.error == ""
+    assert result.url.startswith("https://thinkbuddy.hanyoai.com/update/")
+
+
+@pytest.mark.asyncio
+async def test_desktop_check_reports_not_available_when_same_or_older(monkeypatch) -> None:
+    _desktop_env(monkeypatch, version="0.1.524.1100")
+    service = DesktopVersionCheckService(
+        client_factory=_desktop_client_factory(_desktop_manifest()),
+    )
+
+    result = await service.check()
+
+    assert result.enabled is True
+    assert result.update_available is False
+    assert result.version == "0.1.524.1100"
+
+    older = DesktopVersionCheckService(
+        client_factory=_desktop_client_factory(
+            _desktop_manifest(version="0.1.524.0999"),
+        ),
+    )
+    older_result = await older.check()
+    assert older_result.update_available is False
+
+
+@pytest.mark.asyncio
+async def test_desktop_check_caches_success_for_the_ttl(monkeypatch) -> None:
+    _desktop_env(monkeypatch)
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json=_desktop_manifest())
+
+    service = DesktopVersionCheckService(
+        client_factory=lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        clock=lambda: 100,
+    )
+
+    first = await service.check()
+    second = await service.check()
+
+    assert calls == 1
+    assert first.cached is False
+    assert second.cached is True
+
+
+@pytest.mark.asyncio
+async def test_desktop_check_degrades_to_unavailable_on_error(monkeypatch) -> None:
+    _desktop_env(monkeypatch)
+    service = DesktopVersionCheckService(
+        client_factory=_desktop_client_factory({"detail": "boom"}, status_code=503),
+    )
+
+    result = await service.check()
+
+    assert result.enabled is True
+    assert result.update_available is False
+    assert result.version == ""
+    assert result.error
+
+
+@pytest.mark.asyncio
+async def test_desktop_check_rejects_invalid_manifest(monkeypatch) -> None:
+    _desktop_env(monkeypatch)
+    service = DesktopVersionCheckService(
+        client_factory=_desktop_client_factory(_desktop_manifest(version="")),
+    )
+
+    result = await service.check()
+
+    assert result.update_available is False
+    assert result.version == ""
+    assert "missing" in result.error.lower()
+
+
+@pytest.mark.asyncio
+async def test_desktop_check_is_disabled_without_desktop_environment(monkeypatch) -> None:
+    monkeypatch.delenv(app_update.DESKTOP_SHELL_MANAGED_ENV, raising=False)
+    monkeypatch.delenv(app_update.DESKTOP_VERSION_ENV, raising=False)
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json=_desktop_manifest())
+
+    service = DesktopVersionCheckService(
+        client_factory=lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+
+    result = await service.check()
+
+    assert calls == 0
+    assert result.enabled is False
+    assert result.update_available is False
+    assert result.version == ""
+
+
+@pytest.mark.asyncio
+async def test_desktop_check_selects_macos_arch_entry(monkeypatch) -> None:
+    _desktop_env(monkeypatch, version="0.1.524.1030")
+    monkeypatch.setattr(app_update.sys, "platform", "darwin")
+    monkeypatch.setattr(app_update.platform, "machine", lambda: "arm64")
+    payload = {
+        "app": "ThinkBuddy",
+        "version": "0.1.524.1000",
+        "url": "https://thinkbuddy.hanyoai.com/update/ThinkBuddySetup-dt0.1.524.1000.exe",
+        "sha256": "a" * 64,
+        "mac": {
+            "arm64": {
+                "version": "0.1.524.1200",
+                "url": "https://thinkbuddy.hanyoai.com/update/ThinkBuddyDesktop-mac-arm64-0.1.524.1200.dmg",
+                "sha256": "a" * 64,
+            },
+            "x86_64": {
+                "version": "0.1.524.1100",
+                "url": "https://thinkbuddy.hanyoai.com/update/ThinkBuddyDesktop-mac-x86_64-0.1.524.1100.dmg",
+                "sha256": "a" * 64,
+            },
+        },
+    }
+    service = DesktopVersionCheckService(
+        client_factory=_desktop_client_factory(payload),
+    )
+
+    result = await service.check()
+
+    assert result.update_available is True
+    assert result.version == "0.1.524.1200"
+    assert "arm64" in result.url
