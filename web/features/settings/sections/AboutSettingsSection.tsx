@@ -162,7 +162,20 @@ export default function AboutSettingsPage() {
     }
   }, [t]);
 
+  // Desktop shells report the ThinkBuddy package version (engine version +
+  // build timestamp, e.g. 1.6.15.10291629). The About page shows the engine
+  // part only, so it always matches the engine version the shell displays.
+  const desktopEngine = (() => {
+    if (!status?.desktop_update?.enabled) return null;
+    const raw = status.desktop_update.current_version?.trim();
+    if (!raw) return null;
+    const segments = raw.split(".");
+    return normalizeVersionTag(
+      segments.length >= 4 ? segments.slice(0, -1).join(".") : raw,
+    );
+  })();
   const currentVersion =
+    desktopEngine ??
     normalizeVersionTag(status?.current_version) ??
     normalizeVersionTag(process.env.NEXT_PUBLIC_APP_VERSION) ??
     "—";
