@@ -15,12 +15,24 @@ deeptutor/node on PATH.
 """
 import os
 import sys
+import uuid
 from pathlib import Path
 
 ROOT = Path(SPECPATH)          # build/  (this spec lives in build/)
 PROJECT = ROOT.parent
 ASSETS = PROJECT / "assets"
 DIST = PROJECT / "dist"
+
+# The hook's identity lives in the new EXE; the marker lives in its extracted data.
+bundle_id = uuid.uuid4().hex
+bundle_marker = ROOT / "thinkbuddy-bundle-id.txt"
+bundle_marker.write_text(bundle_id, encoding="ascii")
+bundle_hook = ROOT / "pyi_rth_thinkbuddy_bundle.py"
+bundle_hook.write_text(
+    "from desktop.frozen_bootstrap import ensure_fresh_bundle\n"
+    f"ensure_fresh_bundle({bundle_id!r})\n",
+    encoding="utf-8",
+)
 
 
 def _collect_ucrt_binaries() -> list[tuple[str, str]]:
@@ -66,6 +78,7 @@ def _collect_ucrt_binaries() -> list[tuple[str, str]]:
 
 
 datas = [
+    (str(bundle_marker), "."),
     (str(ASSETS / "icon.ico"), "assets"),
     (str(ASSETS / "icon.png"), "assets"),
 ]
@@ -85,7 +98,7 @@ a = Analysis(
         "pystray._win32",
     ],
     hookspath=[],
-    runtime_hooks=[],
+    runtime_hooks=[str(bundle_hook)],
     excludes=["tkinter", "PyQt5", "PySide2", "PySide6", "IPython"],
     noarchive=False,
 )

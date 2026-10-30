@@ -85,7 +85,8 @@ RestartApplications=no
 ; 简体中文放第一位：[Languages] 的第一项是 Inno 的 fallback 默认语言。
 ; 中文 Windows 若因 LanguageID 匹配失败走到 fallback，拿到的也是中文向导，
 ; 而不是英文。英文系统用户仍按系统语言自动匹配到 english，不受影响。
-Name: "chinesesimp"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+; Inno's standard installation omits Simplified Chinese; use the vendored file.
+Name: "chinesesimp"; MessagesFile: "languages\ChineseSimplified.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [CustomMessages]
@@ -235,6 +236,7 @@ const
   SHCNF_IDLIST       = $0000;       // dwItem1/dwItem2 为 NULL 的全局通知
   SHCNF_FLUSH        = $1000;       // 同步刷新，不排到空闲时再处理
   TB_TRAY_KEY        = 'Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\TrayNotify';
+  TB_UNINSTALL_KEY   = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{3B4FC0AE-E3E3-491F-B3B6-59BBBF1D6305}_is1';
 
 // shell32.SHChangeNotify：通知 Shell 某项已变更（这里用于作废旧图标缓存）。
 // setuponly：只在安装器进程加载，卸载器用不到。
@@ -260,10 +262,8 @@ procedure TbSHChangeNotify(wEventId: Longint; uFlags: Longint;
 procedure InitializeWizard();
 begin
   try
-    // 子键写法与 InitializeSetup 一致：Inno 对 HKCU 会自动前置
-    // Software\Microsoft\Windows\CurrentVersion\Uninstall\。
-    if RegKeyExists(HKEY_CURRENT_USER,
-         '{3B4FC0AE-E3E3-491F-B3B6-59BBBF1D6305}_is1')
+    // Registry APIs require the complete subkey relative to HKCU.
+    if RegKeyExists(HKEY_CURRENT_USER, TB_UNINSTALL_KEY)
        or FileExists(ExpandConstant('{autodesktop}\{#MyAppName}.lnk'))
        or FileExists(ExpandConstant('{userdesktop}\{#MyAppName}.lnk')) then
       WizardSelectTasks('desktopicon');
@@ -401,8 +401,7 @@ begin
     // GUID 即 AppId 字面值（iss 值字段的双花括号转义不适用于 Pascal 字符
     // 串，这里直接写单层花括号即可）。读不到则回退默认安装目录。
     AppDir := '';
-    if not RegQueryStringValue(HKEY_CURRENT_USER,
-         '{3B4FC0AE-E3E3-491F-B3B6-59BBBF1D6305}_is1',
+    if not RegQueryStringValue(HKEY_CURRENT_USER, TB_UNINSTALL_KEY,
          'InstallLocation', AppDir) then
       AppDir := ExpandConstant('{autopf}\ThinkBuddy');
     // 规范化：注册表 InstallLocation 常带尾反斜杠，去掉，避免拼出双反斜杠。
