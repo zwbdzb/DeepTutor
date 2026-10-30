@@ -15,6 +15,11 @@ data/
 .claude
 .agents/
 .workbuddy/
+# 本地品牌图标工具与部署回滚备份（build_icon.py / gen_assets.py /
+# rebuild_shell.py + 旧版 exe 备份），本机工作产物，不入库。
+.iconwork/
+desktop-shell/pip-*/
+desktop-shell/tmp????????*
 
 # LaTeX build artifacts
 *.aux

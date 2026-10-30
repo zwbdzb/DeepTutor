@@ -573,6 +573,21 @@ $lblHint.Size = New-Object System.Drawing.Size(360, 22)
 $lblHint.Location = New-Object System.Drawing.Point(10, 158)
 $form.Controls.Add($lblHint)
 
+# ---- 右上角最小化按钮（原版窗体上唯一新增的控件，其余保持不变）---------------
+$btnMin = New-Object System.Windows.Forms.Label
+$btnMin.Text = '–'
+$btnMin.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 11.0)
+$btnMin.ForeColor = [System.Drawing.Color]::FromArgb(95, 99, 104)
+$btnMin.BackColor = [System.Drawing.Color]::White
+$btnMin.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+$btnMin.Size = New-Object System.Drawing.Size(32, 24)
+$btnMin.Location = New-Object System.Drawing.Point(348, 0)
+$btnMin.Cursor = [System.Windows.Forms.Cursors]::Hand
+$btnMin.Add_Click({ $form.WindowState = [System.Windows.Forms.FormWindowState]::Minimized })
+$form.Controls.Add($btnMin)
+$btnMin.BringToFront()
+
+
 # ---- helpers ----------------------------------------------------------------
 function Read-UpdateLog {
     # Read the whole update log. The bat appends to it concurrently, so the
@@ -816,7 +831,11 @@ def run_installer(setup_path: str | os.PathLike, new_version: str | None = None)
         f"powershell -NoProfile -Command \"{ps_sweep}\" >nul 2>&1",
         ":runtime_swept",
         f"echo [%date% %time%] runtime children swept >> \"{update_log}\"",
-        f"\"{setup}\" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /FORCECLOSEAPPLICATIONS /MERGETASKS=\"!autostart\" /LOG=\"{install_log}\" /TBLOG=\"{update_log}\"",
+        # MERGETASKS 显式带上 desktopicon：静默更新没有向导页，installer.iss
+        # 的 InitializeWizard（升级时强制勾选桌面快捷方式）不会触发，只能靠
+        # 命令行补齐，否则 [Icons] 不重写 .lnk、桌面快捷方式继续沿用旧图标。
+        # 保留 !autostart：避免复用旧勾选把用户关掉的自启写回（原注释有述）。
+        f"\"{setup}\" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /FORCECLOSEAPPLICATIONS /MERGETASKS=\"desktopicon,!autostart\" /LOG=\"{install_log}\" /TBLOG=\"{update_log}\"",
         # 注意是单 %errorlevel%（bat 文件里 %%errorlevel%% 只会输出字面
         # 「%errorlevel%」，实测 2026-10-25）：进度窗按「setup exit <数字>」
         # 映射「正在完成收尾」与「错误码 N」失败态，日志里必须落真实数字。
