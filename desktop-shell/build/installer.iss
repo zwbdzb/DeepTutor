@@ -359,6 +359,70 @@ begin
   end;
 end;
 
+(* ===== 清旧壳遗留的 _MEI 解包目录（PurgeStaleMeiDirs，ssInstall 触发） =====
+   为什么需要：壳是 PyInstaller onefile 打包，每次启动把 exe 内嵌内容解包到
+   %TEMP%\_MEIxxxxxxx。正常退出会自行删除，崩溃/被强杀则留下（本机实测 24 个
+   残留，其中多数是旧版绿图）。
+
+   残留本身不直接生效，真正的危险是**被复用**：PyInstaller 6 的 bootloader 会把
+   解包目录经 _PYI_APPLICATION_HOME_DIR 传给子进程，子进程据此直接复用、不再
+   解包。更新重启时这条链是：旧壳 → updater.bat → 新 exe，环境一路继承，于是
+   新壳跑的是旧壳解包出来的代码与 assets/icon.png —— 2026-10-30 实证：磁盘上的
+   新 exe 内嵌蓝图（16557B blue），运行中的进程却加载 09:19 那份绿图目录
+   （54739B green），表现为「任务栏蓝、托盘与 splash 绿」。
+
+   修法有两层：
+     1) 新壳侧：updater.py 的 bat 里 `set PYINSTALLER_RESET_ENVIRONMENT=1`
+        （让新壳忽略继承来的目录）—— 只对「包含该修复的版本」发起的更新生效；
+     2) 安装器侧：本函数。旧版发起的**那一次**升级还没修复，靠这里兜底 ——
+        安装一开始（InitializeSetup 已把旧壳杀干净、新壳尚未拉起）把这些目录
+        清掉，升级后第一次启动必然是全新解包。
+
+   安全边界：只删「本产品」的解包目录 —— 必须同时存在 assets\icon.ico 与
+   webview\ 才动手，避免误删其它 PyInstaller 程序正在使用的临时目录。删除
+   失败（目录仍被占用）只记日志、不阻断安装。
+   ====================================================================== *)
+procedure PurgeStaleMeiDirs;
+var
+  FindRec: TFindRec;   // FindFirst/FindNext 的遍历句柄
+  Base: string;        // %TEMP%
+  Dir: string;         // 当前候选目录
+  Removed: Integer;    // 已清理数量（仅用于日志）
+begin
+  Removed := 0;
+  try
+    Base := ExpandConstant('{%TEMP}');
+    if Base = '' then
+      Exit;
+    if not FindFirst(Base + '\_MEI*', FindRec) then
+    begin
+      Log('TB-ICON no stale _MEI dirs under ' + Base);
+      Exit;
+    end;
+    try
+      repeat
+        Dir := Base + '\' + FindRec.Name;
+        if DirExists(Dir) and FileExists(Dir + '\assets\icon.ico')
+           and DirExists(Dir + '\webview') then
+        begin
+          if DelTree(Dir, True, True, True) then
+          begin
+            Removed := Removed + 1;
+            Log('TB-ICON purged stale _MEI: ' + Dir);
+          end
+          else
+            Log('TB-ICON purge skipped (in use): ' + Dir);
+        end;
+      until not FindNext(FindRec);
+    finally
+      FindClose(FindRec);
+    end;
+    Log('TB-ICON stale _MEI purged total=' + IntToStr(Removed));
+  except
+    Log('TB-ICON stale _MEI purge failed (ignored)');
+  end;
+end;
+
 function InitializeSetup(): Boolean;
 var
   ErrorCode: Integer;  // Exec 返回码占位：全程只看成败，不判具体值
@@ -501,6 +565,15 @@ var
   T0: Longint;           // 分段计时起点（写进 setup 日志，供事后定位）
   PhaseTicks: Longint;   // 当前阶段的起始 tick
 begin
+  // 安装一开始（旧壳已被 InitializeSetup 杀干净、新壳尚未拉起）先清掉旧壳留在
+  // %TEMP% 的 _MEI 解包目录：旧版发起的升级没有 PYINSTALLER_RESET_ENVIRONMENT
+  // 修复，靠这一步保证升级后第一次启动是全新解包（详见 PurgeStaleMeiDirs）。
+  if CurStep = ssInstall then
+  begin
+    PurgeStaleMeiDirs;
+    Exit;
+  end;
+
   // 安装全部完成（含 [Icons] 重写 .lnk）后刷新图标缓存 —— 让桌面/开始菜单
   // 快捷方式与托盘立刻显示新图标（详见 RefreshShellIcons 函数头注释）。
   // 放 ssDone 而非 ssPostInstall：确保 .lnk 已重写完毕再清缓存，否则

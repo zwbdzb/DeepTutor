@@ -879,6 +879,12 @@ def run_installer(setup_path: str | os.PathLike, new_version: str | None = None)
         ":gate_ready",
         f"echo [%date% %time%] runtime probe ok ticks=%GATE_TICKS% >> \"{update_log}\"",
         ":launch_now",
+        # PyInstaller 6（>=6.0）会把自己的解包目录经 _PYI_APPLICATION_HOME_DIR
+        # 传给子进程；子进程据此**复用**父进程的 _MEI 目录而不是重新解包。
+        # 更新场景下这等于让新壳继续跑旧壳解包出来的代码与 assets/icon.png：
+        # splash 与托盘仍是旧图标（任务栏读 exe 资源图标，看起来却是新的）。
+        # 该开关强制子进程忽略继承来的目录、按自己的打包内容重新解包。
+        "set PYINSTALLER_RESET_ENVIRONMENT=1",
         f"echo [%date% %time%] launching %APPDIR%\\{app_exe} >> \"{update_log}\"",
         f"start \"\" /D \"%APPDIR%\" \"%APPDIR%\\{app_exe}\"",
     ]
@@ -904,6 +910,9 @@ def run_installer(setup_path: str | os.PathLike, new_version: str | None = None)
         subprocess.Popen(
             ["cmd", "/c", str(bat_path)],
             creationflags=0x08000000,  # CREATE_NO_WINDOW：全程隐藏，不弹黑窗
+            # 双保险：bat 里已 set，这里再从 spawn 源头给一份，避免将来 bat 模板
+            # 重构时把开关丢掉（PyInstaller 只认进程环境里的这一个变量）。
+            env={**os.environ, "PYINSTALLER_RESET_ENVIRONMENT": "1"},
         )
     except OSError as exc:
         # bat 没放出去：回收刚拉起的进度窗进程，避免留下孤儿窗口。
