@@ -218,10 +218,22 @@ SPLASH_HTML_TEMPLATE = """<!doctype html>
 
 
 def _asset_path(name: str) -> Path:
-    """Resolve a bundled asset. PyInstaller/embed EXE unpacks to sys._MEIPASS;
-    in dev the file sits under the project assets/ dir."""
-    if getattr(sys, "frozen", False) and getattr(sys, "_MEIPASS", None):
-        p = Path(sys._MEIPASS) / "assets" / name
+    """Resolve a bundled asset.
+
+    优先级（升级健壮性）：
+      1. EXE_DIR/assets/  —— 安装器直接维护的稳定路径，升级时 exe 可能被杀软/
+         文件锁阻塞覆盖，但 assets/ 下的普通 png/ico 总能成功覆盖；从这里读
+         即使 exe 没换也能拿到新版图标。
+      2. APP_DIR/assets/  —— PyInstaller onefile 内嵌解压目录（sys._MEIPASS）。
+      3. 源码树 fallback  —— 开发态 desktop-shell/assets/。
+    """
+    frozen = getattr(sys, "frozen", False)
+    if frozen:
+        exe_dir = Path(sys.executable).resolve().parent
+        p = exe_dir / "assets" / name
+        if p.exists():
+            return p
+        p = Path(getattr(sys, "_MEIPASS", exe_dir)) / "assets" / name
         if p.exists():
             return p
     # Dev / raw source tree

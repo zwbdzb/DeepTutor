@@ -33,7 +33,7 @@ import logging
 import sys
 
 from desktop import APP_NAME
-from desktop.runtime import APP_DIR
+from desktop.runtime import APP_DIR, EXE_DIR
 
 log = logging.getLogger("dt.tray")
 
@@ -92,7 +92,16 @@ class SystemTray:
             from PIL import Image
             import pystray
 
-            with Image.open(APP_DIR / "assets" / "icon.png") as image:
+            # 优先从 EXE_DIR/assets/（Inno 安装器维护的稳定路径，升级时最可靠）
+            # 读图标；fallback 到 APP_DIR（PyInstaller onefile 临时解压目录）。
+            # 背景：升级安装时 exe 可能被杀软/文件锁阻塞覆盖，但 assets 目录
+            # 下的普通 png/ico 总能成功覆盖；若只从 APP_DIR 读就会拿到旧 exe
+            # 内嵌的旧图标，托盘显示旧图而任务栏（PE 资源 + 快捷方式）显示新图。
+            icon_path = (EXE_DIR / "assets" / "icon.png")
+            if not icon_path.exists():
+                icon_path = APP_DIR / "assets" / "icon.png"
+                log.debug("tray icon: fallback to APP_DIR (%s)", icon_path)
+            with Image.open(icon_path) as image:
                 icon_image = image.convert("RGBA")
             self._icon = pystray.Icon(
                 "ThinkBuddy",

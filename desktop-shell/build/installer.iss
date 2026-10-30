@@ -336,6 +336,8 @@ procedure PurgeWebRuntimeCache;
 var
   Home: string;    // workspace 根目录
   Cache: string;   // <workspace>\data\user\runtime\web
+  I: Integer;      // 重试计数
+  ResCode: Integer;// Exec 返回码占位
 begin
   try
     Home := GetEnv('DEEPTUTOR_DESKTOP_HOME');
@@ -349,8 +351,27 @@ begin
     Cache := Home + '\data\user\runtime\web';
     if DirExists(Cache) then
     begin
-      DelTree(Cache, True, True, True);
-      Log('TB-ICON web runtime cache purged: ' + Cache);
+      // DelTree 在极少数情况下会被杀软/文件句柄卡住（best-effort）；
+      // 重试 3 次，每次间隔 200ms。最后还卡就用 cmd rd /s /q 强删兜底。
+      for I := 1 to 3 do
+      begin
+        DelTree(Cache, True, True, True);
+        if not DirExists(Cache) then Break;
+        Log('TB-ICON web runtime cache purge attempt ' + IntToStr(I) + ' blocked, retrying...');
+        SleepMs(200);
+      end;
+      if DirExists(Cache) then
+      begin
+        Log('TB-ICON DelTree exhausted; falling back to rd /s /q');
+        Exec('cmd.exe', '/c rd /s /q "' + Cache + '"', '', SW_HIDE,
+             ewWaitUntilTerminated, ResCode);
+        if not DirExists(Cache) then
+          Log('TB-ICON web runtime cache purged via rd /s /q')
+        else
+          Log('TB-ICON web runtime cache purge FAILED after 3 retries + rd');
+      end
+      else
+        Log('TB-ICON web runtime cache purged: ' + Cache);
     end
     else
       Log('TB-ICON web runtime cache absent: ' + Cache);
