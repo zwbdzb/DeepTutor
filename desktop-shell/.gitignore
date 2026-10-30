@@ -17,6 +17,8 @@ runtime-build/
 build/ThinkBuddyDesktop/
 build/ThinkBuddyDesktop-mac/
 build/build_last.log
+build/thinkbuddy-bundle-id.txt
+build/pyi_rth_thinkbuddy_bundle.py
 # runtime 单归档（installer.iss 的 [Files] 投递物，build.ps1 [2c] 生成）
 # 318MB 派生资产，绝不入库；由 build_runtime.py 的 staging 随时重建。
 build/runtime.tar

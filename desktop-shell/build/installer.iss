@@ -85,7 +85,8 @@ RestartApplications=no
 ; 简体中文放第一位：[Languages] 的第一项是 Inno 的 fallback 默认语言。
 ; 中文 Windows 若因 LanguageID 匹配失败走到 fallback，拿到的也是中文向导，
 ; 而不是英文。英文系统用户仍按系统语言自动匹配到 english，不受影响。
-Name: "chinesesimp"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+; Inno's standard installation omits Simplified Chinese; use the vendored file.
+Name: "chinesesimp"; MessagesFile: "languages\ChineseSimplified.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [CustomMessages]
