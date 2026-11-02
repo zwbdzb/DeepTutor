@@ -153,7 +153,10 @@ class TaskBoardStore:
 
     @staticmethod
     def _snapshot(connection: sqlite3.Connection) -> TaskBoard:
-        rows = connection.execute("SELECT * FROM cards ORDER BY created_at,id")
+        rows = connection.execute(
+            "SELECT id,title,note,status,archived,created_at,updated_at,workspace_id "
+            "FROM cards ORDER BY created_at,id"
+        )
         cards = [TaskCard.model_validate(dict(row)) for row in rows]
         links = {
             (row["workspace_id"], row["session_id"]): SessionTaskLinks(
@@ -216,7 +219,11 @@ class TaskBoardStore:
         changes = payload.model_dump(exclude_unset=True)
         with closing(self._connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute("SELECT * FROM cards WHERE id=?", (card_id,)).fetchone()
+            row = connection.execute(
+                "SELECT id,title,note,status,archived,created_at,updated_at,workspace_id "
+                "FROM cards WHERE id=?",
+                (card_id,),
+            ).fetchone()
             if row is None:
                 raise KeyError(card_id)
             updated = TaskCard.model_validate({**dict(row), **changes})
@@ -332,7 +339,12 @@ class TaskBoardStore:
             return
         with closing(sqlite3.connect(f"{source.as_uri()}?mode=ro", uri=True)) as legacy:
             legacy.row_factory = sqlite3.Row
-            rows = [dict(row) for row in legacy.execute("SELECT * FROM cards")]
+            rows = [
+                dict(row)
+                for row in legacy.execute(
+                    "SELECT id,title,note,status,archived,created_at,updated_at FROM cards"
+                )
+                ]
         if not rows:
             return
         with closing(self._connect()) as connection, connection:
@@ -349,7 +361,8 @@ class TaskBoardStore:
                 if connection.execute("SELECT 1 FROM cards WHERE id=?", (task_id,)).fetchone():
                     task_id = uuid5(NAMESPACE_URL, f"{workspace_id}:{task_id}").hex
                 connection.execute(
-                    "INSERT INTO cards VALUES (?,?,?,?,?,?,?,?)",
+                    "INSERT INTO cards (id,title,note,status,archived,created_at,updated_at,workspace_id) "
+                    "VALUES (?,?,?,?,?,?,?,?)",
                     (
                         task_id,
                         card.title,
