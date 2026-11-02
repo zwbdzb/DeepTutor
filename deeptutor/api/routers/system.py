@@ -256,14 +256,15 @@ async def _checked_update_payload(*, force: bool = False) -> dict[str, Any]:
     enabled = bool(settings["version_check_enabled"])
     installation = get_update_installation()
     service = get_version_check_service()
-    desktop_update = await _desktop_update_state()
     if not enabled:
+        # 用户关闭检查更新后，桌面清单也不再检查，避免橙点仍然亮起。
         return _update_payload(
             result=service.cached(),
             installation=installation,
             check_enabled=False,
-            desktop_update=desktop_update,
+            desktop_update=_desktop_update_payload(None),
         )
+    desktop_update = await _desktop_update_state()
     try:
         result = await service.check(force=force)
     except VersionCheckError as exc:

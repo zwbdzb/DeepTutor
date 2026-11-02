@@ -472,6 +472,7 @@ async def test_desktop_check_selects_macos_arch_entry(monkeypatch) -> None:
         "version": "0.1.524.1000",
         "url": "https://thinkbuddy.hanyoai.com/update/ThinkBuddySetup-dt0.1.524.1000.exe",
         "sha256": "a" * 64,
+        "changelog": "## What's new\n\n- shared release notes",
         "mac": {
             "arm64": {
                 "version": "0.1.524.1200",
@@ -494,3 +495,4 @@ async def test_desktop_check_selects_macos_arch_entry(monkeypatch) -> None:
     assert result.update_available is True
     assert result.version == "0.1.524.1200"
     assert "arm64" in result.url
+    assert result.changelog == "shared release notes"

@@ -606,7 +606,10 @@ def _desktop_release_from_payload(payload: Any) -> DesktopReleaseInfo:
             "The desktop update manifest has an invalid download URL"
         )
     published_at = entry.get("published_at") or payload.get("published_at") or ""
-    changelog = _plain_release_excerpt(str(entry.get("changelog") or ""))
+    # changelog 是发布级元数据，Windows 与 macOS 共用顶层内容。
+    changelog = _plain_release_excerpt(
+        str(payload.get("changelog") or entry.get("changelog") or "")
+    )
     return DesktopReleaseInfo(
         version=version.strip(),
         url=url,

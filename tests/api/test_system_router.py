@@ -161,6 +161,50 @@ async def test_update_status_includes_desktop_badge_state(
 
 
 @pytest.mark.asyncio
+async def test_update_status_skips_desktop_badge_when_checks_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    class _DesktopVersionService:
+        async def check(self, *, force: bool = False) -> DesktopUpdateCheckResult:
+            del force
+            raise AssertionError("desktop check must not run when checks are disabled")
+
+    version_service = _VersionService(_update_result())
+    monkeypatch.setattr(
+        system_router,
+        "get_runtime_settings_service",
+        lambda: _UpdateSettings(enabled=False),
+    )
+    monkeypatch.setattr(system_router, "get_version_check_service", lambda: version_service)
+    monkeypatch.setattr(system_router, "get_update_installation", _pypi_installation)
+    monkeypatch.setattr(system_router, "launcher_available", lambda: True)
+    monkeypatch.setattr(
+        system_router,
+        "get_update_job_store",
+        lambda: UpdateJobStore(tmp_path / "update"),
+    )
+    monkeypatch.setattr(
+        system_router,
+        "get_current_user",
+        lambda: SimpleNamespace(is_admin=True),
+    )
+    monkeypatch.setattr(
+        system_router,
+        "get_desktop_version_check_service",
+        _DesktopVersionService,
+    )
+
+    payload = await system_router.get_update_status()
+
+    assert payload["check_enabled"] is False
+    assert payload["desktop_update"]["enabled"] is False
+    assert payload["desktop_update"]["update_available"] is False
+    assert payload["desktop_update"]["version"] == ""
+    assert version_service.forces == []
+
+
+@pytest.mark.asyncio
 async def test_managed_update_refuses_live_conversation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
