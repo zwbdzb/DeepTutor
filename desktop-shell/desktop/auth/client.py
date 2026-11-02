@@ -252,7 +252,7 @@ class OAuthClient:
 
 def fetch_relay_models(
     relay_base: str, token: str, timeout: float = 10.0
-) -> tuple[list[str], dict[str, int]]:
+) -> tuple[list[str], dict[str, int], dict[str, int]]:
     """GET ``{relay_base}/models``——模型名单的**权威**来源。
 
     2026-09-24 起替代「userinfo.models 授权名单」成为唯一名单来源：
@@ -260,8 +260,8 @@ def fetch_relay_models(
     （1=文生文 2=文生图 3=文生视频 4=重排序 5=向量），与平台模型管理
     后台的类型下拉一致，登录/刷新据此分流入库。
 
-    返回 ``(names, model_types)``：与 ``ensure_tokengine_catalog`` 的
-    ``(models, model_types)`` 入参同构，登录/刷新直接透传分流入库。
+    返回 ``(names, model_types, context_windows)``，登录/刷新时将平台
+    返回的 ``max_model_len`` 一并写入模型配置。
 
     任何失败（网络 / 非 200 / 空列表 / 结构异常）都抛
     :class:`OAuthError`。失败语义由调用方定：登录不阻断（模型列表保持
@@ -305,6 +305,7 @@ def fetch_relay_models(
 
     names: list[str] = []
     types: dict[str, int] = {}
+    context_windows: dict[str, int] = {}
     for item in items:
         if isinstance(item, str):
             name = item.strip()
@@ -322,10 +323,14 @@ def fetch_relay_models(
             names.append(name)
         if isinstance(model_type, (int, float)) and not isinstance(model_type, bool):
             types[name] = int(model_type)
+        if isinstance(item, dict):
+            window = item.get("max_model_len")
+            if isinstance(window, int) and not isinstance(window, bool) and window > 0:
+                context_windows[name] = window
 
     if not names:
         # 空名单视为异常：登录会保持模型列表现状、刷新直接报错不写盘，
         # 绝不让一次网关抖动把 catalog 里的模型清空（ensure 侧空 llm
         # 名单会清活动模型）。
         raise OAuthError("模型列表为空")
-    return names, types
+    return names, types, context_windows

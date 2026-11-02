@@ -109,7 +109,7 @@ SPLASH_HTML_TEMPLATE = """<!doctype html>
 <body>
   <div class="wrap">
     <div class="logo"><img alt="ThinkBuddy" src="__LOGO_SRC__"/></div>
-    <h1>懂了的那一下，很爽。</h1>
+    <h1>ThinkBuddy，懂的那一下，很爽。</h1>
     <div class="status" id="status"><span class="dot"></span>正在启动本地服务…</div>
     <div class="bar" id="bar"><i></i></div>
     <div class="login" id="login">

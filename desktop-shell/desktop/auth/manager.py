@@ -265,7 +265,7 @@ class AuthManager:
             # 无 userinfo 兜底。刷新的目的就是重算名单——拉取失败直接
             # 报错返回、不写盘，避免把 catalog 里现存的模型清空。
             try:
-                models, model_types = fetch_relay_models(relay_base, token)
+                models, model_types, context_windows = fetch_relay_models(relay_base, token)
             except OAuthError as exc:
                 log.warning("刷新模型失败（名单保持不变）：%s", exc)
                 return {"ok": False, "error": "fetch_failed",
@@ -275,6 +275,7 @@ class AuthManager:
                     home=self._home, api_key=token,
                     base_url=relay_base, models=models,
                     model_types=model_types,
+                    model_context_windows=context_windows,
                 )
             except Exception as exc:  # noqa: BLE001
                 log.exception("刷新模型写入 catalog 失败")
@@ -511,9 +512,10 @@ class AuthManager:
         # 时 ensure 只写令牌/域名，不碰现存模型列表。
         models: Optional[list[str]] = None
         model_types: Optional[dict[str, int]] = None
+        context_windows: Optional[dict[str, int]] = None
         fetch_warning = ""
         try:
-            models, model_types = fetch_relay_models(relay_base, token)
+            models, model_types, context_windows = fetch_relay_models(relay_base, token)
         except OAuthError as exc:
             log.warning("登录后 /v1/models 拉取失败，模型列表保持现状：%s", exc)
             fetch_warning = "模型列表拉取失败，可稍后用「刷新可用模型」重试"
@@ -555,6 +557,7 @@ class AuthManager:
             ensure_tokengine_catalog(
                 home=self._home, api_key=token, base_url=relay_base,
                 models=models, model_types=model_types,
+                model_context_windows=context_windows,
             )
         except Exception as exc:  # noqa: BLE001
             log.exception("write model_catalog failed")
