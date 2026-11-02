@@ -101,6 +101,7 @@ class DesktopReleaseInfo:
     version: str
     url: str
     published_at: str
+    changelog: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +111,7 @@ class DesktopUpdateCheckResult:
     version: str
     url: str
     published_at: str
+    changelog: str
     checked_at: str
     cached: bool
     error: str
@@ -507,6 +509,7 @@ class DesktopVersionCheckService:
                 version="",
                 url="",
                 published_at="",
+                changelog="",
                 checked_at="",
                 cached=False,
                 error="",
@@ -523,6 +526,7 @@ class DesktopVersionCheckService:
                     version="",
                     url="",
                     published_at="",
+                    changelog="",
                     checked_at=_now(),
                     cached=False,
                     error=str(exc),
@@ -534,6 +538,7 @@ class DesktopVersionCheckService:
                     version=release.version,
                     url=release.url,
                     published_at=release.published_at,
+                    changelog=release.changelog,
                     checked_at=_now(),
                     cached=False,
                     error="",
@@ -601,10 +606,12 @@ def _desktop_release_from_payload(payload: Any) -> DesktopReleaseInfo:
             "The desktop update manifest has an invalid download URL"
         )
     published_at = entry.get("published_at") or payload.get("published_at") or ""
+    changelog = _plain_release_excerpt(str(entry.get("changelog") or ""))
     return DesktopReleaseInfo(
         version=version.strip(),
         url=url,
         published_at=str(published_at).strip(),
+        changelog=changelog,
     )
 
 

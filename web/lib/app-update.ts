@@ -37,6 +37,7 @@ export interface DesktopUpdateStatus {
   version: string;
   url: string;
   published_at: string;
+  changelog: string;
   checked_at: string;
   cached: boolean;
   error: string;

@@ -125,6 +125,7 @@ async def test_update_status_includes_desktop_badge_state(
                 version="0.1.524.1100",
                 url="https://thinkbuddy.hanyoai.com/update/ThinkBuddySetup.exe",
                 published_at="2026-10-16T15:54:00+08:00",
+                changelog="",
                 checked_at="2026-10-16T15:54:00+08:00",
                 cached=False,
                 error="",

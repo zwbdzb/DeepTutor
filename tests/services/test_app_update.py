@@ -34,6 +34,7 @@ def _desktop_manifest(**overrides: object) -> dict:
         "sha256": "a" * 64,
         "size": 1024,
         "published_at": "2026-10-16T15:54:00+08:00",
+        "changelog": "",
     }
     payload.update(overrides)
     return payload
@@ -343,6 +344,25 @@ async def test_desktop_check_reports_available_for_newer_manifest(monkeypatch) -
     assert result.version == "0.1.524.1100"
     assert result.error == ""
     assert result.url.startswith("https://thinkbuddy.hanyoai.com/update/")
+
+
+@pytest.mark.asyncio
+async def test_desktop_check_surfaces_changelog(monkeypatch) -> None:
+    _desktop_env(monkeypatch)
+    service = DesktopVersionCheckService(
+        client_factory=_desktop_client_factory(
+            _desktop_manifest(
+                changelog="## What's new\n\n- faster startup\n- fixed tray icon\n",
+            ),
+        ),
+    )
+
+    result = await service.check()
+
+    assert "faster startup" in result.changelog
+    assert "fixed tray icon" in result.changelog
+    # Markdown headings are stripped by the plain-text excerpt pass.
+    assert "##" not in result.changelog
 
 
 @pytest.mark.asyncio
