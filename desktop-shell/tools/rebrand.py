@@ -428,10 +428,10 @@ def self_check(site_packages: Path) -> None:
         text = prompt.read_text(encoding="utf-8")
         identity = "你是 ThinkBuddy" if lang == "zh" else "You are ThinkBuddy"
         old_identity = "你是 DeepTutor" if lang == "zh" else "You are DeepTutor"
-        product_line = "汉扬科技" if lang == "zh" else "Hanyo Technology"
+        rule = "按事实客观介绍" if lang == "zh" else "introduce it objectively"
         checks.append((identity in text and old_identity not in text
-                       and product_line in text and "DeepTutor" in text,
-                       f"{label} 身份=ThinkBuddy、产品口径已注入、keep 块保留 DeepTutor"))
+                       and rule in text and "DeepTutor" in text,
+                       f"{label} 身份=ThinkBuddy、来源规则与客观介绍已注入"))
 
     # 4b) keep 块保护必须真的生效：凡是带标记的 prompt，上游名要原样还在。
     #     CRLF / 缩进变动都可能让标记匹配失败——那时规则会被反写成
