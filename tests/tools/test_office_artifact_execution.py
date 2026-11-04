@@ -82,7 +82,7 @@ async def test_exec_reads_existing_workspace_binary_through_symbolic_root(
             "import os\n"
             "from pathlib import Path\n"
             "from docx import Document\n"
-            "source = Path(os.environ['DEEPTUTOR_WORKSPACE_ROOT']) / "
+            "source = Path(os.environ['WORKSPACE_ROOT']) / "
             "'documents/source.docx'\n"
             "doc = Document(source)\n"
             "assert doc.paragraphs[0].text == 'Existing workspace document'\n"

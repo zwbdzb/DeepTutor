@@ -11,9 +11,13 @@ ThinkBuddy 是桌面发行版面向最终用户的品牌。改源码会产生上
 minify 不会拆开字符串字面量，"DeepTutor" 在 chunk 里永远连续完整，直接
 替换字面量内容不会破坏 JS 语法。
 
-后端 / CLI（deeptutor、deeptutor_cli）：只在 .py 的【字符串字面量】与
-.yaml prompt 里替换——AI 身份、用户可见报错/状态文案在这里；类名、import、
-注解、注释天然不受影响。
+后端 / CLI（deeptutor、deeptutor_cli）：只在 .py 的【字符串字面量】、
+.yaml 与 .md prompt 里替换——AI 身份、用户可见报错/状态文案在这里；类名、
+import、注解、注释天然不受影响。.md 必须覆盖：capability 的 system.md/
+heuristic.md、persona 预设和 builtin 技能描述（SKILL.md frontmatter 会随
+skills manifest 每轮注入系统提示词）同样会被模型读到。但 .md 只处理这些
+模型可见目录，README 等普通文档不动（避免把 `cd DeepTutor` 这类命令示例
+替换成仓库里不存在的目录名）。
 
 替换规则（安全边界）
 --------------------
@@ -32,6 +36,9 @@ minify 不会拆开字符串字面量，"DeepTutor" 在 chunk 里永远连续完
 4. 任何 URL 中的品牌名受保护（如 github.com/HKUDS/DeepTutor），换了会 404。
 5. bytes 字面量（b"..."）不替换（长度变化对二进制协议有风险）。
 6. 幂等：产物已是 ThinkBuddy 时再次运行替换 0 处，无副作用。
+7. ``# >>> rebrand-keep`` / ``# <<< rebrand-keep`` 之间的整段文本不做替换：
+   产品口径必须原样保留上游名（否则“不要提 DeepTutor”会被改成
+   “不要提 ThinkBuddy”，规则自我矛盾）。标记是 YAML 注释，不会进入模型上下文。
 
 Usage:
     python tools/rebrand.py                 # 重写默认 staging
@@ -59,12 +66,16 @@ else:
 # 只处理本项目的三个发行包；其余第三方包一律不扫
 TARGET_PACKAGES = ("deeptutor", "deeptutor_cli", "deeptutor_web")
 
-# 全文替换的文本类型；.py 走 tokenize 专用通道；其余（.pyc/.node/.png 等）跳过
+# 全文替换的文本类型；.py 走 tokenize 专用通道；其余（.pyc/.node/.png 等）跳过。
+# .md 不在此列：只处理 MD_BRAND_DIRS 下的提示词/技能/persona 文件。
 PLAINTEXT_SUFFIXES = {
     ".yaml", ".yml", ".json", ".js", ".mjs", ".cjs",
     ".html", ".htm", ".css", ".txt",
     ".rsc",  # Next.js 预渲染段 payload（RSC），设置页等首屏文案烧在里面
 }
+# 这些目录下的 .md 会进入模型上下文（capability prompt、builtin skill、
+# persona 预设），必须替换品牌；其余 .md（README 等）保持原样。
+MD_BRAND_DIRS = {"prompts", "skills", "persona"}
 SKIP_SUFFIXES = {".pyc", ".pyo", ".map"}
 
 BRAND = "DeepTutor"
@@ -123,12 +134,34 @@ def _brand_bounded(text: str) -> tuple[str, int]:
     return text, hits
 
 
+# 品牌规则块：上游名必须原样留在提示词里——否则“不要提 DeepTutor”会被
+# 替换成“不要提 ThinkBuddy”，规则瞬间自相矛盾。标记之间的整段文本跳过替换，
+# 标记本身是 YAML 注释，不会进入模型上下文。
+KEEP_BLOCK_RE = re.compile(r"# >>> rebrand-keep\r?\n.*?# <<< rebrand-keep", re.S)
+
+
 def rebrand_plain(text: str) -> tuple[str, int]:
-    """全文替换（yaml/json/js/html 等）：URL 暂存 + 标识符边界。"""
-    stash: list[str] = []
-    protected = _stash_urls(text, stash)
-    out, count = _brand_bounded(protected)
-    return _restore_urls(out, stash), count
+    """全文替换（yaml/json/js/html 等）：URL 暂存 + 标识符边界 + keep 块保护。"""
+    parts: list[str] = []
+    cursor = 0
+    for match in KEEP_BLOCK_RE.finditer(text):
+        parts.append(text[cursor:match.start()])
+        parts.append(match.group(0))
+        cursor = match.end()
+    parts.append(text[cursor:])
+
+    out: list[str] = []
+    total = 0
+    for index, part in enumerate(parts):
+        if index % 2 == 1:  # keep 块：原样保留
+            out.append(part)
+            continue
+        stash: list[str] = []
+        protected = _stash_urls(part, stash)
+        rewritten, count = _brand_bounded(protected)
+        out.append(_restore_urls(rewritten, stash))
+        total += count
+    return "".join(out), total
 
 
 def _rebrand_string_body(body: str, is_fstring_legacy: bool) -> tuple[str, int]:
@@ -263,6 +296,11 @@ def precompile_bytecode(site_packages: Path) -> None:
         print("  预编译完成 [OK]")
 
 
+def _in_brand_md_dir(path: Path, pkg_dir: Path) -> bool:
+    """该 .md 是否位于模型可见的 prompt / skill / persona 目录。"""
+    return any(part in MD_BRAND_DIRS for part in path.relative_to(pkg_dir).parts[:-1])
+
+
 def rebrand_root(site_packages: Path, dry_run: bool = False) -> int:
     if not site_packages.is_dir():
         raise SystemExit(f"site-packages 不存在: {site_packages}")
@@ -279,6 +317,10 @@ def rebrand_root(site_packages: Path, dry_run: bool = False) -> int:
                 continue
             if f.suffix == ".py":
                 transform = rebrand_python_source
+            elif f.suffix == ".md":
+                if not _in_brand_md_dir(f, pkg_dir):
+                    continue
+                transform = rebrand_plain
             elif f.suffix in PLAINTEXT_SUFFIXES:
                 transform = rebrand_plain
             else:
@@ -339,7 +381,7 @@ def self_check(site_packages: Path) -> None:
     # 3) URL 保护检测
     bad_urls = 0
     scan_suffixes = {".py", ".js", ".mjs", ".cjs", ".json",
-                     ".yaml", ".yml", ".html", ".htm", ".css", ".txt"}
+                     ".yaml", ".yml", ".html", ".htm", ".css", ".txt", ".md"}
     py_syntax_errors: list[str] = []
     for pkg in TARGET_PACKAGES:
         pkg_dir = site_packages / pkg
@@ -374,11 +416,38 @@ def self_check(site_packages: Path) -> None:
     for sample in py_syntax_errors[:5]:
         print(f"    [FAIL] 语法错误: {sample}")
 
-    # 4) 品牌确实进入 prompt（AI 身份）与前端产物
-    zh_chat = site_packages / "deeptutor" / "agents" / "chat" / "prompts" / "zh" / "chat_agent.yaml"
-    if zh_chat.exists():
-        checks.append(("ThinkBuddy" in zh_chat.read_text(encoding="utf-8"),
-                       "中文 chat 身份 prompt 已含 ThinkBuddy"))
+    # 4) 品牌确实进入**真正生效**的身份 prompt。
+    #    chat_agent.yaml 是未被运行时加载的历史文件；生效的是 agentic_chat.yaml
+    #    （见 AgenticLoopPipeline.prompt_agent）。缺文件也算失败，避免静默跳过。
+    for lang, label in (("zh", "中文"), ("en", "英文")):
+        prompt = (site_packages / "deeptutor" / "agents" / "chat"
+                  / "prompts" / lang / "agentic_chat.yaml")
+        if not prompt.exists():
+            checks.append((False, f"{label} agentic_chat.yaml 缺失"))
+            continue
+        text = prompt.read_text(encoding="utf-8")
+        identity = "你是 ThinkBuddy" if lang == "zh" else "You are ThinkBuddy"
+        old_identity = "你是 DeepTutor" if lang == "zh" else "You are DeepTutor"
+        product_line = "汉扬科技" if lang == "zh" else "Hanyo Technology"
+        checks.append((identity in text and old_identity not in text
+                       and product_line in text and "DeepTutor" in text,
+                       f"{label} 身份=ThinkBuddy、产品口径已注入、keep 块保留 DeepTutor"))
+
+    # 4b) keep 块保护必须真的生效：凡是带标记的 prompt，上游名要原样还在。
+    #     CRLF / 缩进变动都可能让标记匹配失败——那时规则会被反写成
+    #     “不要提 ThinkBuddy”，必须在构建期拦住。
+    keep_broken: list[str] = []
+    for prompt_file in (site_packages / "deeptutor").rglob("*.yaml"):
+        try:
+            src = prompt_file.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, ValueError):
+            continue
+        if "rebrand-keep" in src and "DeepTutor" not in src:
+            keep_broken.append(str(prompt_file.relative_to(site_packages)))
+    checks.append((not keep_broken,
+                   f"keep 块保护生效（被误替换 {len(keep_broken)} 个文件，应为 0）"))
+    for sample in keep_broken[:5]:
+        print(f"    [FAIL] keep 块被替换: {sample}")
 
     ok = True
     for passed, msg in checks:
