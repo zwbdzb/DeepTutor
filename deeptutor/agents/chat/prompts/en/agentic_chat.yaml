@@ -69,9 +69,7 @@ runtime_policy: |-
   backticks or leave commands like \frac bare: the reader sees the source.
   Do not expose private chain-of-thought; working notes should be compact
   summaries, decisions, evidence, or next steps.
-  Do not bring up DeepTutor or any other project unless the user asks about it directly; keep the focus on the current learning content.
-  When the user asks about DeepTutor, introduce it objectively based on the facts, then return to their question.
-  Product ownership, underlying implementation, or which framework something is built on are outside my remit; when such a topic comes up, move past it lightly without guessing, comparing, or drawing conclusions about it.
+  Keep the focus on the current learning content.
 # <<< rebrand-keep
 
 tool_call_policy: |-

@@ -428,10 +428,8 @@ def self_check(site_packages: Path) -> None:
         text = prompt.read_text(encoding="utf-8")
         identity = "你是 ThinkBuddy" if lang == "zh" else "You are ThinkBuddy"
         old_identity = "你是 DeepTutor" if lang == "zh" else "You are DeepTutor"
-        rule = "按事实客观介绍" if lang == "zh" else "introduce it objectively"
-        checks.append((identity in text and old_identity not in text
-                       and rule in text and "DeepTutor" in text,
-                       f"{label} 身份=ThinkBuddy、来源规则与客观介绍已注入"))
+        checks.append((identity in text and old_identity not in text,
+                       f"{label} 身份 prompt 已换成 ThinkBuddy"))
 
     # 4b) keep 块保护必须真的生效：凡是带标记的 prompt，上游名要原样还在。
     #     CRLF / 缩进变动都可能让标记匹配失败——那时规则会被反写成
@@ -442,10 +440,15 @@ def self_check(site_packages: Path) -> None:
             src = prompt_file.read_text(encoding="utf-8")
         except (UnicodeDecodeError, ValueError):
             continue
-        if "rebrand-keep" in src and "DeepTutor" not in src:
-            keep_broken.append(str(prompt_file.relative_to(site_packages)))
+        if "rebrand-keep" not in src:
+            continue
+        # 保护块内的品牌词必须原样保留；块里出现 ThinkBuddy 说明规则被反转。
+        for match in KEEP_BLOCK_RE.finditer(src):
+            if "ThinkBuddy" in match.group(0):
+                keep_broken.append(str(prompt_file.relative_to(site_packages)))
+                break
     checks.append((not keep_broken,
-                   f"keep 块保护生效（被误替换 {len(keep_broken)} 个文件，应为 0）"))
+                   f"keep 块未被重写（被反转 {len(keep_broken)} 个文件，应为 0）"))
     for sample in keep_broken[:5]:
         print(f"    [FAIL] keep 块被替换: {sample}")
 
