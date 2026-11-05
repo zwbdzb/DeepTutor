@@ -108,7 +108,10 @@ def prepare_workspace_execution_env(
         # A stable symbolic handle for model-authored code that needs to open
         # an existing binary workspace file. Prompts teach the model to append
         # an exact workspace-relative path and never reveal the physical value.
-        env["DEEPTUTOR_WORKSPACE_ROOT"] = str(Path(workspace_root).expanduser().resolve())
+        # The name is brand-neutral on purpose: this variable is visible to the
+        # model (in the workspace prompt and in ``env`` output inside exec), so
+        # it must not carry the upstream product name.
+        env["WORKSPACE_ROOT"] = str(Path(workspace_root).expanduser().resolve())
     return env
 
 

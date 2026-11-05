@@ -29,7 +29,7 @@ import {
 
 // Where the EduHub site lives, for "view on EduHub" links. The catalog
 // response carries the authoritative origin; this only backstops a failed load.
-const EDUHUB_FALLBACK = "https://eduhub.deeptutor.info";
+const EDUHUB_FALLBACK = "https://thinkbuddy.hanyoai.com";
 
 // Lazy-load the markdown renderer so the heavier deps only ship when a user
 // opens a skill's detail view (matches the Skills viewer in SkillsSection).
