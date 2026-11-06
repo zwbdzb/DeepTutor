@@ -1,5 +1,7 @@
 import React from "react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+
+// import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AddMaterialsDialog } from "@/components/reading/library/AddMaterialsDialog";
 
@@ -15,22 +17,22 @@ vi.mock("react-i18next", () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }));
 
-vi.mock("@/components/watching/WatchingBrowser", () => ({
-  WatchingBrowser: ({ onSelectUrl, onDismiss }: {
-    onSelectUrl?(url: string): void;
-    onDismiss(): void;
-  }) => (
-    <button
-      type="button"
-      onClick={() => {
-        onSelectUrl?.("https://youtu.be/abc123xyz00");
-        onDismiss();
-      }}
-    >
-      Select video
-    </button>
-  ),
-}));
+// vi.mock("@/components/watching/WatchingBrowser", () => ({
+//   WatchingBrowser: ({ onSelectUrl, onDismiss }: {
+//     onSelectUrl?(url: string): void;
+//     onDismiss(): void;
+//   }) => (
+//     <button
+//       type="button"
+//       onClick={() => {
+//         onSelectUrl?.("https://youtu.be/abc123xyz00");
+//         onDismiss();
+//       }}
+//     >
+//       Select video
+//     </button>
+//   ),
+// }));
 
 vi.mock("@/lib/reading-api", () => ({
   uploadMaterial: vi.fn(),
@@ -53,36 +55,56 @@ beforeEach(() => {
   });
 });
 
-describe("Reading Add Materials Invidious entry", () => {
-  it("imports a selected video through Reading instead of the Watching route", async () => {
-    const onDone = vi.fn();
+// describe("Reading Add Materials Invidious entry", () => {
+//   it("imports a selected video through Reading instead of the Watching route", async () => {
+//     const onDone = vi.fn();
+//     render(
+//       <AddMaterialsDialog
+//         mode="add"
+//         workspaceId="workspace-1"
+//         onClose={vi.fn()}
+//         onDone={onDone}
+//       />,
+//     );
+//
+//     fireEvent.click(screen.getByRole("button", { name: "Browse Invidious" }));
+//     fireEvent.click(screen.getByRole("button", { name: "Select video" }));
+//     await waitFor(() =>
+//       expect(mock.importUrls).toHaveBeenCalledWith({
+//         urls: ["https://youtu.be/abc123xyz00"],
+//         workspace_id: "workspace-1",
+//       }),
+//     );
+//     await waitFor(() =>
+//       expect(onDone).toHaveBeenCalledWith({
+//         workspace: { workspace_id: "workspace-1" },
+//       }),
+//     );
+//     await waitFor(() =>
+//       expect(
+//         screen.queryByRole("button", { name: "Select video" }),
+//       ).toBeNull(),
+//     );
+//     expect(mock.addMaterial).not.toHaveBeenCalled();
+//   });
+// });
+
+describe("Reading Add Materials link entry", () => {
+  it("does not offer YouTube or Invidious imports", () => {
     render(
       <AddMaterialsDialog
         mode="add"
         workspaceId="workspace-1"
         onClose={vi.fn()}
-        onDone={onDone}
+        onDone={vi.fn()}
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Browse Invidious" }));
-    fireEvent.click(screen.getByRole("button", { name: "Select video" }));
-    await waitFor(() =>
-      expect(mock.importUrls).toHaveBeenCalledWith({
-        urls: ["https://youtu.be/abc123xyz00"],
-        workspace_id: "workspace-1",
-      }),
-    );
-    await waitFor(() =>
-      expect(onDone).toHaveBeenCalledWith({
-        workspace: { workspace_id: "workspace-1" },
-      }),
-    );
-    await waitFor(() =>
-      expect(
-        screen.queryByRole("button", { name: "Select video" }),
-      ).toBeNull(),
-    );
-    expect(mock.addMaterial).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole("button", { name: "Browse Invidious" }),
+    ).toBeNull();
+    expect(
+      screen.getByPlaceholderText("or paste a link — web page or Bilibili"),
+    ).toBeVisible();
   });
 });

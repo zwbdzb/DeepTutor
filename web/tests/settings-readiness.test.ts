@@ -117,7 +117,9 @@ test("rows link to the page that owns them", () => {
   assert.equal(readinessRowHref("catalog.llm"), "/settings/llm");
   assert.equal(readinessRowHref("parser.mineru"), "/settings/knowledge");
   assert.equal(readinessRowHref("tool.videogen"), "/settings/tools");
-  assert.equal(readinessRowHref("video.invidious"), "/settings/video-learning");
+
+  // assert.equal(readinessRowHref("video.invidious"), "/settings/video-learning");
+  assert.equal(readinessRowHref("video.invidious"), null);
   assert.equal(
     readinessRowHref("runtime.coordination.redis"),
     "/settings/network",

@@ -58,7 +58,8 @@ beforeEach(() => {
   stored = null;
   resources = {
     workspace: { path: "/original" },
-    "video-learning": { provider: "youtube" },
+    // "video-learning": { provider: "youtube" },
+    network: { provider: "tavily" },
   };
   mocks.fetch.mockImplementation(async (url: string, init?: RequestInit) => {
     const method = init?.method ?? "GET";
@@ -143,9 +144,13 @@ it("keeps edits across pages, saves a real draft, and applies every page from on
     target: { value: "/draft" },
   });
   expect(writes("/api/settings/workspace")).toHaveLength(0);
-  view.rerender(<App page="video-learning" />);
-  fireEvent.change(screen.getByLabelText("video-learning"), {
-    target: { value: "invidious" },
+
+  // view.rerender(<App page="video-learning" />);
+  // fireEvent.change(screen.getByLabelText("video-learning"), {
+  //   target: { value: "invidious" },
+  view.rerender(<App page="network" />);
+  fireEvent.change(screen.getByLabelText("network"), {
+    target: { value: "searxng" },
   });
   fireEvent.click(screen.getByText("Save draft"));
   await waitFor(() => expect(settings.draftState).toBe("saved"));
@@ -156,7 +161,8 @@ it("keeps edits across pages, saves a real draft, and applies every page from on
   fireEvent.click(screen.getByText("Apply changes"));
   await waitFor(() => expect(settings.draftState).toBe("clean"));
   expect(resources.workspace.path).toBe("/draft");
-  expect(resources["video-learning"].provider).toBe("invidious");
+  // expect(resources["video-learning"].provider).toBe("invidious");
+  expect(resources.network.provider).toBe("searxng");
   expect(stored).toBeNull();
 });
 
