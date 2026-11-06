@@ -1,5 +1,6 @@
 "use client";
 
+// import { FileAudio, FileText, Film, Globe2, Youtube } from "lucide-react";
 import { FileAudio, FileText, Film, Globe2 } from "lucide-react";
 
 import { formatMediaTime } from "@/lib/reading-media-time";
@@ -17,6 +18,7 @@ export const sourceKindKey: Record<ReadingSourceKind, string> = {
   file: "Document",
   web: "Web page",
   video: "Video",
+  // youtube: "YouTube",
   youtube: "Video",
   bilibili: "Bilibili",
   audio: "Audio",
@@ -36,6 +38,11 @@ export function MaterialGlyph({
   size?: number;
   className?: string;
 }) {
+
+  //   if (material.source_kind === "youtube")
+  //     return <Youtube size={size} className={className} />;
+  //   if (material.source_kind === "bilibili" || material.source_kind === "video")
+  //     return <Film size={size} className={className} />;
   if (
     material.source_kind === "youtube" ||
     material.source_kind === "bilibili" ||
@@ -57,6 +64,7 @@ export function MaterialGlyph({
  * server-guessed mime is often the generic octet-stream.
  */
 export function formatTag(material: ReadingLibraryMaterial): string {
+  // if (material.source_kind === "youtube") return "YouTube";
   if (material.source_kind === "youtube") return "VIDEO";
   if (material.source_kind === "bilibili") return "Bilibili";
   if (material.source_kind === "web") return "";
@@ -95,6 +103,7 @@ export function displayUrl(url: string): string {
 /** The line under a material's title: what it is, in the user's terms. */
 export function materialDetail(material: ReadingLibraryMaterial): string {
   const parts: string[] = [];
+  // if (material.source_kind === "web" || material.source_url) {
   if (material.source_kind !== "youtube" && material.source_url) {
     parts.push(displayUrl(material.source_url));
   }

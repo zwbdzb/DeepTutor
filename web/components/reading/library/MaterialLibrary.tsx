@@ -361,6 +361,12 @@ function MaterialRow({
   const quizStars = material.quiz_stars ?? 0;
 
   // The file's own identity: what it is called on disk, or where it came from.
+
+  //   material.source_kind === "web" ||
+  //   material.source_kind === "youtube" ||
+  //   material.source_kind === "bilibili"
+  //     ? displayUrl(material.source_url)
+  //     : material.filename;
   const identity =
     material.source_kind === "youtube"
       ? ""

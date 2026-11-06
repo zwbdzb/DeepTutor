@@ -34,6 +34,8 @@ vi.mock("@/context/ReadingContext", () => ({
   }),
 }));
 
+// vi.mock("@/components/reading/workspace/YouTubeReadingPlayer", () => ({
+//   YouTubeReadingPlayer(props: {
 vi.mock("@/components/reading/workspace/BilibiliReadingPlayer", () => ({
   BilibiliReadingPlayer(props: {
     onController(controller: unknown): void;
@@ -78,6 +80,10 @@ const material: ReadingLibraryMaterial = {
   content_id: "content-1",
   filename: "lecture.mp4",
   title: "Lecture",
+
+  // source_kind: "youtube",
+  // source_url: "https://www.youtube.com/watch?v=abc123xyz00",
+  // mime: "video/youtube",
   source_kind: "bilibili",
   source_url: "https://www.bilibili.com/video/BV1xx411c7mD",
   mime: "video/bilibili",

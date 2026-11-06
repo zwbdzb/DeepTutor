@@ -9,6 +9,7 @@ import {
   Library,
   Loader2,
   StickyNote,
+  // Youtube,
 } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -16,6 +17,7 @@ import { type ReadingLibraryMaterial } from "@/lib/reading-workspace-api";
 import { readingFailureMessage } from "@/lib/reading-failure";
 
 export function iconForMaterial(material: ReadingLibraryMaterial) {
+  // if (material.source_kind === "youtube") return Youtube;
   if (material.source_kind === "youtube") return Film;
   if (material.source_kind === "bilibili") return Film;
   if (material.render_mode === "video") return Film;

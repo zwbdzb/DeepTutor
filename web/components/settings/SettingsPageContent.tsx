@@ -119,6 +119,11 @@ const Video = dynamic(
     loading,
   },
 );
+
+// const VideoLearning = dynamic(
+//   () => import("@/features/settings/sections/VideoLearningSettingsSection"),
+//   { loading },
+// );
 const Tools = dynamic(
   () => import("@/features/settings/sections/ToolsSettingsSection"),
   {
@@ -189,6 +194,7 @@ const PAGES: Record<string, React.ComponentType> = {
   stt: Stt,
   imagegen: Image,
   videogen: Video,
+  // "video-learning": VideoLearning,
   tools: Tools,
   capabilities: Capabilities,
   starters: Starters,
