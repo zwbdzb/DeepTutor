@@ -276,7 +276,7 @@ export default function MyAgentsSection() {
         level={2}
         title={t("Imported conversations")}
         description={t(
-          "Import ChatGPT exports or connect Claude Code and Codex folders. Open any imported conversation to keep chatting.",
+          "Import ChatGPT exports, connect Claude Code and Codex folders, or bring in WorkBuddy history. Open any imported conversation to keep chatting.",
         )}
         action={
           !isEmpty ? (
@@ -679,7 +679,7 @@ function EmptyState({ onAdd }: { onAdd: () => void }) {
         </h2>
         <p className="mx-auto max-w-sm text-[12.5px] leading-relaxed text-[var(--muted-foreground)]">
           {t(
-            "Import a ChatGPT data export or add a Claude Code or Codex folder, then open any conversation to continue it in DeepTutor.",
+            "Import a ChatGPT data export, add a Claude Code or Codex folder, or bring in WorkBuddy history, then open any conversation to continue it in DeepTutor.",
           )}
         </p>
       </div>

@@ -25,7 +25,12 @@ export function readImportMeta(
       | undefined
   )?.import;
   const src = imp?.source;
-  if (src !== "claude_code" && src !== "codex") return null;
+  // Folder adapters (claude_code/codex) and one-shot snapshots (chatgpt,
+  // workbuddy) all surface as imported conversations; anything else predates
+  // the import meta and is ignored by the Space management page.
+  if (src !== "claude_code" && src !== "codex" && src !== "chatgpt" && src !== "workbuddy") {
+    return null;
+  }
   return {
     source: src,
     sourceCwd: imp?.source_cwd ?? "",

@@ -5,7 +5,17 @@ import { CalendarDays } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { formatRelativeTime } from "@/lib/relative-time";
-import type { SelectGroup, SelectionUnit } from "@/lib/chat-import";
+import type { PickableSession, SelectionUnit } from "@/lib/chat-import";
+
+/** A selectable unit in the picker. ``sessions`` is the read-only preview rows;
+ *  both browser (FileSystem-handle) and local (backend-scanned) adapters can
+ *  feed this — only the row fields the picker actually reads are required. */
+export interface PickerGroup {
+  key: string;
+  label: string;
+  sublabel?: string;
+  sessions: PickableSession[];
+}
 
 /**
  * Unit-level scope picker shared by the import wizard and "Edit scope". The
@@ -16,7 +26,7 @@ import type { SelectGroup, SelectionUnit } from "@/lib/chat-import";
  * selectable, which is what keeps "what I picked" and "what syncs" the same.
  */
 export interface ScopePickerProps {
-  groups: SelectGroup[];
+  groups: PickerGroup[];
   unit: SelectionUnit;
   /** Selected group keys (cwds or `YYYY-MM-DD`). */
   selected: Set<string>;

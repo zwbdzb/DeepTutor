@@ -1,6 +1,10 @@
 import { apiFetch, apiUrl } from "@/lib/api";
 import { invalidateClientCache, withClientCache } from "@/lib/client-cache";
-import type { ImportSource, NormalizedSession } from "@/lib/chat-import/types";
+import type {
+  ImportSource,
+  LocalSessionInfo,
+  NormalizedSession,
+} from "@/lib/chat-import/types";
 import type { SessionSummary } from "@/lib/session-api";
 
 /** Per-session outcome echoed back by the import endpoint. */
@@ -99,4 +103,64 @@ export async function listImportedSessions(
     },
     { force: options?.force, ttlMs: 15_000 },
   );
+}
+
+/* ── Local (desktop) source scanning ───────────────────────────────────────
+ * On the desktop build the backend runs on the user's machine and can scan
+ * agent folders server-side (no File System Access API). These calls stay
+ * read-only and are refused by the backend for any non-loopback client. */
+
+/** A project group returned by the backend's WorkBuddy scan. */
+export interface LocalProjectGroup {
+  cwd: string;
+  label: string;
+  sessions: LocalSessionInfo[];
+}
+
+/** A synchronizable agent source discovered on this machine. */
+export interface LocalImportSource {
+  source: ImportSource;
+  label: string;
+  root: string;
+  projects: LocalProjectGroup[];
+}
+
+/** Discovery is best-effort: missing capability or remote backend → empty. */
+export async function fetchLocalImportSources(): Promise<LocalImportSource[]> {
+  try {
+    const response = await apiFetch(apiUrl("/api/imports/local-sources"), {
+      cache: "no-store",
+    });
+    if (!response.ok) return [];
+    const data = (await response.json()) as { sources?: LocalImportSource[] };
+    return data.sources ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/** Import the selected sessions by id; the server parses + persists them. */
+export async function importLocalSessions(
+  source: ImportSource,
+  sessionIds: string[],
+  agentName?: string,
+): Promise<ImportResult> {
+  if (sessionIds.length === 0) {
+    throw new Error("No sessions to import");
+  }
+  const response = await apiFetch(apiUrl("/api/imports/local-import"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      source,
+      agent_name: agentName ?? "",
+      session_ids: sessionIds,
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(`Local import failed: ${response.status}`);
+  }
+  const data = (await response.json()) as ImportResult;
+  invalidateClientCache(IMPORTED_CACHE_PREFIX);
+  return data;
 }
