@@ -83,7 +83,9 @@ export function LearningDashboard() {
   }, [reload])
 
   const todos = learningTodos(sources)
-  const recent = recentLearningActivity(sources)
+  // const recent = recentLearningActivity(sources)
+  const recent = recentLearningActivity({ ...sources, watching: [] })
+  const visibleFailed: LearningKind[] = failed.filter((kind) => kind !== 'watching')
   return (
     <LearningShell
       back={false}
@@ -93,10 +95,12 @@ export function LearningDashboard() {
       {/* The ways in lead the page: everything below them assumes you already
           chose one. Each opens its own introduction before it commits you. */}
       <LearningWays />
-      {failed.length > 0 && (
+      {/* {failed.length > 0 && ( */}
+      {/* sources: LEARNING_SURFACES.filter(surface => surface.kind !== "practice" && failed.includes(surface.kind)) */}
+      {visibleFailed.length > 0 && (
         <LearningErrorState
           message={t('Some learning activity could not be loaded: {{sources}}.', {
-            sources: LEARNING_SURFACES.filter(surface => surface.kind !== "practice" && failed.includes(surface.kind))
+            sources: LEARNING_SURFACES.filter(surface => surface.kind !== "practice" && visibleFailed.includes(surface.kind))
               .map(surface => t(surface.title))
               .join(t('source list separator')),
           })}
@@ -177,10 +181,12 @@ export function LearningDashboard() {
               </div>
             </section>
           )}
-          {!recent.length && failed.length === 0 && (
+          {/* {!recent.length && failed.length === 0 && ( */}
+          {/* description={t('Choose a book, a topic, a collection or a video to begin.')} */}
+          {!recent.length && visibleFailed.length === 0 && (
             <LearningEmptyState
               title={t('Your next learning journey starts here')}
-              description={t('Choose a book, a topic, a collection or a video to begin.')}
+              description={t('Choose a book, a topic or a collection to begin.')}
             />
           )}
         </>
