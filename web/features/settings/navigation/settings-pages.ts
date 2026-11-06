@@ -18,7 +18,7 @@ export const SETTINGS_PAGE_GROUPS: { label: Lang; keys: string[] }[] = [
   },
   {
     label: { en: 'Learning & conversation', zh: '学习与对话' },
-    keys: ['starters', 'attachments', 'video-learning', 'learner-profile', 'progress', 'guardian', 'memory'],
+    keys: ['starters', 'attachments', 'learner-profile', 'progress', 'guardian', 'memory'],
   },
   {
     label: { en: 'Features & integrations', zh: '功能与集成' },

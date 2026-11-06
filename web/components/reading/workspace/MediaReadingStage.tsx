@@ -7,6 +7,7 @@ import {
   ChevronsDown,
   ExternalLink,
   FileAudio,
+  Film,
   Maximize2,
   Minimize2,
   Pencil,
@@ -41,7 +42,6 @@ import {
   bilibiliOfficialUrl,
   parseBilibiliSource,
   youtubeEntryTime,
-  youtubeVideoId,
 } from "@/lib/reading-video-sources";
 import { type ReadingLibraryMaterial } from "@/lib/reading-workspace-api";
 import {
@@ -49,7 +49,6 @@ import {
   transcriptMatchIndexes,
 } from "@/lib/transcript-search";
 import { transcriptFollowScrollTop } from "@/lib/transcript-follow";
-import { YouTubeReadingPlayer } from "./YouTubeReadingPlayer";
 import { BilibiliReadingPlayer } from "./BilibiliReadingPlayer";
 import { formatMediaTime, timeFromSourceHref } from "@/lib/reading-media-time";
 import type { TranscriptRow } from "./types";
@@ -85,7 +84,6 @@ export function MediaReadingStage({
   const playbackLocatorRef = useRef(0);
   const stateRef = useRef({ time: 0, duration: 0 });
   const lastSavedRef = useRef(0);
-  const youtubeId = youtubeVideoId(material.source_url);
   const bilibiliSource = useMemo(
     () => parseBilibiliSource(material.source_url),
     [material.source_url],
@@ -330,30 +328,9 @@ export function MediaReadingStage({
     [],
   );
 
-  const handlePlayerError = useCallback(
-    (error: number | string) => {
-      if (error === 101 || error === 150) {
-        setPlayerError(
-          t(
-            "This video's owner disabled embedded playback. Open it on YouTube; DeepTutor can still use captions when they are available.",
-          ),
-        );
-      } else if (error === 153) {
-        setPlayerError(
-          t(
-            "YouTube could not verify this embedded player. Open the official video, or check the browser's referrer policy.",
-          ),
-        );
-      } else if (typeof error === "number") {
-        setPlayerError(
-          t("YouTube playback failed ({{code}}).", { code: error }),
-        );
-      } else {
-        setPlayerError(error);
-      }
-    },
-    [t],
-  );
+  const handlePlayerError = useCallback((error: string) => {
+    setPlayerError(error);
+  }, []);
 
   // A container the browser cannot decode (Matroska is the common one) shows
   // as an inert black rectangle otherwise. Say so, and offer the file itself —
@@ -527,14 +504,12 @@ export function MediaReadingStage({
     material.duration_seconds || 0,
     lastReferenceTime,
   );
-  const officialUrl = youtubeId
-    ? `https://youtu.be/${youtubeId}?t=${Math.floor(time)}`
-    : bilibiliSource
-      ? bilibiliOfficialUrl(bilibiliSource, time)
-      : "";
+  const officialUrl = bilibiliSource
+    ? bilibiliOfficialUrl(bilibiliSource, time)
+    : "";
   const provider =
     material.source_kind === "youtube"
-      ? "YouTube"
+      ? t("Video")
       : material.source_kind === "bilibili"
         ? "Bilibili"
         : t("Native media");
@@ -597,22 +572,17 @@ export function MediaReadingStage({
                 <Minimize2 size={13} />
               </button>
             )}
-            {material.source_kind === "youtube" && youtubeId ? (
-              <div
-                className={`relative aspect-video w-full overflow-hidden bg-black shadow-[0_18px_50px_rgba(0,0,0,.18)] ${
-                  isFullscreen
-                    ? "mx-auto max-h-[calc(100vh-136px)] max-w-full rounded-lg"
-                    : "rounded-2xl"
-                }`}
-              >
-                <YouTubeReadingPlayer
-                  videoId={youtubeId}
-                  startSeconds={startSeconds}
-                  onController={handleController}
-                  onTime={handleTime}
-                  onPersist={persist}
-                  onError={handlePlayerError}
-                />
+            {material.source_kind === "youtube" ? (
+              <div className="flex aspect-video w-full flex-col items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--card)] p-8 shadow-[0_18px_50px_rgba(0,0,0,.08)] dark:border-[var(--border)] dark:bg-[var(--card)]">
+                <span className="mb-4 flex size-16 items-center justify-center rounded-full bg-[var(--muted)] text-[var(--muted-foreground)]">
+                  <Film size={26} />
+                </span>
+                <p className="max-w-md text-center font-serif text-[18px] font-medium">
+                  {title}
+                </p>
+                <p className="mt-2 text-center text-[11.5px] text-[var(--muted-foreground)]">
+                  {t("Video playback is unavailable.")}
+                </p>
               </div>
             ) : material.source_kind === "bilibili" && bilibiliSource ? (
               <div

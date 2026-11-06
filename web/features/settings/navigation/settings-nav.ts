@@ -244,18 +244,6 @@ const MODEL_CHILDREN: SettingsLeaf[] = [
 
 const CHAT_CHILDREN: SettingsLeaf[] = [
   {
-    key: "video-learning",
-    href: "/settings#video-learning",
-    label: { zh: "视频学习", en: "Video Learning" },
-    blurb: {
-      zh: "原生 YouTube 与本地 Invidious 播放供应商。",
-      en: "Native YouTube and local Invidious playback providers.",
-    },
-    icon: Clapperboard,
-    tile: "bg-red-500/10 text-red-600 dark:text-red-400",
-    adminOnly: true,
-  },
-  {
     key: "tools",
     href: "/settings#tools",
     label: { zh: "工具", en: "Tools" },
@@ -601,7 +589,6 @@ const STORAGE_PATHS: Record<string, string> = {
   "/settings#stt": "data/user/settings/model_catalog.json",
   "/settings#image": "data/user/settings/model_catalog.json",
   "/settings#video": "data/user/settings/model_catalog.json",
-  "/settings#video-learning": "data/user/settings/video_learning.json",
   "/settings#document-parsing": "data/user/settings/document_parsing.json",
   "/settings#memory": "data/user/settings/main.yaml",
   appearance: "data/user/settings/interface.json",
@@ -612,7 +599,6 @@ const STORAGE_PATHS: Record<string, string> = {
   connections: "data/user/settings/model_catalog.json",
   "task-models": "data/user/settings/model_catalog.json",
   knowledge: "data/user/settings/document_parsing.json",
-  "video-learning": "data/user/settings/video_learning.json",
   starters: "data/user/settings/interface.json",
   memory: "data/user/settings/main.yaml",
   llm: "data/user/settings/model_catalog.json",
