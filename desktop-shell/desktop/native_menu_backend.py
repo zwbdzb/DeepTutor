@@ -695,8 +695,8 @@ class AccountChip:
     _MIN_W_DIP = 28.0      # 最小宽度（逻辑像素），避免「登录」两字太挤
     _CARET = " ▾"          # 有下拉菜单时附加的指示符
     _FG = None             # 延迟初始化的正文色
-    # 更新角标（ADR-007）：账号文案左侧的浅黄胶囊「有新版本，点击重启」
-    # + 状态圆点 + 分隔线 + 右箭头 + ✕（配色见 _draw_update_badge）。
+    # 更新角标（ADR-007）：账号文案左侧的浅黄胶囊「点击重启以更新」
+    # + 状态圆点 + 右箭头 + ✕（配色见 _draw_update_badge）。
     _UPDATE_GAP_DIP = 10.0       # 角标与账号文案之间
     _UPDATE_PAD_L_DIP = 10.0     # 药丸内左留白
     _UPDATE_PAD_R_DIP = 6.0      # 药丸内右留白（✕ 之后）
@@ -704,10 +704,19 @@ class AccountChip:
     _UPDATE_CLOSE_GAP_DIP = 4.0  # 文案与 ✕ 之间
     _UPDATE_H_DIP = 24.0         # 药丸高度（标题栏 36 内垂直居中）
     _UPDATE_DOT_DIP = 6.0        # 状态圆点直径
-    _UPDATE_PAD2_DIP = 7.0       # 段落间 / 圆点后 留白
-    _UPDATE_SEP_DIP = 1.0        # 分隔线宽
+    _UPDATE_PAD2_DIP = 7.0       # 圆点后 / 文案前 留白
     _UPDATE_ARROW_DIP = 6.0      # 右箭头宽
     _UPDATE_ARROW_GAP_DIP = 4.0  # 「点击重启」与箭头之间
+    # 签到药丸：账号文案左侧的浅绿胶囊「签到+100积分」+ ✕。
+    # 几何与更新角标同构（同一套内边距/✕ 命中盒/药丸内留白），恒在账号文案
+    # 左侧、更新角标右侧 —— 布局顺序永远是 [黄·更新][绿·签到][账号文字]
+    # （见 _pill_layout；配色见 _draw_checkin_badge）。
+    _CHECKIN_GAP_DIP = 10.0       # 签到药丸与账号文案 / 与黄色药丸之间
+    _CHECKIN_PAD_L_DIP = 10.0     # 药丸内左留白
+    _CHECKIN_PAD_R_DIP = 6.0      # 药丸内右留白（✕ 之后）
+    _CHECKIN_CLOSE_DIP = 16.0     # ✕ 命中盒边长
+    _CHECKIN_CLOSE_GAP_DIP = 4.0  # 文案与 ✕ 之间
+    _CHECKIN_H_DIP = 24.0         # 药丸高度（与更新角标同高，垂直居中）
 
     def __init__(self, form, strip, on_login=None, actions: dict | None = None) -> None:
         self._form = form
@@ -716,9 +725,11 @@ class AccountChip:
         self._actions = dict(actions or {})
         self._font = _Font("Microsoft YaHei UI", _CHROME_FONT_PT)
         self._model: dict = {"label": "登录", "title": "登录 Tokengine 账号",
-                             "logged_in": False, "menu": None, "update": None}
+                             "logged_in": False, "menu": None, "update": None,
+                             "checkin": None}
         self._hover = False
         self._hover_update: str | None = None   # None | "body" | "close"
+        self._hover_checkin: str | None = None  # None | "body" | "close"
         self._open = False
         self._closed_at = 0.0     # 上次下拉关闭时刻（monotonic 秒）——「再点一下=收起」守卫
         # 初始隐藏：splash 启动 / 登录门控页阶段不显示账号区（登录入口归
@@ -803,35 +814,44 @@ class AccountChip:
         upd = self._model.get("update")
         return upd if isinstance(upd, dict) and upd.get("label") else None
 
-    def _update_parts(self) -> tuple[str, str]:
-        """把文案拆成（「有新版本」, 「点击重启」）两段，缺段时补空。"""
-        label = str((self._update_model() or {}).get("label") or "")
-        parts = [p.strip() for p in label.split("，", 1)]
-        return (parts[0], parts[1]) if len(parts) == 2 else (parts[0], "")
-
     def _update_width(self, s: float | None = None) -> int:
-        """角标宽度（圆点 + 两段文案 + 分隔线 + 箭头 + ✕ 盒 + 药丸内留白）。
-        无角标时 0。
-        """
+        """角标宽度（圆点 + 文案 + 箭头 + ✕ 盒 + 药丸内留白）。无角标时 0。"""
         upd = self._update_model()
         if upd is None:
             return 0
         s = s if s is not None else self._scale()
-        first, second = self._update_parts()
+        text = str(upd.get("label") or "")
         w = round(self._UPDATE_PAD_L_DIP * s) + round(self._UPDATE_DOT_DIP * s)
-        if first:
+        if text:
             w += round(self._UPDATE_PAD2_DIP * s)
-            w += int(_WF.TextRenderer.MeasureText(first, self._font).Width)
-        if second:
-            w += round(self._UPDATE_PAD2_DIP * s)      # 分隔线前
-            w += round(self._UPDATE_SEP_DIP * s)       # 分隔线宽
-            w += round(self._UPDATE_PAD2_DIP * s)      # 分隔线后
-            w += int(_WF.TextRenderer.MeasureText(second, self._font).Width)
+            w += int(_WF.TextRenderer.MeasureText(text, self._font).Width)
             w += round(self._UPDATE_ARROW_GAP_DIP * s)
             w += round(self._UPDATE_ARROW_DIP * s)
         w += round(self._UPDATE_CLOSE_GAP_DIP * s)
         w += round(self._UPDATE_CLOSE_DIP * s)
         w += round(self._UPDATE_PAD_R_DIP * s)
+        return w
+
+    def _checkin_model(self) -> dict | None:
+        """签到药丸模型（None = 不显示药丸）。"""
+        ck = self._model.get("checkin")
+        return ck if isinstance(ck, dict) and ck.get("label") else None
+
+    def _checkin_width(self, s: float | None = None) -> int:
+        """签到药丸宽度（左留白 + 文案宽 + 文案✕间距 + ✕ 盒 + 右留白）。
+
+        与 :meth:`_update_width` 同一套算法（含 DPI 缩放），无药丸时 0。
+        """
+        ck = self._checkin_model()
+        if ck is None:
+            return 0
+        s = s if s is not None else self._scale()
+        label = str(ck.get("label") or "")
+        w = round(self._CHECKIN_PAD_L_DIP * s)
+        w += int(_WF.TextRenderer.MeasureText(label, self._font).Width)
+        w += round(self._CHECKIN_CLOSE_GAP_DIP * s)
+        w += round(self._CHECKIN_CLOSE_DIP * s)
+        w += round(self._CHECKIN_PAD_R_DIP * s)
         return w
 
     def _apply_metrics(self) -> None:
@@ -844,9 +864,14 @@ class AccountChip:
                 size = _WF.TextRenderer.MeasureText(
                     self._display_text(), self._font)
                 text_w = int(size.Width) + round(2 * self._PAD_X_DIP * s)
-                badge_w = self._update_width(s)
-                if badge_w:
-                    text_w += badge_w + round(self._UPDATE_GAP_DIP * s)
+                # 药丸总占位：黄色更新药丸在最左，绿色签到药丸紧随其右；
+                # 两枚都不存在时这里是 0，与历史版本像素一致。
+                update_w = self._update_width(s)
+                if update_w:
+                    text_w += update_w + round(self._UPDATE_GAP_DIP * s)
+                checkin_w = self._checkin_width(s)
+                if checkin_w:
+                    text_w += checkin_w + round(self._CHECKIN_GAP_DIP * s)
                 self._width = max(round(self._MIN_W_DIP * s), text_w)
             extra = self.extra_right_padding()
             w = self._btn_w(s)
@@ -868,17 +893,34 @@ class AccountChip:
         right = self._strip.Width - 3 * self._btn_w(s)
         return (right - self._width, 0, right, h)
 
-    def _split_rect(self, r):
-        """把账号区矩形拆成（账号文案区, 更新角标区）；无角标时后者为 None。"""
+    def _pill_layout(self, r):
+        """把账号区矩形拆成（账号文案区, 签到药丸区, 更新角标区）。
+
+        布局严格从左到右（与产品要求一致，黄色恒在绿色左边）：
+            ``update_r`` → gap → ``checkin_r`` → gap → ``text_r``
+        两颗药丸都垂直居中、高 ``_UPDATE_H_DIP`` / ``_CHECKIN_H_DIP``；
+        不存在的药丸对应元素为 None。两枚都不存在时返回 ``(r, None, None)``
+        ——与历史版本（只有更新角标、无签到药丸时的分支）完全一致，零像素偏移。
+        """
         s = self._scale()
-        badge_w = self._update_width(s)
-        if not badge_w:
-            return r, None
-        h = max(1, round(self._UPDATE_H_DIP * s))
-        top = r[1] + ((r[3] - r[1]) - h) // 2
-        badge = (r[0], top, r[0] + badge_w, top + h)
-        text = (badge[2] + round(self._UPDATE_GAP_DIP * s), r[1], r[2], r[3])
-        return text, badge
+        update_w = self._update_width(s)
+        checkin_w = self._checkin_width(s)
+        if not update_w and not checkin_w:
+            return r, None, None
+        x = r[0]
+        update_r = None
+        if update_w:
+            h = max(1, round(self._UPDATE_H_DIP * s))
+            top = r[1] + ((r[3] - r[1]) - h) // 2
+            update_r = (x, top, x + update_w, top + h)
+            x = update_r[2] + round(self._UPDATE_GAP_DIP * s)
+        checkin_r = None
+        if checkin_w:
+            h = max(1, round(self._CHECKIN_H_DIP * s))
+            top = r[1] + ((r[3] - r[1]) - h) // 2
+            checkin_r = (x, top, x + checkin_w, top + h)
+            x = checkin_r[2] + round(self._CHECKIN_GAP_DIP * s)
+        return (x, r[1], r[2], r[3]), checkin_r, update_r
 
     def _update_close_rect(self, badge):
         """✕ 命中盒（药丸内右侧，垂直居中）。"""
@@ -888,12 +930,20 @@ class AccountChip:
         mid = (badge[1] + badge[3]) // 2
         return (right - box, mid - box // 2, right, mid - box // 2 + box)
 
+    def _checkin_close_rect(self, pill):
+        """签到药丸的 ✕ 命中盒（药丸内右侧，垂直居中）。"""
+        s = self._scale()
+        box = round(self._CHECKIN_CLOSE_DIP * s)
+        right = pill[2] - round(self._CHECKIN_PAD_R_DIP * s)
+        mid = (pill[1] + pill[3]) // 2
+        return (right - box, mid - box // 2, right, mid - box // 2 + box)
+
     def _update_hit(self, x, y) -> str | None:
-        """角标命中：'body'（点重启）/ 'close'（点 ✕）/ None。"""
+        """更新角标命中：'body'（点重启）/ 'close'（点 ✕）/ None。"""
         r = self.rect()
         if r is None:
             return None
-        _, badge = self._split_rect(r)
+        _text_r, _checkin_r, badge = self._pill_layout(r)
         if badge is None:
             return None
         if not (badge[0] <= x < badge[2] and badge[1] <= y < badge[3]):
@@ -903,6 +953,40 @@ class AccountChip:
             return "close"
         return "body"
 
+    def _checkin_hit(self, x, y) -> str | None:
+        """签到药丸命中：'body'（去签到）/ 'close'（点 ✕）/ None。"""
+        r = self.rect()
+        if r is None:
+            return None
+        _text_r, pill, _update_r = self._pill_layout(r)
+        if pill is None:
+            return None
+        if not (pill[0] <= x < pill[2] and pill[1] <= y < pill[3]):
+            return None
+        cl, ct, cr, cb = self._checkin_close_rect(pill)
+        if cl <= x < cr and ct <= y < cb:
+            return "close"
+        return "body"
+
+    def _pill_hit(self, x, y) -> str | None:
+        """药丸统一命中：'update' / 'update_close' / 'checkin' /
+        'checkin_close' / None。
+
+        两枚药丸在水平方向互不重叠（中间隔一个 gap），内部仍复用
+        :meth:`_update_hit` / :meth:`_checkin_hit` 的既有逻辑，行为零变化。
+        """
+        upd = self._update_hit(x, y)
+        if upd == "close":
+            return "update_close"
+        if upd == "body":
+            return "update"
+        ck = self._checkin_hit(x, y)
+        if ck == "close":
+            return "checkin_close"
+        if ck == "body":
+            return "checkin"
+        return None
+
     def hit(self, x, y) -> bool:
         r = self.rect()
         return bool(r and r[0] <= x < r[2] and r[1] <= y < r[3])
@@ -910,18 +994,30 @@ class AccountChip:
     # ---- 交互 ------------------------------------------------------------ #
     def _on_move(self, sender, e) -> None:
         try:
-            # 鼠标落在「更新角标」列区域内时不算账户 hover——避免给账号
-            # 文案段盖上灰色高亮（ADR-007：角标与账户区是两块独立可点区域）。
-            upd_hit = self._update_hit(e.X, e.Y)
+            # 鼠标落在「药丸列」（更新角标 / 签到药丸）区域内时不算账户 hover
+            # ——避免给账号文案段盖上灰色高亮（ADR-007：药丸与账号区是两块
+            # 独立可点区域）。药丸列内一律手型光标。
+            pill = self._pill_hit(e.X, e.Y)
+            upd_hit = None
+            ck_hit = None
+            if pill == "update":
+                upd_hit = "body"
+            elif pill == "update_close":
+                upd_hit = "close"
+            elif pill == "checkin":
+                ck_hit = "body"
+            elif pill == "checkin_close":
+                ck_hit = "close"
             in_chip = self.hit(e.X, e.Y)
-            # 角标存在时，角标列区域（x 在角标右边缘以左）整体不算账户 hover
-            if in_chip and self._update_model() is not None:
+            # 药丸存在时，药丸列区域（x 在账号文案左缘以左）整体不算账户 hover
+            if in_chip and (self._update_model() is not None
+                            or self._checkin_model() is not None):
                 r = self.rect()
                 if r is not None:
-                    text_r, badge = self._split_rect(r)
-                    if badge is not None and e.X < text_r[0]:
+                    text_r, _checkin_r, _update_r = self._pill_layout(r)
+                    if e.X < text_r[0]:
                         in_chip = False
-            hot = not upd_hit and in_chip
+            hot = not pill and in_chip
             changed = False
             if hot != self._hover:
                 self._hover = hot
@@ -929,10 +1025,13 @@ class AccountChip:
             if upd_hit != self._hover_update:
                 self._hover_update = upd_hit
                 changed = True
+            if ck_hit != self._hover_checkin:
+                self._hover_checkin = ck_hit
+                changed = True
             if changed:
                 self._strip.Invalidate()
                 if _WF is not None and self._strip is not None:
-                    if upd_hit:
+                    if pill:
                         self._strip.Cursor = _WF.Cursors.Hand
                     else:
                         self._strip.Cursor = _WF.Cursors.Default
@@ -948,6 +1047,9 @@ class AccountChip:
             if self._hover_update:
                 self._hover_update = None
                 changed = True
+            if self._hover_checkin:
+                self._hover_checkin = None
+                changed = True
             if changed:
                 self._strip.Invalidate()
                 if _WF is not None:
@@ -959,23 +1061,37 @@ class AccountChip:
         try:
             if e.Button != _WF.MouseButtons.Left or not self.hit(e.X, e.Y):
                 return
-            # 角标命中优先于账号菜单/登录（ADR-007）
-            upd_hit = self._update_hit(e.X, e.Y)
-            if upd_hit == "close":
+            # 药丸命中优先于账号菜单/登录（ADR-007 / 签到药丸）
+            pill = self._pill_hit(e.X, e.Y)
+            if pill == "checkin_close":
+                # 乐观收起药丸（sync 线程下一轮会推送确认；同时写本地
+                # 「今天已收起」，重启后今天内也不再出现）
+                self._model.pop("checkin", None)
+                self._hover_checkin = None
+                self._apply_metrics()
+                self._run(self._actions.get("checkin_dismiss"))
+                return
+            if pill == "checkin":
+                # 药丸主体 = 执行签到（成功后由 Api.checkin_points 收起药丸）
+                self._run(self._actions.get("checkin"))
+                return
+            if pill == "update_close":
                 # 乐观清除角标（sync 线程下一轮会推送确认）
                 self._model.pop("update", None)
                 self._hover_update = None
                 self._apply_metrics()
                 self._run(self._actions.get("update_dismiss"))
                 return
-            if upd_hit == "body":
+            if pill == "update":
                 self._run(self._actions.get("update_restart"))
                 return
-            # 角标存在时，点击角标列区域（药丸外但仍在角标 x 范围内）不触发账号菜单
+            # 药丸存在时，点击药丸列区域（药丸外但仍在药丸 x 范围内）不触发
+            # 账号菜单
             r = self.rect()
-            if r is not None and self._update_model() is not None:
-                text_r, badge = self._split_rect(r)
-                if badge is not None and e.X < text_r[0]:
+            if r is not None and (self._update_model() is not None
+                                  or self._checkin_model() is not None):
+                text_r, _checkin_r, _update_r = self._pill_layout(r)
+                if e.X < text_r[0]:
                     return
             menu = self._model.get("menu")
             if menu and (menu.get("items") or menu.get("header")):
@@ -1248,11 +1364,11 @@ class AccountChip:
                     or clip.Bottom <= r[1] or clip.Top >= r[3]):
                 return
             g = e.Graphics
-            text_r, badge = self._split_rect(r)
+            text_r, checkin_r, badge = self._pill_layout(r)
             if self._hover or self._open:
                 s = self._scale()
                 # 内缩药丸形高亮（与菜单条圆角项一致），命中区仍是完整矩形；
-                # 有角标时只高亮账号文案那一段，别把黑色角标盖成灰底
+                # 有药丸时只高亮账号文案那一段，别把药丸盖成灰底
                 x = text_r[0] + round(1 * s)
                 y = text_r[1] + round(3 * s)
                 w = (text_r[2] - text_r[0]) - round(2 * s)
@@ -1265,8 +1381,11 @@ class AccountChip:
                     g.FillPath(
                         _SolidBrush(_Color.FromArgb(0xE9, 0xE9, 0xE9)), path
                     )
+            # 药丸先后不影响布局：黄色更新药丸恒在绿色签到药丸左边
             if badge is not None:
                 self._draw_update_badge(g, badge)
+            if checkin_r is not None:
+                self._draw_checkin_badge(g, checkin_r)
             text = self._display_text()
             size = _WF.TextRenderer.MeasureText(text, self._font)
             tx = text_r[0] + ((text_r[2] - text_r[0]) - int(size.Width)) // 2
@@ -1281,17 +1400,15 @@ class AccountChip:
             log.exception("account chip paint failed")
 
     def _draw_update_badge(self, g, badge) -> None:
-        """画「有新版本，点击重启」浅黄胶囊（用户定色 #FEF3C7 / #B45309）。
+        """画「点击重启以更新」浅黄胶囊（用户定色 #FEF3C7 / #B45309）。
 
-        布局（从左到右）：状态圆点 → 「有新版本」 → 分隔线 → 「点击重启」
-        → 右箭头 → ✕。底 #FEF3C7、边框 #E9D99E、悬停 #F9E3A9；
-        文案两段 + 箭头同 #B45309 深橙；圆点 #D97706 琥珀；
-        分隔线 #E2C98F、✕ #A16207。整块文字一起用 TextRenderer 绘制
-        （各段单独着色），右箭头与 ✕ 用线条画（免缺字）。
+        布局（从左到右）：状态圆点 → 文案 → 右箭头 → ✕。
+        底 #FEF3C7、边框 #E9D99E、悬停 #F9E3A9；文案与箭头同
+        #B45309 深橙；圆点 #D97706 琥珀、✕ #A16207。文字用
+        TextRenderer 绘制，右箭头与 ✕ 用线条画（免缺字）。
         """
         s = self._scale()
         text = str((self._update_model() or {}).get("label") or "")
-        first, second = self._update_parts()
         hot = self._hover_update
         g.SmoothingMode = _SmoothingMode.AntiAlias
         BX, BY, BW, BH = badge
@@ -1316,35 +1433,16 @@ class AccountChip:
             cx, top, dot, dot,
         )
         cx += dot
-        # 「有新版本」 深灰绿
-        first = first or text
-        if first:
-            fs = _WF.TextRenderer.MeasureText(first, self._font)
-            fty = BY + ((BH - BY) - int(fs.Height)) // 2
-            ftx = cx + round(self._UPDATE_PAD2_DIP * s)
-            _WF.TextRenderer.DrawText(
-                g, first, self._font, _Point(ftx, fty),
-                _Color.FromArgb(0xB4, 0x53, 0x09),
-            )
-            cx = ftx + int(fs.Width)
-        # 分隔线 + 「点击重启」 + 右箭头（两段式才画）
-        if second:
+        # 文案（深橙）+ 右箭头
+        if text:
             cx += round(self._UPDATE_PAD2_DIP * s)
-            sep_x = cx
-            sepd = round(self._UPDATE_SEP_DIP * s)
-            sy = BY + round(6 * s)
-            g.FillRectangle(
-                _SolidBrush(_Color.FromArgb(0xE2, 0xC9, 0x8F)),
-                sep_x, sy, max(1, sepd), (BH - BY) - 2 * round(6 * s),
-            )
-            cx = sep_x + sepd + round(self._UPDATE_PAD2_DIP * s)
-            ss = _WF.TextRenderer.MeasureText(second, self._font)
-            sty = BY + ((BH - BY) - int(ss.Height)) // 2
+            ts = _WF.TextRenderer.MeasureText(text, self._font)
+            tty = BY + ((BH - BY) - int(ts.Height)) // 2
             _WF.TextRenderer.DrawText(
-                g, second, self._font, _Point(cx, sty),
+                g, text, self._font, _Point(cx, tty),
                 _Color.FromArgb(0xB4, 0x53, 0x09),
             )
-            cx = cx + int(ss.Width)
+            cx = cx + int(ts.Width)
             # 右箭头（线条，橙色）
             ax0 = cx + round(self._UPDATE_ARROW_GAP_DIP * s)
             ah = round(self._UPDATE_ARROW_DIP * s)
@@ -1364,6 +1462,51 @@ class AccountChip:
                 cl, ct, cr - cl - 1, cb - ct - 1,
             )
         pen = _Pen(_Color.FromArgb(0xA1, 0x62, 0x07), max(1.0, round(s)))
+        half = round(3.2 * s)
+        cxm, cym = (cl + cr) / 2.0, (ct + cb) / 2.0
+        g.DrawLine(pen, cxm - half, cym - half, cxm + half, cym + half)
+        g.DrawLine(pen, cxm + half, cym - half, cxm - half, cym + half)
+
+    def _draw_checkin_badge(self, g, pill) -> None:
+        """画「签到+100积分」浅绿胶囊（Tailwind green-100 / green-700 系）。
+
+        布局（从左到右）：文案 → ✕。底 #DCFCE7、悬停 #C7F2D4、边框
+        #BBF7D0、文案 #15803D、✕ #166534；文案走 TextRenderer（与账号
+        文案同一字体），✕ 用两条线自绘（免字体缺字风险），✕ 悬停时垫一层
+        淡白圆底（与 :meth:`_draw_update_badge` 的做法一致）。
+        """
+        s = self._scale()
+        label = str((self._checkin_model() or {}).get("label") or "")
+        hot = self._hover_checkin
+        g.SmoothingMode = _SmoothingMode.AntiAlias
+        PX, PY, PW, PH = pill
+        radius = (PH - PY) // 2
+        path = _round_path((PX, PY, PW - PX, PH - PY), max(2, radius))
+        # 底色随悬停：主体/✕ hover 画深一档浅绿
+        g.FillPath(
+            _SolidBrush(_Color.FromArgb(0xC7, 0xF2, 0xD4) if hot else
+                         _Color.FromArgb(0xDC, 0xFC, 0xE7)),
+            path,
+        )
+        # 边框（同色系深一档）
+        g.DrawPath(_Pen(_Color.FromArgb(0xBB, 0xF7, 0xD0), max(1.0, round(s))), path)
+        # 文案（白底左内边距起，垂直居中）
+        if label:
+            size = _WF.TextRenderer.MeasureText(label, self._font)
+            tx = PX + round(self._CHECKIN_PAD_L_DIP * s)
+            ty = PY + ((PH - PY) - int(size.Height)) // 2
+            _WF.TextRenderer.DrawText(
+                g, label, self._font, _Point(tx, ty),
+                _Color.FromArgb(0x15, 0x80, 0x3D),
+            )
+        # ✕（深绿 #166534）
+        cl, ct, cr, cb = self._checkin_close_rect(pill)
+        if hot == "close":
+            g.FillEllipse(
+                _SolidBrush(_Color.FromArgb(46, 255, 255, 255)),
+                cl, ct, cr - cl - 1, cb - ct - 1,
+            )
+        pen = _Pen(_Color.FromArgb(0x16, 0x65, 0x34), max(1.0, round(s)))
         half = round(3.2 * s)
         cxm, cym = (cl + cr) / 2.0, (ct + cb) / 2.0
         g.DrawLine(pen, cxm - half, cym - half, cxm + half, cym + half)

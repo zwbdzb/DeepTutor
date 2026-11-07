@@ -23,19 +23,21 @@ import json
 import logging
 import re
 import threading
+import time
 
 log = logging.getLogger("dt.titlebar")
 
 # 菜单动作名（与 main.py 的分发表对齐，便于一眼核对）
 MENU_ACTIONS = (
-    "invite", "checkin", "switch", "platform", "refresh", "refresh_user",
-    "copy", "logout", "about", "update_restart", "update_dismiss",
+    "invite", "checkin", "checkin_dismiss", "switch", "platform", "refresh",
+    "refresh_user", "copy", "logout", "about", "update_restart",
+    "update_dismiss",
 )
 
 # 更新就绪状态（ADR-007）：menubar._check_updates 下载完成后设置，
 # chip_model 据此在下拉菜单顶部插入「有新版本，点击重启」项。
 _UPDATE_READY: dict = {}  # {version: str, path: str}
-UPDATE_BADGE_LABEL = "有新版本，点击重启"
+UPDATE_BADGE_LABEL = "点击重启以更新"
 
 
 def set_update_ready(version: str = "") -> None:
@@ -52,6 +54,31 @@ def clear_update_ready() -> None:
 def update_ready_version() -> str:
     """返回当前就绪的版本号；无更新时返回空串。"""
     return str(_UPDATE_READY.get("version") or "")
+
+
+# 签到提示状态：标题栏账号区左侧的浅绿「签到+100积分」药丸。
+# 与上面的 _UPDATE_READY 完全同构（模块级标志 + 日志），由
+# ``main.Api.refresh_checkin_pill()`` 依据 ``checkin_pill.CheckinPillState``
+# （今天是否还没签到）判定后设置；签到成功或用户点 ✕ 时清除。
+_CHECKIN_AVAILABLE: dict = {}
+CHECKIN_BADGE_LABEL = "签到+100积分"
+
+
+def set_checkin_available(available: bool) -> None:
+    """标记「今天还没签到」，标题栏账号区亮起浅绿签到药丸。"""
+    if available:
+        if not _CHECKIN_AVAILABLE:
+            log.info("checkin pill available")
+        _CHECKIN_AVAILABLE["ready"] = True
+    else:
+        if _CHECKIN_AVAILABLE:
+            log.info("checkin pill hidden")
+        _CHECKIN_AVAILABLE.clear()
+
+
+def checkin_available() -> bool:
+    """当前是否该显示签到药丸（今日未签到且未被收起）。"""
+    return bool(_CHECKIN_AVAILABLE)
 
 
 # --------------------------------------------------------------------------- #
@@ -221,7 +248,7 @@ def _update_menu_items() -> list[dict]:
 
 
 def chip_model(st: dict) -> dict:
-    """标题栏账号区完整模型：{label, title, logged_in, menu, update}。
+    """标题栏账号区完整模型：{label, title, logged_in, menu, update, checkin}。
 
     ``menu`` 为 None 时点击账号区 = 直接发起登录；否则点击弹下拉菜单。
     分支与 :func:`chip_label` 一一对应：
@@ -230,10 +257,15 @@ def chip_model(st: dict) -> dict:
       登录进行中  → 菜单（重新发起登录/平台/关于）
       未登录      → 无菜单，点击直发登录
 
-    ``update`` 非 None 时，账号区左侧多画一枚「有新版本，点击重启」角标
+    ``update`` 非 None 时，账号区左侧多画一枚「点击重启以更新」角标
     （Windows 自绘；见 native_menu_backend.AccountChip）。角标只在账号区
     可见时露出，而账号区在登录门控页是隐藏的——所以它天然是「登录进去后
     才出现」，不打扰登录流程。
+
+    ``checkin`` 非 None 时，账号文案左侧再画一枚浅绿「签到+100积分」药丸，
+    位置在更新角标**右侧**（布局恒为 ``[黄·更新][绿·签到][账号文字]``）。
+    未登录/未配置时恒为 None——签到是登录态专属能力，药丸不能出现在
+    「登录」入口旁边误导用户。
     """
     st = st or {}
     label, title = chip_label(st)
@@ -246,8 +278,11 @@ def chip_model(st: dict) -> dict:
         menu = None
     update = ({"label": UPDATE_BADGE_LABEL, "version": update_ready_version()}
               if _UPDATE_READY else None)
+    checkin = ({"label": CHECKIN_BADGE_LABEL}
+               if (checkin_available() and logged) else None)
     return {"label": label, "title": title,
-            "logged_in": logged, "menu": menu, "update": update}
+            "logged_in": logged, "menu": menu, "update": update,
+            "checkin": checkin}
 
 
 # --------------------------------------------------------------------------- #
@@ -265,15 +300,23 @@ class AccountStatusSync:
                          应用页面上才触发 on_authenticated——门控页的登录
                          成功由会话主循环自己导航进应用，别抢跑刷新。
       interval         : 轮询间隔（秒）。
+      on_tick          : 可选；按 ``tick_interval`` 节流调用一次的周期性
+                         回调（签到药丸跨自然日重判等）。不另起线程——本
+                         同步线程本来就在轮询，顺带跑即可。
+      tick_interval    : ``on_tick`` 的最小调用间隔（秒）。
     """
 
     def __init__(self, chip_fn, status_of, on_authenticated=None,
-                 on_app_page=None, interval: float = 0.4) -> None:
+                 on_app_page=None, interval: float = 0.4,
+                 on_tick=None, tick_interval: float = 60.0) -> None:
         self._chip_fn = chip_fn
         self._status_of = status_of
         self._on_auth = on_authenticated
         self._on_app_page = on_app_page or (lambda: True)
         self._interval = interval
+        self._on_tick = on_tick
+        self._tick_interval = tick_interval
+        self._last_tick = 0.0   # 0 = 首轮就触发一次
         self._stop = threading.Event()
         self._last_payload: str | None = None
         self._was_logged_in: bool | None = None
@@ -289,6 +332,7 @@ class AccountStatusSync:
             except Exception:  # noqa: BLE001  状态读取失败，下一轮再试
                 st = {}
             try:
+                self._tick()
                 self._push(st)
                 self._detect_transitions(st)
             except Exception:  # noqa: BLE001  单轮失败不终止同步
@@ -296,6 +340,24 @@ class AccountStatusSync:
             self._stop.wait(self._interval)
 
     # ---- 内部 ---------------------------------------------------------- #
+    def _tick(self) -> None:
+        """按 ``tick_interval`` 节流触发周期性回调（默认 60s 一次）。
+
+        签到药丸的「今天签过没」按自然日判定：应用常驻跨零点时，昨天的
+        记录会在今天失效，需要重判才能让药丸复活。这里复用本同步线程，
+        不额外养一条常驻巡检线程。
+        """
+        if self._on_tick is None:
+            return
+        now = time.monotonic()
+        if self._last_tick and now - self._last_tick < self._tick_interval:
+            return
+        self._last_tick = now
+        try:
+            self._on_tick()
+        except Exception:  # noqa: BLE001  回调失败不影响状态同步
+            log.exception("account sync tick failed")
+
     def _push(self, st: dict) -> None:
         """模型变化才推（UI 线程 invoke + 条带重绘都不便宜）。"""
         model = chip_model(st)
