@@ -267,6 +267,13 @@ begin
        or FileExists(ExpandConstant('{autodesktop}\{#MyAppName}.lnk'))
        or FileExists(ExpandConstant('{userdesktop}\{#MyAppName}.lnk')) then
       WizardSelectTasks('desktopicon');
+
+    // 高 DPI（如 175%）下这一页的勾选框会被裁掉左边框。Inno 画框时按主题给出的
+    // 理想尺寸（约 20px），但左侧缩进仍按未缩放的 13px 计算，框的左边界因此落在
+    // 列表客户区之外：CheckRect.Left = Offset + 13 - Size.cx = 4 + 13 - 20 = -3，
+    // 于是「20 宽的框只剩 17 宽」——上、下、右边都在，独缺左边一条。
+    // 把 Offset 加大即可把框整体推回可见区（Offset ≥ Size.cx - 13，175% 下需 ≥7）。
+    WizardForm.TasksList.Offset := ScaleX(8);
   except
     // 纯 UI 状态调整，失败只影响图标刷新，不阻断安装。
   end;

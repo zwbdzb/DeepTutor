@@ -37,4 +37,4 @@ def test_runtime_note_exposes_only_the_logical_output_path(language: str) -> Non
     assert physical_root not in note
     assert "workspace_present" in note
     assert "workspace_export" in note
-    assert "DEEPTUTOR_WORKSPACE_ROOT" in note
+    assert "WORKSPACE_ROOT" in note

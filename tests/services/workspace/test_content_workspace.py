@@ -580,7 +580,7 @@ def test_execution_environment_keeps_mutable_tool_state_in_the_turn(
         Path(exec_env[key]).resolve().relative_to(internal)
         assert exec_env[key] == code_env[key]
     assert exec_env["PYTHONPATH"] == exec_env["PIP_TARGET"]
-    assert exec_env["DEEPTUTOR_WORKSPACE_ROOT"] == str(workspace_root.resolve())
+    assert exec_env["WORKSPACE_ROOT"] == str(workspace_root.resolve())
 
 
 def test_execution_environment_requests_utf8_mode(
