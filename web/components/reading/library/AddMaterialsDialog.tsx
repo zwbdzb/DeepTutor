@@ -5,7 +5,7 @@ import {
   Library,
   Link2,
   Loader2,
-  Rss,
+  // Rss,
   Search,
   Upload,
   X,
@@ -20,7 +20,7 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 
-import { WatchingBrowser } from "@/components/watching/WatchingBrowser";
+// import { WatchingBrowser } from "@/components/watching/WatchingBrowser";
 import { uploadMaterial } from "@/lib/reading-api";
 import {
   addReadingWorkspaceMaterial,
@@ -87,7 +87,7 @@ export function AddMaterialsDialog({
   const [working, setWorking] = useState(false);
   const [error, setError] = useState("");
   const [showPicker, setShowPicker] = useState(false);
-  const [showInvidious, setShowInvidious] = useState(false);
+  // const [showInvidious, setShowInvidious] = useState(false);
 
   const heading =
     mode === "create"
@@ -130,31 +130,31 @@ export function AddMaterialsDialog({
     setLinkDraft("");
   }, [linkDraft]);
 
-  const importInvidiousUrl = useCallback(
-    async (url: string) => {
-      if (working) return;
-      setWorking(true);
-      setError("");
-      try {
-        const label = url.replace(/^https?:\/\//, "").slice(0, 80);
-        const imported =
-          mode === "add" && workspaceId
-            ? await importReadingUrls({ urls: [url], workspace_id: workspaceId })
-            : await importReadingUrls({
-                urls: [url],
-                workspace_title:
-                  mode === "create" && title.trim() ? title.trim() : label,
-              });
-        const workspace = imported.workspace;
-        onDone({ workspace });
-      } catch (caught) {
-        setError(caught instanceof Error ? caught.message : t("Import failed."));
-      } finally {
-        setWorking(false);
-      }
-    },
-    [mode, onDone, t, title, workspaceId, working],
-  );
+  // const importInvidiousUrl = useCallback(
+  //   async (url: string) => {
+  //     if (working) return;
+  //     setWorking(true);
+  //     setError("");
+  //     try {
+  //       const label = url.replace(/^https?:\/\//, "").slice(0, 80);
+  //       const imported =
+  //         mode === "add" && workspaceId
+  //           ? await importReadingUrls({ urls: [url], workspace_id: workspaceId })
+  //           : await importReadingUrls({
+  //               urls: [url],
+  //               workspace_title:
+  //                 mode === "create" && title.trim() ? title.trim() : label,
+  //             });
+  //       const workspace = imported.workspace;
+  //       onDone({ workspace });
+  //     } catch (caught) {
+  //       setError(caught instanceof Error ? caught.message : t("Import failed."));
+  //     } finally {
+  //       setWorking(false);
+  //     }
+  //   },
+  //   [mode, onDone, t, title, workspaceId, working],
+  // );
 
   // Hash new files in the browser and ask the server what it already holds, so
   // a duplicate is surfaced while the user can still decide — not after the
@@ -426,6 +426,7 @@ export function AddMaterialsDialog({
                 {t("or click to choose files")}
               </span>
             </button>
+            {/* placeholder={t("or paste a link — web page, YouTube, Bilibili")} */}
             <div className="mx-auto mt-3.5 flex h-8 max-w-[340px] items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--background)] px-2.5">
               <Link2
                 size={12}
@@ -441,7 +442,7 @@ export function AddMaterialsDialog({
                   }
                 }}
                 onBlur={addLink}
-                placeholder={t("or paste a link — web page, YouTube, Bilibili")}
+                placeholder={t("or paste a link — web page or Bilibili")}
                 className="min-w-0 flex-1 bg-transparent text-[11.5px] outline-none placeholder:text-[var(--muted-foreground)]"
               />
               {!!linkDraft && (
@@ -456,6 +457,7 @@ export function AddMaterialsDialog({
             </div>
           </div>
 
+          {/*
           <button
             type="button"
             onClick={() => setShowInvidious(true)}
@@ -464,6 +466,7 @@ export function AddMaterialsDialog({
             <Rss size={13} />
             {t("Browse Invidious")}
           </button>
+          */}
 
           {!!items.length && (
             <ul className="mt-3.5 space-y-1.5">
@@ -527,6 +530,7 @@ export function AddMaterialsDialog({
         </div>
       </div>
 
+      {/*
       {showInvidious && (
         <WatchingBrowser
           canDismiss
@@ -534,6 +538,7 @@ export function AddMaterialsDialog({
           onDismiss={() => setShowInvidious(false)}
         />
       )}
+      */}
     </div>
   );
 }

@@ -267,6 +267,13 @@ begin
        or FileExists(ExpandConstant('{autodesktop}\{#MyAppName}.lnk'))
        or FileExists(ExpandConstant('{userdesktop}\{#MyAppName}.lnk')) then
       WizardSelectTasks('desktopicon');
+
+    // 高 DPI（如 175%）下这一页的勾选框会被裁掉左边框。Inno 画框时按主题给出的
+    // 理想尺寸（约 20px），但左侧缩进仍按未缩放的 13px 计算，框的左边界因此落在
+    // 列表客户区之外：CheckRect.Left = Offset + 13 - Size.cx = 4 + 13 - 20 = -3，
+    // 于是「20 宽的框只剩 17 宽」——上、下、右边都在，独缺左边一条。
+    // 把 Offset 加大即可把框整体推回可见区（Offset ≥ Size.cx - 13，175% 下需 ≥7）。
+    WizardForm.TasksList.Offset := ScaleX(8);
   except
     // 纯 UI 状态调整，失败只影响图标刷新，不阻断安装。
   end;
@@ -336,6 +343,8 @@ procedure PurgeWebRuntimeCache;
 var
   Home: string;    // workspace 根目录
   Cache: string;   // <workspace>\data\user\runtime\web
+  I: Integer;      // 重试计数
+  ResCode: Integer;// Exec 返回码占位
 begin
   try
     Home := GetEnv('DEEPTUTOR_DESKTOP_HOME');
@@ -349,8 +358,27 @@ begin
     Cache := Home + '\data\user\runtime\web';
     if DirExists(Cache) then
     begin
-      DelTree(Cache, True, True, True);
-      Log('TB-ICON web runtime cache purged: ' + Cache);
+      // DelTree 在极少数情况下会被杀软/文件句柄卡住（best-effort）；
+      // 重试 3 次，每次间隔 200ms。最后还卡就用 cmd rd /s /q 强删兜底。
+      for I := 1 to 3 do
+      begin
+        DelTree(Cache, True, True, True);
+        if not DirExists(Cache) then Break;
+        Log('TB-ICON web runtime cache purge attempt ' + IntToStr(I) + ' blocked, retrying...');
+        SleepMs(200);
+      end;
+      if DirExists(Cache) then
+      begin
+        Log('TB-ICON DelTree exhausted; falling back to rd /s /q');
+        Exec('cmd.exe', '/c rd /s /q "' + Cache + '"', '', SW_HIDE,
+             ewWaitUntilTerminated, ResCode);
+        if not DirExists(Cache) then
+          Log('TB-ICON web runtime cache purged via rd /s /q')
+        else
+          Log('TB-ICON web runtime cache purge FAILED after 3 retries + rd');
+      end
+      else
+        Log('TB-ICON web runtime cache purged: ' + Cache);
     end
     else
       Log('TB-ICON web runtime cache absent: ' + Cache);

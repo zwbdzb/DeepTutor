@@ -148,9 +148,9 @@ def _find_build_py() -> Path | None:
     if env:
         return Path(env)
     candidates = list(Path.home().glob(
-        "AppData/Roaming/uv/python/cpython-3.1[12]-*/python.exe"))
+        "AppData/Roaming/uv/python/cpython-3.1[12]*/python.exe"))
     candidates += list(Path.home().glob(
-        ".local/share/uv/python/cpython-3.1[12]-*/python.exe"))
+        ".local/share/uv/python/cpython-3.1[12]*/python.exe"))
     for c in candidates:
         if c.exists():
             return c

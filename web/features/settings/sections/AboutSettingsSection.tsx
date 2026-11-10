@@ -162,11 +162,36 @@ export default function AboutSettingsPage() {
     }
   }, [t]);
 
+  // Desktop shells report the ThinkBuddy package version (engine version +
+  // build timestamp, e.g. 1.6.15.10291629). The About page shows the engine
+  // part only, so it always matches the engine version the shell displays.
+  const desktopEngine = (() => {
+    if (!status?.desktop_update?.enabled) return null;
+    const raw = status.desktop_update.current_version?.trim();
+    if (!raw) return null;
+    const segments = raw.split(".");
+    return normalizeVersionTag(
+      segments.length >= 4 ? segments.slice(0, -1).join(".") : raw,
+    );
+  })();
   const currentVersion =
+    desktopEngine ??
     normalizeVersionTag(status?.current_version) ??
     normalizeVersionTag(process.env.NEXT_PUBLIC_APP_VERSION) ??
     "—";
-  const latestVersion = normalizeVersionTag(status?.release?.version);
+  // The "latest stable release" block follows the ThinkBuddy desktop manifest
+  // (thinkbuddy.hanyoai.com/update/latest.json) rather than the upstream
+  // GitHub release. Its four-segment version collapses to the engine version
+  // (drop the build timestamp) so it lines up with the shell's own display.
+  const latestVersion = (() => {
+    const raw = status?.desktop_update?.version?.trim();
+    if (!raw) return null;
+    const segments = raw.split(".");
+    return normalizeVersionTag(
+      segments.length >= 4 ? segments.slice(0, -1).join(".") : raw,
+    );
+  })();
+  const latestExcerpt = status?.desktop_update?.changelog?.trim() ?? "";
   const checkedAt = useMemo(() => {
     if (!status?.checked_at) return "";
     const parsed = new Date(status.checked_at);
@@ -186,7 +211,11 @@ export default function AboutSettingsPage() {
     status.launcher_managed &&
     !activeJob,
   );
-  const upToDate = Boolean(status?.release && !status.update_available);
+  const upToDate = Boolean(
+    status?.desktop_update?.enabled &&
+    status.desktop_update.version &&
+    !status.desktop_update.update_available,
+  );
 
   return (
     <div data-tour="tour-about" className="pb-8">
@@ -333,22 +362,13 @@ export default function AboutSettingsPage() {
           }
         />
 
-        {status?.release?.migration_warning && (
-          <div className="flex items-start gap-2 border-t border-[var(--border)]/50 py-3.5 text-[12.5px] leading-relaxed text-amber-700 dark:text-amber-400">
-            <CircleAlert className="mt-0.5 h-4 w-4 shrink-0" />
-            {t(
-              "This release mentions migrations or breaking changes. Read the release notes before updating.",
-            )}
-          </div>
-        )}
-
-        {status?.release?.excerpt && (
+        {latestExcerpt && (
           <div className="border-t border-[var(--border)]/50 py-4">
             <div className="mb-2 text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
-              {status.release.name || t("What changed")}
+              {t("What changed")}
             </div>
             <p className="max-w-2xl whitespace-pre-line text-[12.5px] leading-6 text-[var(--muted-foreground)]">
-              {status.release.excerpt}
+              {latestExcerpt}
             </p>
           </div>
         )}

@@ -41,6 +41,7 @@ from desktop import (
 from desktop.auth import AuthManager
 from desktop.auth import config as auth_config
 from desktop.checkin import CheckinCoordinator, checkin_message
+from desktop.checkin_pill import CheckinPillState
 from desktop.default_search import ensure_default_search
 from desktop.engine_log_tail import EngineLogTail
 from desktop.inject import AccountChipInjector, ToastInjector
@@ -64,7 +65,11 @@ from desktop.telemetry_reporter import (
     os_description,
     truncate_message,
 )
-from desktop.titlebar_account import AccountStatusSync, _fmt_balance
+from desktop.titlebar_account import (
+    AccountStatusSync,
+    _fmt_balance,
+    set_checkin_available,
+)
 from desktop.tray import SystemTray
 
 log = logging.getLogger("dt.main")
@@ -126,6 +131,9 @@ class Api:
         )
         self._website_url = configured_website_url.strip().rstrip("/")
         self._checkin = CheckinCoordinator(auth, self._website_url)
+        # 标题栏「签到+100积分」药丸的显示状态（今天是否还没签到），
+        # 落在 %LOCALAPPDATA%\ThinkBuddy\checkin_pill.json。
+        self._checkin_pill = CheckinPillState(rt.ROOT)
         self._debug = debug
         self._lock = threading.Lock()
         self._phase = "boot"
@@ -194,8 +202,73 @@ class Api:
         return self._auth.refresh_user_info()
 
     def checkin_points(self) -> dict:
-        """Use the OAuth subject to check in directly with thinkbuddy-website."""
-        return self._checkin.checkin()
+        """Use the OAuth subject to check in directly with thinkbuddy-website.
+
+        签到成功（含平台回「今日已签到」）后立刻收起标题栏绿色药丸：药丸
+        主体与账号菜单「签到得积分」是同一个入口的两处 UI，状态必须共享。
+        """
+        result = self._checkin.checkin()
+        if isinstance(result, dict) and result.get("ok"):
+            self._mark_checkin_done()
+        return result
+
+    # -- 签到药丸（标题栏浅绿「签到+100积分」）-------------------------- #
+    def checkin_pill_should_show(self) -> bool:
+        """今天是否该显示签到药丸（未登录 / 无 provider uid 时永不显示）。"""
+        try:
+            uid = self._auth.provider_user_id()
+        except Exception:  # noqa: BLE001  读账号信息失败只是不显示药丸
+            log.exception("读取 provider user id 失败")
+            return False
+        if not uid:
+            # 刻意不用手机号兜底：签到接口只认 OAuth sub，拿别的标识去判
+            # 「今天签过没」会串号。
+            return False
+        try:
+            return bool(self._checkin_pill.should_prompt(uid))
+        except Exception:  # noqa: BLE001  保底：状态层已吞异常，这里再兜一层
+            log.exception("签到药丸状态判定失败")
+            return False
+
+    def refresh_checkin_pill(self) -> None:
+        """重判签到药丸可见性并推给标题栏（启动 / 登录成功 / 周期巡检）。"""
+        try:
+            logged = bool(self._auth.status().get("logged_in"))
+        except Exception:  # noqa: BLE001
+            log.exception("读取登录态失败，签到药丸按不显示处理")
+            logged = False
+        try:
+            set_checkin_available(logged and self.checkin_pill_should_show())
+        except Exception:  # noqa: BLE001  标题栏标志设置失败不影响任何流程
+            log.exception("签到药丸可见性推送失败")
+
+    def dismiss_checkin_pill(self) -> None:
+        """用户点药丸右侧 ✕：今天内不再提示。"""
+        try:
+            uid = self._auth.provider_user_id()
+            if uid:
+                self._checkin_pill.mark_dismissed(uid)
+        except Exception:  # noqa: BLE001  收起失败也不阻塞交互
+            log.exception("签到药丸收起状态写入失败")
+        self._hide_checkin_pill()
+
+    def _mark_checkin_done(self) -> None:
+        """签到成功后收起药丸（两个入口共用：药丸主体 / 账号菜单）。"""
+        try:
+            uid = self._auth.provider_user_id()
+            if uid:
+                self._checkin_pill.mark_checked_in(uid)
+        except Exception:  # noqa: BLE001
+            log.exception("签到状态写入失败")
+        self._hide_checkin_pill()
+
+    @staticmethod
+    def _hide_checkin_pill() -> None:
+        """立刻隐藏药丸（标题栏下一轮轮询也会同步，双保险）。"""
+        try:
+            set_checkin_available(False)
+        except Exception:  # noqa: BLE001
+            log.exception("签到药丸隐藏失败")
 
     def copy_relay(self) -> dict:
         """复制 API 中继地址到剪贴板（刻意不复制业务 token，避免泄露）。"""
@@ -325,6 +398,7 @@ def _chip_actions(api: Api) -> dict:
         res = api.logout()
         if res.get("ok"):
             api.toast("已退出登录", kind="success")
+            set_checkin_available(False)   # 未登录不显示签到药丸
             evt = _shared.get("logout_requested")
             if isinstance(evt, threading.Event):
                 evt.set()  # 会话主循环将导航回登录门控页
@@ -347,6 +421,8 @@ def _chip_actions(api: Api) -> dict:
         "platform": api.open_platform,
         "invite": invite,
         "checkin": checkin,
+        # 签到药丸右侧 ✕：今天内不再提示（本地记 dismissed，跨天复活）
+        "checkin_dismiss": api.dismiss_checkin_pill,
         "refresh": refresh,
         "refresh_user": refresh_user,
         "copy": api.copy_relay,
@@ -439,6 +515,8 @@ def run_session(window, api: Api, url: str, auth: AuthManager,
             # 启动/门控阶段账号区一直隐藏；进应用页才亮出（显示已登录用户名）。
             # 登录入口归门控页页面按钮，标题栏只做「身份指示 + 账号操作」。
             set_account_chip_hidden(False)
+            # 进应用页即判定签到药丸（门控页刚登录完，登录态/uid 此刻才齐备）
+            api.refresh_checkin_pill()
             window.load_url(url)
 
             # endpoints.json 显式改动后的重绑定提示（改写动作在 main() 早期已完成）
@@ -592,12 +670,16 @@ def bootstrap(window, api: Api, auth: AuthManager) -> None:
         # an unreachable platform can never block the login gate.
         def _boot_refresh() -> None:
             try:
-                if auth.refresh_models().get("ok"):
-                    log.info("Tokengine account/models refreshed on boot")
-                else:
-                    log.warning("Tokengine refresh skipped or failed")
-            except Exception:
-                log.exception("Tokengine boot refresh failed")
+                try:
+                    if auth.refresh_models().get("ok"):
+                        log.info("Tokengine account/models refreshed on boot")
+                    else:
+                        log.warning("Tokengine refresh skipped or failed")
+                except Exception:
+                    log.exception("Tokengine boot refresh failed")
+                # 启动即判定一次签到药丸（provider_user_id 在刷新后才是最新，
+                # 且判定必须与刷新结果解耦：平台不可达也不能让药丸乱闪）。
+                api.refresh_checkin_pill()
             finally:
                 # One event per launch; wait for the existing background token
                 # refresh so saved sessions can be identified after a restart.
@@ -630,11 +712,20 @@ def bootstrap(window, api: Api, auth: AuthManager) -> None:
                 daemon=True, name="dt-appmenu-localize",
             ).start()
 
+        # 登录成功 / 换号后：先重判签到药丸（新账号的今日签到状态可能不同），
+        # 再刷新页面让应用读取刚写入的模型目录。
+        def _on_authenticated() -> None:
+            api.refresh_checkin_pill()
+            _reload_page()
+
         sync = AccountStatusSync(
             chip_fn=lambda: native_menu_backend.account_chip() or _account_chip_injector,
             status_of=api.auth_status,
-            on_authenticated=_reload_page,
+            on_authenticated=_on_authenticated,
             on_app_page=lambda: _on_app_page(url),
+            # 签到药丸跨自然日重判：复用账号状态轮询线程，60s 节流，不另起巡检线程。
+            on_tick=api.refresh_checkin_pill,
+            tick_interval=60.0,
         )
         _shared["account_sync"] = sync
         threading.Thread(target=sync.run, daemon=True, name="dt-account-sync").start()
