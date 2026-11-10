@@ -73,7 +73,14 @@ it("loads conversation history while navigation remains usable, then preserves s
     "/co-writer",
   );
 
-  const history = await screen.findByText("Retained session");
+  // The history list is a `dynamic(..., { ssr: false })` chunk behind Suspense,
+  // so this wait races the chunk load: measured at ~1s in a parallel worker,
+  // which is exactly the findBy* default and made the case a coin flip once a
+  // second spec file shared the run. The assertion stays the same — only the
+  // wait budget grows.
+  const history = await screen.findByText("Retained session", undefined, {
+    timeout: 5000,
+  });
   const scroller = history.closest(".overflow-y-auto");
   expect(scroller).toContainElement(
     screen.getByRole("link", { name: "Co-Writer" }),
