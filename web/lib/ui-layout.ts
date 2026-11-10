@@ -13,7 +13,13 @@ import { browserStorage } from "@/shared/storage";
 export type UiLayout = "classic" | "modern";
 
 export const UI_LAYOUTS: readonly UiLayout[] = ["classic", "modern"];
-export const DEFAULT_UI_LAYOUT: UiLayout = "modern";
+/**
+ * ThinkBuddy ships the familiar (classic) navigation by default; the redesigned
+ * modern shell stays one dropdown away in Settings → General → Layout. Nothing
+ * writes this key implicitly, so a stored value is always an explicit choice and
+ * is left untouched by this default.
+ */
+export const DEFAULT_UI_LAYOUT: UiLayout = "classic";
 export const UI_LAYOUT_STORAGE_KEY = "deeptutor.ui-layout";
 export const UI_LAYOUT_EVENT = "deeptutor:ui-layout";
 export const UI_LAYOUT_ATTRIBUTE = "data-ui-layout";

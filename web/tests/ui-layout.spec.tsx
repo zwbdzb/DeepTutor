@@ -24,17 +24,17 @@ function Labels() {
   )
 }
 
-it('renders the modern UI by default and switches slots and tokens together', () => {
+it('renders the classic UI by default and switches slots and tokens together', () => {
   render(<><LayoutSidebarShell /><Labels /></>)
-  expect(screen.getByText('modern sidebar')).toBeInTheDocument()
-  expect(screen.getByText('navigation.resources / Auto / Deep Solve')).toBeInTheDocument()
-
-  act(() => writeStoredUiLayout('classic'))
-
   expect(screen.getByText('classic sidebar')).toBeInTheDocument()
-  expect(screen.queryByText('modern sidebar')).not.toBeInTheDocument()
   expect(screen.getByText('Learning Space / Chat / Deep Solve')).toBeInTheDocument()
-  expect(document.documentElement).toHaveAttribute('data-ui-layout', 'classic')
+
+  act(() => writeStoredUiLayout('modern'))
+
+  expect(screen.getByText('modern sidebar')).toBeInTheDocument()
+  expect(screen.queryByText('classic sidebar')).not.toBeInTheDocument()
+  expect(screen.getByText('navigation.resources / Auto / Deep Solve')).toBeInTheDocument()
+  expect(document.documentElement).toHaveAttribute('data-ui-layout', 'modern')
 })
 
 it('applies a drafted layout with no endpoint and rejects unknown values', async () => {
