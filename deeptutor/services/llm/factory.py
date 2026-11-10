@@ -743,6 +743,11 @@ async def fetch_model_entries(
         names = await fetch_codebuddy_models(api_key)
         return [{"id": name, "name": name} for name in names]
 
+    if canonical_binding == "claude_code":
+        from .provider_core.claude_code_provider import fetch_claude_code_catalog
+
+        return await fetch_claude_code_catalog()
+
     if is_local_llm_server(base_url):
         from . import local_provider
 

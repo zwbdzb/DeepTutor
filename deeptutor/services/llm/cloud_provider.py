@@ -18,6 +18,7 @@ import aiohttp
 from deeptutor.services.config import load_system_settings
 from deeptutor.services.provider_registry import effective_backend, find_by_name
 
+from .minimax_models import prioritize_model_names
 from .utils import build_auth_headers, collect_model_entries
 
 logger = logging.getLogger(__name__)
@@ -60,6 +61,32 @@ def _auth_binding(binding: str, api_format: str) -> str:
     if effective_backend(find_by_name(binding), api_format) == "anthropic":
         return "anthropic"
     return binding
+
+
+def _prioritize_entries(entries: list[dict[str, Any]], binding: str) -> list[dict[str, Any]]:
+    """Stable-reorder discovered entries by the provider's preferred defaults.
+
+    Reuses :func:`prioritize_model_names` so the ranking rules live in exactly
+    one place, then rebinds the reordered ids back to their original entry
+    dicts: the ``model_type`` metadata this build relies on (and any duplicate
+    ids an endpoint returns) therefore survive the reorder untouched.
+    """
+    if len(entries) < 2:
+        return entries
+    ordered_ids = prioritize_model_names(
+        [str(entry.get("id", "")) for entry in entries], binding
+    )
+    if ordered_ids == [str(entry.get("id", "")) for entry in entries]:
+        return entries
+    queues: dict[str, list[dict[str, Any]]] = {}
+    for entry in entries:
+        queues.setdefault(str(entry.get("id", "")), []).append(entry)
+    prioritized: list[dict[str, Any]] = []
+    for model_id in ordered_ids:
+        queue = queues.get(model_id)
+        if queue:
+            prioritized.append(queue.pop(0))
+    return prioritized
 
 
 async def fetch_model_entries(
@@ -107,9 +134,13 @@ async def fetch_model_entries(
                         mapping = cast(Mapping[str, object], payload)
                         items = mapping.get("data")
                         if isinstance(items, list):
-                            return collect_model_entries(cast(list[object], items))
+                            return _prioritize_entries(
+                                collect_model_entries(cast(list[object], items)), binding
+                            )
                     elif isinstance(payload, list):
-                        return collect_model_entries(cast(list[object], payload))
+                        return _prioritize_entries(
+                            collect_model_entries(cast(list[object], payload)), binding
+                        )
             return []
         except Exception as e:
             logger.error("Error fetching models from %s: %s", base_url, e)

@@ -9,12 +9,14 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 import hashlib
+import inspect
 import re
 import secrets
 import string
 import sys
 import time
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 import json_repair
 from loguru import logger
@@ -36,7 +38,9 @@ from deeptutor.services.llm.provider_core.openai_responses import (
     convert_messages,
     convert_tool_choice,
     convert_tools,
+    mark_stable_history_breakpoint,
     parse_response_output,
+    supports_explicit_prompt_cache,
 )
 from deeptutor.services.llm.reasoning_params import (
     build_openai_compatible_reasoning_kwargs,
@@ -88,6 +92,32 @@ def _get(obj: Any, key: str) -> Any:
     return getattr(obj, key, None)
 
 
+def _tool_call_slot(buffers: dict[int, dict[str, Any]], tc_delta: Any) -> int:
+    """Buffer slot for a streamed tool-call delta.
+
+    Providers that send no ``index`` (Gemini's and Mistral's compatible
+    endpoints) are told apart by ``id``: a new one starts the next call, a
+    delta without one continues the last.
+    """
+    index = _get(tc_delta, "index")
+    tc_id = _get(tc_delta, "id")
+    if index is not None:
+        slot = int(index)
+    elif tc_id and any(buf["id"] == str(tc_id) for buf in buffers.values()):
+        slot = next(key for key, buf in buffers.items() if buf["id"] == str(tc_id))
+    elif not buffers:
+        slot = 0
+    else:
+        last = next(reversed(buffers))
+        slot = max(buffers) + 1 if tc_id and buffers[last]["id"] else last
+    # Recency is independent of the wire index: an id-less fragment continues
+    # the last addressed call, including a resumed earlier call. Final responses
+    # use sorted slots so this bookkeeping does not reorder calls.
+    if slot in buffers:
+        buffers[slot] = buffers.pop(slot)
+    return slot
+
+
 def _accumulate_streamed_tool_call(
     buffers: dict[int, dict[str, str]],
     tc_delta: Any,
@@ -100,7 +130,7 @@ def _accumulate_streamed_tool_call(
     stream index so a provider that streams arguments before an id still
     yields something a consumer can correlate previews by.
     """
-    index = int(_get(tc_delta, "index") or 0)
+    index = _tool_call_slot(buffers, tc_delta)
     buffer = buffers.setdefault(index, {"id": "", "name": "", "arguments": ""})
     tc_id = _get(tc_delta, "id")
     if tc_id:
@@ -113,9 +143,7 @@ def _accumulate_streamed_tool_call(
         fn_args = _get(fn, "arguments")
         if fn_args:
             buffer["arguments"] += str(fn_args)
-    if not buffer["id"]:
-        buffer["id"] = f"call_{index}"
-    return buffer
+    return {**buffer, "id": buffer["id"] or f"call_{index}"}
 
 
 def _coerce_dict(value: Any) -> dict[str, Any] | None:
@@ -205,7 +233,7 @@ class OpenAICompatProvider(LLMProvider):
             and placeholder_key
         ):
             raise LLMConfigError(
-                "OpenAI API key is not configured. Set it in Settings > Catalog, "
+                "OpenAI API key is not configured. Set it in Settings > Providers, "
                 "or select a local provider such as Ollama."
             )
         self._client = AsyncOpenAI(
@@ -217,9 +245,18 @@ class OpenAICompatProvider(LLMProvider):
                 sdk_max_retries=0,
             )
         )
+        try:
+            self._prompt_cache_options_supported = (
+                "prompt_cache_options"
+                in inspect.signature(self._client.responses.create).parameters
+            )
+        except (AttributeError, TypeError, ValueError):
+            # Test stubs and older SDK facades may expose no Responses client.
+            self._prompt_cache_options_supported = False
         self._responses_failures: dict[str, int] = {}
         self._responses_tripped_at: dict[str, float] = {}
         self._responses_without_message_status_models: set[str] = set()
+        self._responses_without_prompt_cache_models: set[str] = set()
 
     @staticmethod
     def _status_code(exc: Exception) -> int | None:
@@ -269,30 +306,38 @@ class OpenAICompatProvider(LLMProvider):
     # Prompt caching
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _mark_cache_control(msg: dict[str, Any]) -> dict[str, Any]:
+        """Attach an ephemeral cache breakpoint to a message's last block."""
+        cache_marker = {"type": "ephemeral"}
+        content = msg.get("content")
+        if isinstance(content, str):
+            return {
+                **msg,
+                "content": [
+                    {"type": "text", "text": content, "cache_control": cache_marker},
+                ],
+            }
+        if isinstance(content, list) and content:
+            new_content = list(content)
+            new_content[-1] = {**new_content[-1], "cache_control": cache_marker}
+            return {**msg, "content": new_content}
+        return msg
+
     @classmethod
     def _apply_cache_control(
         cls,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None,
+        *,
+        stable_history_end: bool = False,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]] | None]:
         cache_marker = {"type": "ephemeral"}
         new_messages = list(messages)
         budget = 4
 
         def _mark(msg: dict[str, Any]) -> dict[str, Any]:
-            content = msg.get("content")
-            if isinstance(content, str):
-                return {
-                    **msg,
-                    "content": [
-                        {"type": "text", "text": content, "cache_control": cache_marker},
-                    ],
-                }
-            if isinstance(content, list) and content:
-                nc = list(content)
-                nc[-1] = {**nc[-1], "cache_control": cache_marker}
-                return {**msg, "content": nc}
-            return msg
+            return cls._mark_cache_control(msg)
 
         if new_messages and new_messages[0].get("role") == "system":
             new_messages[0] = _mark(new_messages[0])
@@ -301,12 +346,57 @@ class OpenAICompatProvider(LLMProvider):
             new_messages[-1] = _mark(new_messages[-1])
             budget -= 1
 
+        if stable_history_end and budget > 0:
+            # The loop appends a transient per-turn context message just before
+            # the learner's message and never persists it, so a breakpoint on
+            # the last message alone leaves the next turn's prefix diverging at
+            # that transient block. Mark the end of the durable history — the
+            # last non-empty message before the trailing user turn — so the
+            # previous turn's prefix still matches and can be reused.
+            index = cls._stable_history_end_index(new_messages)
+            if index is not None:
+                new_messages[index] = _mark(new_messages[index])
+                budget -= 1
+
         new_tools = tools
         if tools:
             new_tools = list(tools)
             for idx in cls._tool_cache_marker_indices(new_tools)[:budget]:
                 new_tools[idx] = {**new_tools[idx], "cache_control": cache_marker}
         return new_messages, new_tools
+
+    @staticmethod
+    def _stable_history_end_index(messages: list[dict[str, Any]]) -> int | None:
+        """Index of the last persisted message before the trailing user turn.
+
+        Walks back over the final user block (the transient context message and
+        the learner's message share the ``user`` role) and skips empty text
+        blocks, which cannot carry ``cache_control``. Returns ``None`` when the
+        marker would fall outside the request.
+        """
+        start = len(messages) - 1
+        while start > 0 and messages[start].get("role") != "user":
+            start -= 1
+        while start > 1 and messages[start - 1].get("role") == "user":
+            start -= 1
+        index = start - 1
+        while index > 0 and not messages[index].get("content"):
+            index -= 1
+        if 0 < index < len(messages) - 1:
+            return index
+        return None
+
+    @classmethod
+    def supports_prompt_caching_for(cls, model: str | None) -> bool:
+        """Whether *model* uses explicit ``cache_control`` breakpoints.
+
+        Anthropic models reached through an OpenAI-compatible gateway cache
+        only when the request carries breakpoints, and only those families
+        understand the marker. Kept here so the agent loop and the provider
+        agree on the same gate.
+        """
+        name = str(model or "").lower()
+        return name.startswith(("anthropic/", "claude"))
 
     # ------------------------------------------------------------------
     # Message sanitization
@@ -403,6 +493,9 @@ class OpenAICompatProvider(LLMProvider):
         if reasoning_effort and reasoning_effort.lower() != "none":
             return False
         name = model_name.lower()
+        family = name.removeprefix("openai/")
+        if family == "gpt-6" or family.startswith(("gpt-6-", "gpt-6.")):
+            return False
         return not any(token in name for token in ("gpt-5", "o1", "o3", "o4"))
 
     def _build_kwargs(
@@ -579,17 +672,13 @@ class OpenAICompatProvider(LLMProvider):
             if item_index >= len(input_items):
                 return None
             rejected_item = input_items[item_index]
-            if (
-                not isinstance(rejected_item, dict)
-                or rejected_item.get("type") != "message"
-                or "status" not in rejected_item
-            ):
+            if not isinstance(rejected_item, dict) or "status" not in rejected_item:
                 return None
 
         sanitized_items: list[Any] = []
         has_status = False
         for item in input_items:
-            if isinstance(item, dict) and item.get("type") == "message" and "status" in item:
+            if isinstance(item, dict) and "status" in item:
                 sanitized_items.append(
                     {key: value for key, value in item.items() if key != "status"}
                 )
@@ -597,6 +686,51 @@ class OpenAICompatProvider(LLMProvider):
             else:
                 sanitized_items.append(item)
         return {**body, "input": sanitized_items} if has_status else None
+
+    @staticmethod
+    def _responses_body_without_prompt_cache(body: dict[str, Any]) -> dict[str, Any]:
+        """Strip explicit-cache fields for a provider that rejected them."""
+
+        sanitized = {key: value for key, value in body.items() if key != "prompt_cache_options"}
+        input_items = body.get("input")
+        if not isinstance(input_items, list):
+            return sanitized
+        cleaned_items: list[Any] = []
+        for item in input_items:
+            if not isinstance(item, dict):
+                cleaned_items.append(item)
+                continue
+            content = item.get("content")
+            if not isinstance(content, list):
+                cleaned_items.append(item)
+                continue
+            cleaned_content = []
+            for block in content:
+                if isinstance(block, dict) and "prompt_cache_breakpoint" in block:
+                    cleaned_content.append(
+                        {
+                            key: value
+                            for key, value in block.items()
+                            if key != "prompt_cache_breakpoint"
+                        }
+                    )
+                else:
+                    cleaned_content.append(block)
+            cleaned_items.append({**item, "content": cleaned_content})
+        return {**sanitized, "input": cleaned_items}
+
+    @classmethod
+    def _is_prompt_cache_rejection(cls, exc: Exception) -> bool:
+        status_code = cls._status_code(exc)
+        if status_code not in {400, 422}:
+            return False
+        response = getattr(exc, "response", None)
+        body = (
+            getattr(exc, "body", None)
+            or getattr(exc, "doc", None)
+            or (getattr(response, "text", None) if response is not None else None)
+        )
+        return "prompt_cache" in str(body).lower()
 
     async def _create_responses_with_status_retry(
         self,
@@ -609,6 +743,8 @@ class OpenAICompatProvider(LLMProvider):
         try:
             return await self._create_with_key_rotation(self._client.responses.create, request_body)
         except Exception as exc:
+            if self._is_prompt_cache_rejection(exc):
+                return await self._retry_without_prompt_cache(model_name, request_body)
             item_index = self._rejected_input_item_status_index(exc)
             if item_index is None:
                 raise
@@ -616,7 +752,21 @@ class OpenAICompatProvider(LLMProvider):
             if retry_body is None:
                 raise
             self._responses_without_message_status_models.add(model_name)
-            return await self._create_with_key_rotation(self._client.responses.create, retry_body)
+            try:
+                return await self._create_with_key_rotation(
+                    self._client.responses.create, retry_body
+                )
+            except Exception as retry_exc:
+                if not self._is_prompt_cache_rejection(retry_exc):
+                    raise
+                return await self._retry_without_prompt_cache(model_name, retry_body)
+
+    async def _retry_without_prompt_cache(self, model_name: str, body: dict[str, Any]) -> Any:
+        """Retry once without explicit cache fields and remember the refusal."""
+
+        self._responses_without_prompt_cache_models.add(model_name)
+        fallback = self._responses_body_without_prompt_cache(body)
+        return await self._create_with_key_rotation(self._client.responses.create, fallback)
 
     @staticmethod
     def _should_fallback_from_responses_error(exc: Exception) -> bool:
@@ -714,6 +864,28 @@ class OpenAICompatProvider(LLMProvider):
         disable_forced_tool_choice_at_runtime(self._binding_name(), target)
         return True
 
+    def _supports_explicit_prompt_cache(self, model_name: str) -> bool:
+        """Gate explicit breakpoints to native OpenAI GPT-5.6+.
+
+        Other OpenAI-compatible endpoints often reject unknown fields, so the
+        marker stays off unless the binding is the official endpoint (or a
+        custom binding pointed at it).
+        """
+        if not supports_explicit_prompt_cache(model_name):
+            return False
+        if not getattr(self, "_prompt_cache_options_supported", False):
+            return False
+        if str(model_name or "").strip().lower() in self._responses_without_prompt_cache_models:
+            return False
+        spec_name = str(getattr(self._spec, "name", "") or "").lower()
+        if spec_name == "openai":
+            return True
+        try:
+            host = (urlsplit(self._effective_base or "").hostname or "").lower()
+        except ValueError:
+            return False
+        return host == "api.openai.com"
+
     def _build_responses_body(
         self,
         messages: list[dict[str, Any]],
@@ -739,6 +911,13 @@ class OpenAICompatProvider(LLMProvider):
             "store": False,
             "stream": False,
         }
+        if self._supports_explicit_prompt_cache(model_name):
+            if mark_stable_history_breakpoint(input_items):
+                # Explicit-only mode: the breakpoint above is the reusable
+                # prefix. Last-turn assistant text and tool output stay
+                # uncached but small; the next turn matches everything before
+                # the trailing runtime snapshot (#2297).
+                body["prompt_cache_options"] = {"mode": "explicit", "ttl": "30m"}
 
         if self._supports_temperature(model_name, reasoning_effort):
             body["temperature"] = temperature
@@ -875,28 +1054,6 @@ class OpenAICompatProvider(LLMProvider):
         finish_reason = "stop"
         usage: dict[str, int] = {}
 
-        def _accum_tc(tc: Any, idx_hint: int) -> None:
-            tc_index: int = _get(tc, "index") if _get(tc, "index") is not None else idx_hint
-            buf = tc_bufs.setdefault(
-                tc_index,
-                {
-                    "id": "",
-                    "name": "",
-                    "arguments": "",
-                },
-            )
-            tc_id = _get(tc, "id")
-            if tc_id:
-                buf["id"] = str(tc_id)
-            fn = _get(tc, "function")
-            if fn is not None:
-                fn_name = _get(fn, "name")
-                if fn_name:
-                    buf["name"] = str(fn_name)
-                fn_args = _get(fn, "arguments")
-                if fn_args:
-                    buf["arguments"] += str(fn_args)
-
         for chunk in chunks:
             if isinstance(chunk, str):
                 content_parts.append(chunk)
@@ -929,7 +1086,7 @@ class OpenAICompatProvider(LLMProvider):
                 if reasoning:
                     reasoning_parts.append(reasoning)
             for tc in (delta.tool_calls or []) if delta else []:
-                _accum_tc(tc, getattr(tc, "index", 0))
+                _accumulate_streamed_tool_call(tc_bufs, tc)
 
         content = "".join(content_parts) or None
         reasoning_content = "".join(reasoning_parts) or None
@@ -942,7 +1099,7 @@ class OpenAICompatProvider(LLMProvider):
                     name=b["name"],
                     arguments=json_repair.loads(b["arguments"]) if b["arguments"] else {},
                 )
-                for b in tc_bufs.values()
+                for _, b in sorted(tc_bufs.items())
             ],
             finish_reason=finish_reason,
             usage=usage,
@@ -976,13 +1133,11 @@ class OpenAICompatProvider(LLMProvider):
         well-formed response.
         """
         text = str(getattr(e, "body", None) or getattr(e, "message", None) or e).lower()
-        return any(
-            kw in text
-            for kw in (
-                "function.arguments",
-                "must be in json format",
-                "invalid.*parameter.*function",
-            )
+        return (
+            any(kw in text for kw in ("function.arguments", "must be in json format"))
+            # Regex marker — must be searched, not membership-tested, or the
+            # ``.*`` is taken literally and the marker never matches.
+            or re.search(r"invalid.*parameter.*function", text) is not None
         )
 
     async def chat(

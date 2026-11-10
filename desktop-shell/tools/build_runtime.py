@@ -18,6 +18,16 @@ deeptutor 安装来源是【本地源码】（默认 monorepo 上级目录，可
 覆盖），不再从 PyPI 装 —— PyPI 版本滞后且不含自研修复。安装后跑版本门禁：
 staging 里的 deeptutor.__version__ 必须等于本地源 __version__.py，否则构建失败。
 
+v1.7.2 起上游把 deeptutor 拆成「核心 + 每模块一个 distribution」。离线 runtime 因此
+不再做单一 `pip install <源>`（那样只会得到 core，没有 deeptutor-server /
+deeptutor-web 等模块元数据，用户装完 `deeptutor start` 第一行
+require_module("server") 就判死），改为：
+
+    build_runtime -> 随包模块集合(pyproject[full] + PIP_EXTRAS -> 模块清单)
+                  -> 本地 wheelhouse（上游 scripts/build_modules.py 切代码）
+                  -> pip install --target <全量随包 wheel>
+                  -> module_gate（每个随包模块必须 installed/enabled/版本一致）
+
 Usage:
     python tools/build_runtime.py            # download + build
     python tools/build_runtime.py --clean    # fresh build
@@ -29,6 +39,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import shutil
 import stat
 import subprocess
@@ -43,6 +54,9 @@ ROOT = Path(__file__).resolve().parents[1]
 MONOREPO_SOURCE = ROOT.parent
 STAGE = ROOT / "runtime-build"
 CACHE = STAGE / "cache"
+# 本地 wheelhouse：随包模块 wheel 的构建产物，install_deeptutor 用 --find-links
+# 指向它。只做安装中间产物，装完即删（见 build() 里的 _drop_wheelhouse）。
+WHEELHOUSE = STAGE / "wheelhouse"
 STAGING_PY = STAGE / "staging" / "python"
 STAGING_NODE = STAGE / "staging" / "node"
 DIST = ROOT / "dist"
@@ -59,6 +73,25 @@ DEFAULT_PIP_INDEX_URL = "https://pypi.tuna.tsinghua.edu.cn/simple"
 # 增删 extras 会改变 dependencies_signature() → 自动触发下次构建全量重装。
 PIP_EXTRAS: tuple[str, ...] = ("math-animator",)
 
+# 随包模块集合的两块来源（见 _shipped_selection）：
+#   * pyproject [tool.deeptutor.optional-dependencies]["full"] —— 官方安装档，
+#     当前 19 个 deeptutor-* distribution；
+#   * PIP_EXTRAS —— 额外的 feature 档（math-animator → deeptutor-renderer-manim）。
+# 两者里的 deeptutor-* distribution 按 manifest 映射成模块 id，再补齐
+# manifest.requires 闭包；`core` 永远随包。模块数不硬编码，一律以 pyproject +
+# 清单文件为准（新增模块只要能进 full 就自动随包，不必改本文件）。
+FULL_PROFILE = "full"
+
+# deeptutor_web 是 Next.js standalone 产物（数千个文件），自写 data wheel 打包。
+WEB_MODULE = "web"
+
+# 每个随包模块之外的启动面依赖：`deeptutor start` 真正 import 的服务端栈。
+# module_gate 用 find_spec 轻量探测（不 import，避免无显示/无网络环境的变数）。
+DESKTOP_SMOKE_PACKAGES: tuple[str, ...] = ("fastapi", "uvicorn", "starlette")
+
+# wheel 内 zip 条目的固定时间戳：同一份源码打出的 wheel 字节可复现。
+_ZIP_DATE = (2020, 1, 1, 0, 0, 0)
+
 # 每个 extra 装进 runtime 后必须可 find_spec 的模块（smoke_test 门禁用）。
 # 键必须与 PIP_EXTRAS 一一对应：新增 extra 而不配门禁模块会在构建期直接报错，
 # 而不是静默漏装（scipy/av 是 manim>=0.19 的传递依赖，已核实 PyPI 元数据）。
@@ -69,7 +102,6 @@ EXTRA_SMOKE_MODULES: dict[str, tuple[str, ...]] = {
 
 def _read_source_version(source_root: Path) -> str:
     """读本地源 deeptutor/__version__.py 的 __version__（版本门禁的基准值）。"""
-    import re
     vf = source_root / "deeptutor" / "__version__.py"
     if not vf.exists():
         raise SystemExit(f"deeptutor source not found at {source_root} "
@@ -93,6 +125,281 @@ def _distinfo_metadata_version(dist: Path) -> str | None:
     except OSError:
         return None
     return None
+
+
+MANIFEST_DIR = "deeptutor/modules/manifests"
+# 需求行的包名 = 开头的 distribution 名（去掉 extras / 版本 / 环境标记）。
+_REQUIREMENT_NAME = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
+
+
+def _load_manifests(source_root: Path) -> dict[str, dict]:
+    """Read every module manifest in the source tree, keyed by module id.
+
+    Manifests are the single source of truth for what a module owns
+    (``paths``), which distributions it depends on (``requires``) and which
+    third-party packages it needs (``requirements``) — nothing here is
+    hard-coded, so a module added upstream ships without touching this file.
+    """
+    directory = source_root / MANIFEST_DIR
+    if not directory.is_dir():
+        raise SystemExit(
+            f"module manifests not found at {directory}; --deeptutor-source must "
+            f"point at a 1.7.2+ source tree that ships the modular runtime"
+        )
+    result: dict[str, dict] = {}
+    for path in sorted(directory.glob("*.json")):
+        row = json.loads(path.read_text(encoding="utf-8"))
+        result[row["id"]] = row
+    if "core" not in result:
+        raise SystemExit(f"module manifests in {directory} declare no core module")
+    return result
+
+
+def _optional_dependencies(source_root: Path, version: str) -> dict[str, list[str]]:
+    """Resolve ``[tool.deeptutor.optional-dependencies]`` with ``{version}`` filled.
+
+    The table is dynamic in pyproject (``dynamic = ["version",
+    "optional-dependencies"]``), i.e. rows carry a ``{version}`` placeholder
+    that the upstream build substitutes. Note it lives under
+    ``[tool.deeptutor]``, not ``[project]`` — reading the wrong table is how an
+    extras-driven dependency change would silently keep the fast path.
+    """
+    try:
+        import tomllib
+    except ImportError as exc:  # pragma: no cover - build python is 3.11+
+        raise SystemExit("build_runtime.py needs tomllib (Python 3.11+)") from exc
+    pyproject = source_root / "pyproject.toml"
+    try:
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise SystemExit(f"cannot read {pyproject}: {exc}") from exc
+    except ValueError as exc:
+        raise SystemExit(f"cannot parse {pyproject}: {exc}") from exc
+    table = ((data.get("tool") or {}).get("deeptutor") or {}).get(
+        "optional-dependencies"
+    ) or {}
+    return {
+        str(name): [str(raw).format(version=version) for raw in rows or []]
+        for name, rows in table.items()
+    }
+
+
+def _requirement_name(raw: str) -> str:
+    """Bare distribution name of a requirement line (no extras, version or marker)."""
+    match = _REQUIREMENT_NAME.match(raw)
+    return match.group(1) if match else ""
+
+
+def _shipped_selection(source_root: Path) -> tuple[list[str], list[str]]:
+    """Return ``(module ids in dependency order, extra pip requirements)``.
+
+    The shipped surface is pyproject's ``full`` profile plus ``PIP_EXTRAS``,
+    mapped to module ids through each manifest's ``distribution``. Every
+    ``requires`` edge is closed over so no shipped module can reference a
+    module that is not shipped (``deeptutor start`` gates on
+    ``require_module("server")`` and ``("web")``, whose closures must be whole).
+    """
+    version = _read_source_version(source_root)
+    manifests = _load_manifests(source_root)
+    extras = _optional_dependencies(source_root, version)
+    by_distribution = {row["distribution"]: name for name, row in manifests.items()}
+    missing_extras = [extra for extra in PIP_EXTRAS if extra not in extras]
+    if missing_extras:
+        raise SystemExit(
+            f"PIP_EXTRAS declares {missing_extras} but pyproject defines no such "
+            f"extra; fix PIP_EXTRAS or the pyproject table."
+        )
+    requested = list(extras.get(FULL_PROFILE, []))
+    for extra in PIP_EXTRAS:
+        requested.extend(extras[extra])
+    if not requested:
+        raise SystemExit(
+            f"pyproject defines no deeptutor[{FULL_PROFILE}] profile and PIP_EXTRAS "
+            f"is empty: refusing to build a runtime with no feature modules."
+        )
+    modules: list[str] = []
+    requirements: list[str] = []
+    for raw in requested:
+        name = _requirement_name(raw)
+        module = by_distribution.get(name)
+        if module is None:
+            if name.startswith("deeptutor"):
+                raise SystemExit(
+                    f"pyproject ships {name!r} but no module manifest declares that "
+                    f"distribution; the runtime cannot own it."
+                )
+            requirements.append(raw)  # a plain pip dependency, not a module
+        elif module not in modules:
+            modules.append(module)
+
+    ordered: list[str] = []
+
+    def visit(name: str) -> None:
+        if name in ordered:
+            return
+        for dependency in manifests[name]["requires"]:
+            visit(dependency)
+        ordered.append(name)
+
+    for name in modules:
+        visit(name)
+    # core 永远随包（它是 `deeptutor` 本身）。full 档通常不写它，个别 extra 会
+    # 写成 `deeptutor[xxx]`，所以先摘掉再统一置顶，避免重复。
+    if "core" in ordered:
+        ordered.remove("core")
+    return ["core", *ordered], list(dict.fromkeys(requirements))
+
+
+def shipped_modules(source_root: Path) -> list[str]:
+    """Module ids that ship in the desktop runtime, in dependency order."""
+    return _shipped_selection(source_root)[0]
+
+
+def _wheel_path(manifest: dict, version: str) -> Path:
+    """Where a module's ``py3-none-any`` wheel lands inside the wheelhouse."""
+    return WHEELHOUSE / f"{manifest['distribution'].replace('-', '_')}-{version}-py3-none-any.whl"
+
+
+def _build_data_wheel(source_root: Path, manifests: dict[str, dict],
+                      name: str, version: str) -> Path:
+    """Write the web module wheel by hand: pure data, stored, no setuptools.
+
+    ``deeptutor_web`` is the Next.js standalone payload — thousands of small
+    files, ~90 MB. setuptools has to walk them as package-data through a temp
+    staging tree (measured at 59 minutes); a wheel is just a ZIP with a
+    dist-info, so writing it directly with ``ZIP_STORED`` takes ~10 s on a build
+    machine (≈3500 files, 88 MB stored) and installs identically through pip.
+    """
+    manifest = manifests[name]
+    root = source_root / "deeptutor_web"
+    if not (root / "server.js").is_file():
+        raise SystemExit(
+            f"frontend not built: {root} lacks server.js.\n"
+            f"run:  cd web && npm ci && npm run build && "
+            f"python scripts/prepare_web_package.py"
+        )
+    files = sorted(
+        (
+            path
+            for path in root.rglob("*")
+            if path.is_file()
+            and "__pycache__" not in path.parts
+            and path.suffix.lower() not in {".pyc", ".pyo"}
+        ),
+        key=lambda item: item.as_posix(),
+    )
+    if not files:
+        raise SystemExit(f"frontend payload {root} is empty")
+
+    # Requires-Dist 顺序与 scripts/build_modules.py 保持一致：本模块三方需求，
+    # 然后是核心，然后是 requires 里每个模块的 distribution（同版本锁定）。
+    dependencies = list(manifest["requirements"])
+    dependencies.append(f"deeptutor=={version}")
+    dependencies.extend(
+        f"{manifests[dependency]['distribution']}=={version}"
+        for dependency in manifest["requires"]
+    )
+    dist_info = f"{manifest['distribution'].replace('-', '_')}-{version}.dist-info"
+    metadata = "\n".join([
+        "Metadata-Version: 2.1",
+        f"Name: {manifest['distribution']}",
+        f"Version: {version}",
+        f"Summary: DeepTutor {name} module",
+        "Requires-Python: >=3.11,<3.15",
+        *(f"Requires-Dist: {raw}" for raw in dependencies),
+    ]) + "\n"
+    wheel_metadata = "\n".join([
+        "Wheel-Version: 1.0",
+        "Generator: deeptutor-desktop build_runtime",
+        "Root-Is-Purelib: true",
+        "Tag: py3-none-any",
+    ]) + "\n"
+
+    wheel = _wheel_path(manifest, version)
+    wheel.unlink(missing_ok=True)
+    written: list[str] = []
+    with zipfile.ZipFile(wheel, "w", zipfile.ZIP_STORED) as archive:
+        for path in files:
+            arcname = path.relative_to(source_root).as_posix()
+            archive.writestr(zipfile.ZipInfo(arcname, date_time=_ZIP_DATE),
+                             path.read_bytes())
+            written.append(arcname)
+        for arcname, text in (
+            (f"{dist_info}/METADATA", metadata),
+            (f"{dist_info}/WHEEL", wheel_metadata),
+            (f"{dist_info}/top_level.txt", "deeptutor_web\n"),
+        ):
+            archive.writestr(zipfile.ZipInfo(arcname, date_time=_ZIP_DATE),
+                             text.encode("utf-8"))
+            written.append(arcname)
+        # RECORD 必须列全（含自己）；hash/size 留空是 wheel 规范允许的形式，
+        # pip 安装时会按实际文件重建 site-packages 里的 RECORD。
+        record = "".join(f"{arcname},,\n" for arcname in written)
+        record += f"{dist_info}/RECORD,,\n"
+        archive.writestr(zipfile.ZipInfo(f"{dist_info}/RECORD", date_time=_ZIP_DATE),
+                         record.encode("utf-8"))
+    log(f"built data wheel {wheel.name} ({len(files)} files, "
+        f"{wheel.stat().st_size / 1e6:.1f} MB)")
+    return wheel
+
+
+def build_wheelhouse(source_root: Path, modules: list[str]) -> dict[str, Path]:
+    """Build one wheel per shipped module into ``WHEELHOUSE`` → ``{module: wheel}``.
+
+    Code splitting is upstream's job: ``scripts/build_modules.py`` derives file
+    ownership from the manifests, builds disjoint wheels and fails on overlap
+    (one installed file must have exactly one owner). Only ``web`` is built
+    here, as a data wheel — see ``_build_data_wheel``.
+    """
+    version = _read_source_version(source_root)
+    manifests = _load_manifests(source_root)
+    builder = source_root / "scripts" / "build_modules.py"
+    if not builder.is_file():
+        raise SystemExit(f"module wheel builder missing: {builder}")
+    if BUILD_PY is None or not BUILD_PY.exists():
+        raise SystemExit("no cp312 build interpreter found (set BUILD_PY=...py)")
+
+    # 每次重建：wheelhouse 里绝不允许出现「上一版源码」的 wheel —— CI 缓存
+    # 恢复出旧 wheelhouse 时，陈旧的模块代码会被静默装进新运行时。
+    if WHEELHOUSE.exists():
+        shutil.rmtree(WHEELHOUSE)
+    WHEELHOUSE.mkdir(parents=True, exist_ok=True)
+
+    native = [name for name in modules if name != WEB_MODULE]
+    command = [str(BUILD_PY), str(builder), "--output", str(WHEELHOUSE)]
+    for name in native:
+        command += ["--module", name]
+    log(f"building {len(native)} module wheels into {WHEELHOUSE} ...")
+    result = subprocess.run(command, capture_output=True, text=True, timeout=3600)
+    if result.returncode != 0:
+        log(result.stdout[-3000:])
+        log(result.stderr[-3000:])
+        raise SystemExit(f"module wheel build failed (rc={result.returncode})")
+    wheels: dict[str, Path] = {}
+    for name in modules:
+        if name == WEB_MODULE:
+            wheels[name] = _build_data_wheel(source_root, manifests, name, version)
+            continue
+        wheel = _wheel_path(manifests[name], version)
+        if not wheel.is_file():
+            raise SystemExit(f"expected module wheel missing after build: {wheel.name}")
+        wheels[name] = wheel
+    total = sum(path.stat().st_size for path in wheels.values()) / 1e6
+    log(f"wheelhouse ready: {len(wheels)} wheels, {total:.1f} MB")
+    return wheels
+
+
+def _drop_wheelhouse() -> None:
+    """Delete the install-only wheelhouse (the web wheel alone is ~90 MB).
+
+    It lives under ``runtime-build/``, which CI caches wholesale, so keeping it
+    would bloat the cache for no gain: every reinstall rebuilds it from source
+    anyway. Called only after a build that actually installed.
+    """
+    if not WHEELHOUSE.exists():
+        return
+    shutil.rmtree(WHEELHOUSE, ignore_errors=True)
+    log("wheelhouse removed (install artefact only)")
 
 
 # Relocatable runtime components (edit to bump versions).
@@ -302,18 +609,20 @@ def _staging_py_exe(target: Path) -> Path:
 
 def install_deeptutor(target: Path, source_root: Path, *,
                       with_deps: bool = True,
-                      extras: tuple[str, ...] = PIP_EXTRAS) -> None:
-    """pip install --target 把【本地源】的 deeptutor 装进 embeddable 的 site-packages。
+                      modules: list[str] | None = None,
+                      requirements: list[str] | None = None) -> None:
+    """pip install --target 把【本地源构建的随包 wheel】装进 embeddable 的 site-packages。
 
-    注意：刻意安装本地源路径而非 PyPI 包名——PyPI 版本滞后且不含自研修复。
-    本地源需先构建前端（web/.next/standalone），否则 wheel 里没有 deeptutor_web 数据。
+    1.7.2 起 deeptutor 被拆成「核心 + 每模块一个 distribution」。只装核心会得到
+    一个没有 deeptutor-server / deeptutor-web 元数据的运行时：`deeptutor start`
+    第一行 require_module("server") 就直接判死。所以这里装的是
+    build_wheelhouse() 产出的【全量随包 wheel】，`--find-links` 指向本地
+    wheelhouse，第三方依赖仍由各 wheel 的 Requires-Dist 从索引解析。
 
-    with_deps=False（快速路径）：依赖声明未变时只装我们自己的包，跳过 ~500MB
-    第三方依赖树的重新解析/下载/复制。
-    extras：随本地源一起安装的 pyproject extras（默认 PIP_EXTRAS，即
-    math-animator → manim），pip 目标写成 `<source_root>[extra1,extra2]`；
-    传 () 则退化为纯本地源安装。--no-deps 快速路径下 extras 照传（--no-deps
-    不会装 extras 的依赖树，但两条路径命令保持一致，避免行为漂移）。
+    with_deps=False（快速路径）：依赖签名未变时三方树原样复用，只重装我们自己
+    （核心 + 全部模块）的 wheel —— 但仍是【全部】，不能只装核心，否则模块元数据
+    会消失。快速路径下 plain requirements（PIP_EXTRAS 里的非模块依赖）不参与：
+    --no-deps 的语义就是不碰依赖树，它们在全量安装时已就位。
     """
     if BUILD_PY is None or not BUILD_PY.exists():
         raise SystemExit("no cp312 build interpreter found (set BUILD_PY=...py)")
@@ -325,12 +634,15 @@ def install_deeptutor(target: Path, source_root: Path, *,
             f"run:  cd web && npm ci && npm run build && "
             f"python scripts/prepare_web_package.py"
         )
+    if modules is None:
+        modules, requirements = _shipped_selection(source_root)
+    requirements = list(requirements or [])
     dest = _py_site_packages(target)
     dest.mkdir(parents=True, exist_ok=True)
-    desc = "deeptutor + full deps" if with_deps else "deeptutor only (--no-deps fast path)"
-    if extras:
-        desc += f" + extras[{','.join(extras)}]"
-    log(f"pip installing {desc} from LOCAL SOURCE {source_root} ...")
+    desc = "shipped module wheels + full deps" if with_deps \
+        else "shipped module wheels only (--no-deps fast path)"
+    log(f"pip installing {desc} from LOCAL SOURCE {source_root} "
+        f"({len(modules)} modules: {', '.join(modules)}) ...")
     env = dict(os.environ)
     # setdefault：用户已设置镜像/代理时尊重用户，没有才落默认国内镜像。
     env.setdefault("PIP_INDEX_URL", DEFAULT_PIP_INDEX_URL)
@@ -338,33 +650,23 @@ def install_deeptutor(target: Path, source_root: Path, *,
     env.setdefault("PIP_DEFAULT_TIMEOUT", "60")
     log(f"pip index: {env['PIP_INDEX_URL']}")
 
-    # pip 对本地目录的 extras 语法：D:\path\proj[extra1,extra2]（列表传参，
-    # 无 shell，无需引号转义）。
-    spec = f"{source_root}[{','.join(extras)}]" if extras else str(source_root)
-
-    def _pip(extra: list[str]) -> subprocess.CompletedProcess:
-        cmd = [str(BUILD_PY), "-m", "pip", "install", "--upgrade", "--no-compile",
-               "--target", str(dest), *extra, spec]
-        return subprocess.run(cmd, capture_output=True, text=True, env=env)
-
-    # --no-build-isolation：BUILD_PY 里已有 setuptools 时跳过每次建临时
-    # 构建环境（省 ~30s 且不联网拉 setuptools/wheel）。失败（版本过老等）
-    # 自动回退到隔离构建，正确性不受影响。
+    wheels = build_wheelhouse(source_root, modules)
+    # 模块顺序即依赖顺序（core 在前），pip 一次解析整组本地 wheel：
+    # deeptutor-server==<v> 这类 Requires-Dist 由 --find-links 里的 wheel 满足。
+    cmd = [str(BUILD_PY), "-m", "pip", "install", "--upgrade", "--no-compile",
+           "--target", str(dest), "--find-links", str(WHEELHOUSE)]
     if not with_deps:
-        res = _pip(["--no-deps", "--no-build-isolation"])
-        if res.returncode != 0:
-            log("--no-build-isolation failed; retrying isolated build")
-            res = _pip(["--no-deps"])
-    else:
-        res = _pip(["--no-build-isolation"])
-        if res.returncode != 0:
-            log("--no-build-isolation failed; retrying isolated build")
-            res = _pip([])
+        cmd.append("--no-deps")
+    cmd.extend(str(wheels[name]) for name in modules)
+    if with_deps:
+        cmd.extend(requirements)
+    res = subprocess.run(cmd, capture_output=True, text=True, env=env)
     if res.returncode != 0:
         log(res.stdout[-3000:])
         log(res.stderr[-3000:])
-        raise SystemExit(f"pip install deeptutor failed (rc={res.returncode})")
-    log("deeptutor (local source) installed into embeddable runtime")
+        raise SystemExit(f"pip install deeptutor modules failed (rc={res.returncode})")
+    log(f"deeptutor (local source) + {len(modules)} module wheels installed "
+        f"into embeddable runtime")
 
 
 def version_gate(target: Path, expected: str) -> str:
@@ -449,6 +751,135 @@ def smoke_test(py_exe: Path) -> None:
             f"用 --clean 或 --force-deeptutor 触发全量重装。"
         )
     log(f"extras gate OK: {sorted(mapping)} present for extras {list(PIP_EXTRAS)}")
+
+
+def _module_probe_code(modules: list[str], packages: tuple[str, ...]) -> str:
+    """Build the staging-python probe source (module state + start-up packages).
+
+    Runs inside the packaged runtime, so it must only use the standard library
+    plus the deeptutor package itself: it reads the manifests, asks
+    ``module_enabled`` (installed + enabled + version match + requires closure)
+    and find_specs the server stack. Nothing heavy is imported.
+    """
+    return (
+        "import importlib.util, json\n"
+        "from importlib import metadata\n"
+        "from deeptutor.__version__ import __version__\n"
+        "from deeptutor.modules.catalog import manifests, module_enabled\n"
+        f"modules = {list(modules)!r}\n"
+        f"packages = {list(packages)!r}\n"
+        "report = {'version': __version__, 'modules': {}, 'packages': {}}\n"
+        "for name in modules:\n"
+        "    distribution = manifests()[name]['distribution']\n"
+        "    row = {'distribution': distribution, 'version': None, 'enabled': False}\n"
+        "    try:\n"
+        "        row['version'] = metadata.version(distribution)\n"
+        "    except metadata.PackageNotFoundError:\n"
+        "        pass\n"
+        "    row['enabled'] = module_enabled(name)\n"
+        "    report['modules'][name] = row\n"
+        "for package in packages:\n"
+        "    report['packages'][package] = importlib.util.find_spec(package) is not None\n"
+        "print(json.dumps(report))\n"
+    )
+
+
+def _probe_env() -> dict[str, str]:
+    """Environment for probes: keep the builder's module selection out of the way.
+
+    ``catalog.selection()`` reads ``$DEEPTUTOR_HOME/data/system/modules.json``
+    and falls back to the current directory. Pointing the probe at a scratch
+    home means the build machine's own choices can never disable a shipped
+    module (or, worse, silently hide a missing one).
+    """
+    env = dict(os.environ)
+    home = STAGE / "gate-home"
+    home.mkdir(parents=True, exist_ok=True)
+    env["DEEPTUTOR_HOME"] = str(home)
+    env.pop("PYTHONPATH", None)
+    return env
+
+
+def module_report(py_exe: Path, modules: list[str]) -> dict:
+    """Ask the staging runtime which shipped modules are actually usable."""
+    try:
+        res = subprocess.run(
+            [str(py_exe), "-c", _module_probe_code(modules, DESKTOP_SMOKE_PACKAGES)],
+            capture_output=True, text=True, env=_probe_env(), timeout=300,
+        )
+    except OSError as exc:
+        raise SystemExit(
+            f"MODULE PROBE FAILED: cannot run staging interpreter {py_exe}: {exc}"
+        ) from exc
+    if res.returncode != 0:
+        raise SystemExit(
+            "MODULE PROBE FAILED: staging python cannot read the module catalog.\n"
+            f"{(res.stderr or '').strip()[-2000:]}"
+        )
+    try:
+        return json.loads((res.stdout or "").strip() or "{}")
+    except ValueError:
+        raise SystemExit(
+            f"MODULE PROBE FAILED: cannot parse probe output {res.stdout!r}.\n"
+            f"{(res.stderr or '').strip()[-2000:]}"
+        )
+
+
+def module_issues(report: dict) -> list[str]:
+    """Human-readable defects in a module report (empty list == all good)."""
+    issues: list[str] = []
+    version = str(report.get("version") or "")
+    for name, row in sorted((report.get("modules") or {}).items()):
+        installed_version = row.get("version")
+        if installed_version is None:
+            issues.append(f"missing module distribution {row.get('distribution')} ({name})")
+        elif installed_version != version:
+            issues.append(
+                f"module {name} is {installed_version} but core is {version}"
+            )
+        elif not row.get("enabled"):
+            issues.append(f"module {name} is installed but not enabled")
+    for package, present in sorted((report.get("packages") or {}).items()):
+        if not present:
+            issues.append(f"missing start-up package {package}")
+    return issues
+
+
+def module_gate(py_exe: Path, modules: list[str]) -> None:
+    """Fail the build unless every shipped module is installed, current and enabled.
+
+    ``deeptutor start`` gates on ``require_module("server")`` / ``("web")``
+    before doing anything else, so a runtime that lacks one shipped module is a
+    "click install, see a crash banner" product. That makes this gate a build
+    invariant, not an after-install check: it runs on every build (including
+    builds that skipped pip) and again after pruning.
+    """
+    issues = module_issues(module_report(py_exe, modules))
+    if issues:
+        detail = "\n  ".join(issues)
+        raise SystemExit(
+            f"MODULE GATE FAILED: {len(issues)} defect(s) in the packaged runtime:\n"
+            f"  {detail}\n"
+            f"随包模块（{len(modules)}）必须全部 installed/enabled/版本一致；"
+            f"用 --clean 或 --force-deeptutor 触发全量重装。"
+        )
+    log(f"MODULE GATE OK: {len(modules)} shipped modules ready "
+        f"+ {', '.join(DESKTOP_SMOKE_PACKAGES)} present")
+
+
+def module_precheck(py_exe: Path, modules: list[str]) -> list[str]:
+    """Best-effort module defects, used to decide whether a reinstall is needed.
+
+    Deliberately tolerant: a staging tree left by an older release has no
+    ``deeptutor.modules.catalog`` at all (the modular runtime is new in 1.7.2),
+    and CI restores exactly such trees from cache. That must mean "reinstall",
+    never "abort the build" — the strict verdict belongs to ``module_gate``.
+    """
+    try:
+        return module_issues(module_report(py_exe, modules))
+    except SystemExit as exc:
+        first_line = str(exc).strip().splitlines()
+        return [first_line[0] if first_line else "module probe failed"]
 
 
 # Runtime packages that are safe to drop from a packaged install:
@@ -588,6 +1019,23 @@ def source_fingerprint(source_root: Path, *, strict: bool = False) -> str:
     return digest.hexdigest()
 
 
+def _module_dependency_payload(source_root: Path) -> dict[str, dict]:
+    """安装面视图：每个清单的 distribution / requirements / requires / optional。
+
+    只取这四段而不是整份清单：路由、导航、capabilities 等改动不影响 pip 安装
+    面，纳入哈希会让「只加一条路由」误触发全量重装。
+    """
+    return {
+        name: {
+            "distribution": row["distribution"],
+            "requirements": sorted(row["requirements"]),
+            "requires": list(row["requires"]),
+            "optional": list(row["optional"]),
+        }
+        for name, row in sorted(_load_manifests(source_root).items())
+    }
+
+
 def _dependency_relevant_payload(source_root: Path) -> bytes | None:
     """提取 pyproject.toml 中真正影响依赖安装面的字段（canonical JSON 编码）。
 
@@ -595,13 +1043,19 @@ def _dependency_relevant_payload(source_root: Path) -> bytes | None:
     里的 ruff/black/pytest/mypy/bandit 工具配置、description、scripts、
     entry-points 与依赖安装毫无关系，但任何一个字符的改动都会让 deps_sig 变化
     → CI 缓存 restore-keys 恢复旧 staging 后 site-packages 被整体清空 + 全量
-    重装（Intel runner 上多花 5-7 分钟）。改为只哈希 pip 对
-    `<source>[PIP_EXTRAS]` 这条安装命令实际解析的字段：
+    重装（Intel runner 上多花 5-7 分钟）。改为只哈希真正决定安装面的内容：
 
       [build-system].requires / .build-backend   — 隔离构建环境的内容
       [project].requires-python                  — 环境标记求值基准
-      [project].dependencies                     — 主依赖集
-      [project.optional-dependencies][extra]     — 仅 PIP_EXTRAS 声明的 extra
+      [project].dependencies                     — 主依赖集（core wheel 的 Requires-Dist）
+      [tool.deeptutor.optional-dependencies]      — full 档 + PIP_EXTRAS 的声明
+      deeptutor/modules/manifests/*.json          — 各模块的 requirements/requires/optional
+      随包模块集合                                — 少一个模块 = 少一整套 wheel
+
+    1.7.2 之前这里读的是 ``[project].optional-dependencies``（本项目从来不存在
+    这张表，extras 声明在 ``[tool.deeptutor]`` 下且带 ``{version}`` 占位），
+    结果是 extras 段恒为空、模块依赖变更完全不在签名里 —— 那正是 --no-deps
+    快路径会静默漏装模块依赖的路径，一并修掉。
 
     其余段落（工具配置等）的改动只影响源码指纹（pyproject.toml 本身在
     _iter_source_files 里），走 --no-deps 快速路径秒装，不再触发全量重装。
@@ -619,17 +1073,20 @@ def _dependency_relevant_payload(source_root: Path) -> bytes | None:
         return None
     build_system = data.get("build-system", {}) or {}
     project = data.get("project", {}) or {}
-    optional = project.get("optional-dependencies", {}) or {}
+    version = _read_source_version(source_root)
+    optional = _optional_dependencies(source_root, version)
     payload = {
         "build_backend": build_system.get("build-backend", ""),
         "build_requires": sorted(build_system.get("requires", []) or []),
         "requires_python": project.get("requires-python", ""),
         "dependencies": sorted(project.get("dependencies", []) or []),
         # PIP_EXTRAS 里声明了但 pyproject 没定义的 extra 也计入：这种情况
-        # pip 本身会报错，先让签名变化触发重装、尽早失败，好过静默漏装。
-        "extras": {extra: sorted(optional[extra] or [])
-                   for extra in PIP_EXTRAS if extra in optional},
+        # 构建立刻会失败，先让签名变化触发重装，好过静默漏装。
+        "extras": {extra: sorted(optional.get(extra, [])) for extra in PIP_EXTRAS},
         "missing_extras": sorted(e for e in PIP_EXTRAS if e not in optional),
+        "full": sorted(optional.get(FULL_PROFILE, [])),
+        "modules": _module_dependency_payload(source_root),
+        "shipped": shipped_modules(source_root),
     }
     return json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
 
@@ -645,7 +1102,8 @@ def dependencies_signature(source_root: Path) -> str:
         → 下次构建自动全量重装（否则改了 extras 但签名不变，manim 等会被
         静默漏装）；
       * 算法版本 marker：签名算法升级后新旧签名必然不同 → 旧状态文件失效
-        一次（安全方向，一次性全量重装后归位）。
+        一次（安全方向，一次性全量重装后归位）。deps-only-v2 起纳入模块清单
+        与随包模块集合（v1 的签名不含模块依赖面）。
     """
     pyproject = source_root / "pyproject.toml"
     if not pyproject.is_file():
@@ -657,7 +1115,7 @@ def dependencies_signature(source_root: Path) -> str:
     digest = hashlib.sha256()
     digest.update(payload)
     digest.update(b"\0extras=" + ",".join(PIP_EXTRAS).encode("utf-8"))
-    digest.update(b"\0algo=deps-only-v1")
+    digest.update(b"\0algo=deps-only-v2")
     return digest.hexdigest()
 
 
@@ -723,6 +1181,10 @@ def build(make_zip: bool = False, source_root: Path | None = None,
     # 依赖签名变 → 全量重装。指纹模式（fast/strict）变化也算变更（安全方向）。
     fp = source_fingerprint(source_root, strict=strict_fingerprint)
     deps_sig = dependencies_signature(source_root)
+    modules, module_requirements = _shipped_selection(source_root)
+    log(f"shipped modules ({len(modules)}): {', '.join(modules)}")
+    if module_requirements:
+        log(f"plain extras requirements: {', '.join(module_requirements)}")
     mode = "strict" if strict_fingerprint else "fast"
     state = _load_source_state()
     state_changed = (state.get("mode") != mode
@@ -762,10 +1224,20 @@ def build(make_zip: bool = False, source_root: Path | None = None,
                               "from deeptutor.__version__ import __version__; print(__version__)"],
                              capture_output=True, text=True, timeout=120)
         current = (res.stdout or "").strip()
+        # 模块状态是「已装好」的一部分，而不是装完之后才知道的事：缺
+        # deeptutor-server / 版本错位 / 被 disable 时，必须走重装而不是跳过 pip
+        # 然后在门禁里炸掉（CI 缓存恢复出的老 staging 正是这种形态）。
+        module_defects = (
+            module_precheck(py_exe, modules) if res.returncode == 0
+            else ["staging deeptutor is not importable"]
+        )
         installed_ok = (
             res.returncode == 0 and current == expected
-            and not state_changed and not deps_changed
+            and not state_changed and not deps_changed and not module_defects
         )
+        if module_defects and not state_changed and not deps_changed:
+            log("module gate pre-check found defects; forcing reinstall: "
+                + "; ".join(module_defects[:6]))
         # 清理自家 dist-info 的残留元数据（历史事故：pip --target 覆盖式安装
         # 只增不删，旧版本 deeptutor-<旧>.dist-info 会随运行时一起发给用户，
         # 显示层若取到旧元数据就出现「1.6.14 遮蔽 1.6.15」的版本倒退）。
@@ -773,9 +1245,9 @@ def build(make_zip: bool = False, source_root: Path | None = None,
         # 快路径（已装且版本/指纹未变 → 跳过下方安装，见 installed_ok）不会
         # 重建 dist-info，若把唯一一份也删掉，打出的运行时只有代码没有元数据，
         # 关于页引擎会显示「未知」、select_runtime_base 的版本择优也会失明。
-        # cli/web 的 dist-info 壳不读取、无遮蔽风险，且快路径删除后不会重建，
-        # 故不在此清理（重装路径的移除循环会统一重建）。
-        for entry in sp.glob("deeptutor-*.dist-info"):
+        # 1.7.2 起每个模块都是一个 distribution（deeptutor-server / -web / ...），
+        # 所以用 deeptutor* 通配覆盖全部，只匹配 deeptutor-* 会漏掉模块元数据。
+        for entry in sp.glob("deeptutor*.dist-info"):
             if _distinfo_metadata_version(entry) == expected:
                 continue
             try:
@@ -791,10 +1263,13 @@ def build(make_zip: bool = False, source_root: Path | None = None,
             log(f"deeptutor {current} already installed & matches source; skipping pip")
         else:
             log(f"reinstalling deeptutor: staging={current!r} source={expected!r} "
-                f"force={force_deeptutor} deps_changed={deps_changed}")
-            for pat in ("deeptutor", "deeptutor-*.dist-info", "deeptutor_cli",
-                        "deeptutor_cli-*.dist-info", "deeptutor_web",
-                        "deeptutor_web-*.dist-info"):
+                f"force={force_deeptutor} deps_changed={deps_changed} "
+                f"modules_ok={not module_defects}")
+            # 挖掉全部自家代码树 + 全部 deeptutor* dist-info（含各模块的）：
+            # pip --target 只增不删，旧版本残留会和 new 版混合成一个运行时，
+            # 且能骗过版本门禁。
+            for pat in ("deeptutor", "deeptutor_cli", "deeptutor_web",
+                        "deeptutor*.dist-info"):
                 for entry in sp.glob(pat):
                     # 清理失败必须响：ignore_errors 会静默残留旧文件，产出混合运行时
                     # 且能通过版本门禁。宁可构建失败，不可静默混合。
@@ -811,18 +1286,22 @@ def build(make_zip: bool = False, source_root: Path | None = None,
                         ) from exc
             # deps_changed=True 的场景已在上方清空 site-packages 并转入下方
             # else 分支全量安装；能走到这里的 reinstall 都是 deps 未变的
-            # --no-deps 快速路径（只重装自家包，第三方树原样保留）。
-            install_deeptutor(STAGING_PY, source_root, with_deps=deps_changed)
+            # --no-deps 快速路径（重装全部自家 wheel，第三方树原样保留）。
+            install_deeptutor(STAGING_PY, source_root, with_deps=deps_changed,
+                              modules=modules, requirements=module_requirements)
             did_install = True
     else:
-        install_deeptutor(STAGING_PY, source_root, with_deps=True)
+        install_deeptutor(STAGING_PY, source_root, with_deps=True,
+                          modules=modules, requirements=module_requirements)
         did_install = True
 
     # 冒烟测试（重量级 import，embeddable 下 ~10-40s）只在真装过东西后跑；
-    # 版本门禁（轻量，只 import __version__）每次都跑，作为 staging 存活证明。
+    # 版本门禁与模块门禁都轻量，每次构建都跑——它们是 staging 存活与
+    # 「装完能 start」的证明，不是安装的副产品。
     if did_install:
         smoke_test(_staging_py_exe(STAGING_PY))
     version_gate(STAGING_PY, expected)   # 版本门禁：不过这里直接构建失败
+    module_gate(_staging_py_exe(STAGING_PY), modules)  # 随包模块全可用才算成功
     save_source_state(source_root, fp, deps_sig, mode)
 
     if did_install:
@@ -830,8 +1309,16 @@ def build(make_zip: bool = False, source_root: Path | None = None,
         if (sp / "litellm").exists() or (sp / "boto3").exists():
             prune_runtime(sp)
             smoke_test(_staging_py_exe(STAGING_PY))  # re-verify after pruning
+            # prune 的 glob 可能误伤模块依赖（例如某模块 requirements 里加了
+            # hf_xet）：删完必须重新证明全部门禁仍然成立。
+            module_gate(_staging_py_exe(STAGING_PY), modules)
         else:
             log("runtime already pruned; skipping")
+
+    # wheelhouse 只是安装中间产物（web wheel 就 ~90MB），装完即删：它躺在
+    # CI 整体缓存的 runtime-build/ 里，留着只涨缓存。
+    if did_install:
+        _drop_wheelhouse()
 
     # 预编译字节码（no-zip 路径在此收口；Windows 的 build.ps1 随后跑
     # rebrand.py 会改写部分 .py 使 pyc 失效，rebrand_root 末尾会增量重编译）。
