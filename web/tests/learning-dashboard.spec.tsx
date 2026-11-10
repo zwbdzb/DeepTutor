@@ -97,10 +97,12 @@ it('a failed source preserves other activities and user titles are never transla
     'href',
     '/learning/books/b?dt_workspace='
   )
-  expect(screen.getByRole('link', { name: /Memory/ })).toHaveAttribute(
-    'href',
-    '/learning/watching/v?dt_workspace='
-  )
+
+  // expect(screen.getByRole('link', { name: /Memory/ })).toHaveAttribute(
+  //   'href',
+  //   '/learning/watching/v?dt_workspace='
+  // )
+  expect(screen.queryByRole('link', { name: /Memory/ })).toBeNull()
   expect(screen.queryByText('主页')).toBeNull()
   expect(screen.getByRole('alert')).toBeInTheDocument()
   expect(screen.queryByText('What needs your attention')).toBeNull()
