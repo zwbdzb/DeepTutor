@@ -195,7 +195,7 @@ export const PERSONALIZATION_GROUPS: DashboardGroup[] = [
         key: "personas",
         href: "/space/personas",
         icon: UserRound,
-        title: { zh: "Personas", en: "Personas" },
+        title: { zh: "专家人格", en: "Personas" },
         blurb: {
           zh: "可在每轮对话中套用的行为预设。",
           en: "Behavior presets you can apply per chat turn.",

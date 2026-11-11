@@ -12,7 +12,7 @@ import {
 
 beforeEach(() => localStorage.clear());
 
-it("new profiles see five primary entries and two folded features", () => {
+it("new profiles see six primary entries and two folded features", () => {
   expect(readNavLayout()).toBeNull();
   const resolved = resolveNavLayout(
     PRIMARY_NAV_HREFS,
@@ -23,6 +23,7 @@ it("new profiles see five primary entries and two folded features", () => {
     "/chat",
     "/partners",
     "/learning",
+    "/personalization",
     "/space",
     "/calendar",
     "/kanban",
