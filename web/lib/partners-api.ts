@@ -62,7 +62,12 @@ export interface SoulTemplate {
 
 export interface SoulSources {
   library: SoulTemplate[];
-  personas: { name: string; description: string; content?: string }[];
+  personas: {
+    name: string;
+    description: string;
+    content?: string;
+    display_name?: string;
+  }[];
 }
 
 export interface ToolOption {

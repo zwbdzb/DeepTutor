@@ -50,7 +50,9 @@ export const CATEGORIES = [
   { id: 'partners', label: 'navigation.partners', icon: PartnersShelfIcon, href: '/partners', account: true },
   {
     id: 'personalization',
-    label: 'navigation.personalization',
+    // Named after its shelf rather than "Personalization": the entry inside it
+    // is the one people arrive from, and the heading now says the same thing.
+    label: 'Experts · Skills · Connectors',
     icon: PersonalizationShelfIcon,
     href: '/personalization',
     account: true,

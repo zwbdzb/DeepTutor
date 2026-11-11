@@ -2,8 +2,9 @@
 
 import { pageGridClass } from '@/components/layout/FeaturePage'
 import Tooltip from "@/shared/ui/Tooltip";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
+import { useRouter } from "next/navigation";
 import { useTranslation } from "react-i18next";
 import {
   Eye,
@@ -15,6 +16,7 @@ import {
   Trash2,
   UserRound,
   X,
+  Zap,
 } from "lucide-react";
 import SpaceSectionHeader from "@/components/space/SpaceSectionHeader";
 import { isValidSkillName, slugifySkillName } from "@/lib/skill-slug";
@@ -40,6 +42,8 @@ interface PersonaEditorState {
 
 interface PersonaViewerState {
   name: string;
+  /** What the card shows: the persona's own name when it has one. */
+  displayName: string;
   source?: string;
   readOnly: boolean;
   description: string;
@@ -61,8 +65,22 @@ function stripFrontmatter(md: string): string {
   return match ? md.slice(match[0].length) : md;
 }
 
+/**
+ * Category tabs above the gallery. ``all`` is not a persona category — it is
+ * the "no filter" pseudo tab. A persona whose PERSONA.md declares no
+ * `category` (anything the user authored themselves) belongs to no filtered
+ * tab and is only listed under "All".
+ */
+const PERSONA_CATEGORY_TABS: ReadonlyArray<{ key: string; label: string }> = [
+  { key: "all", label: "All" },
+  { key: "education", label: "Education" },
+  { key: "work", label: "Work" },
+  { key: "code", label: "Code" },
+];
+
 export default function PersonasSection() {
   const { t } = useTranslation();
+  const router = useRouter();
 
   const [personas, setPersonas] = useState<PersonaInfo[]>([]);
   const [loading, setLoading] = useState(false);
@@ -70,6 +88,8 @@ export default function PersonasSection() {
   const [editor, setEditor] = useState<PersonaEditorState | null>(null);
   const [viewer, setViewer] = useState<PersonaViewerState | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+  /** Active category tab key (`all` = no filter). */
+  const [categoryFilter, setCategoryFilter] = useState<string>("all");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -87,6 +107,33 @@ export default function PersonasSection() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const visiblePersonas = useMemo(() => {
+    if (categoryFilter === "all") return personas;
+    return personas.filter((persona) => persona.category === categoryFilter);
+  }, [categoryFilter, personas]);
+
+  const countForCategory = useCallback(
+    (key: string) => {
+      if (key === "all") return personas.length;
+      return personas.filter((persona) => persona.category === key).length;
+    },
+    [personas],
+  );
+
+  /**
+   *「召唤」— open the main chat with this persona preselected.
+   *
+   * The chat page reads `?persona=` once on mount, applies it as the new
+   * session's persona preference and then drops the param, so the selection
+   * survives as conversation state rather than URL state.
+   */
+  const summon = useCallback(
+    (name: string) => {
+      router.push(`/chat?persona=${encodeURIComponent(name)}`);
+    },
+    [router],
+  );
 
   // ── editor handlers ───────────────────────────────────────────────
 
@@ -140,6 +187,7 @@ export default function PersonasSection() {
   const openView = useCallback(async (persona: PersonaInfo) => {
     setViewer({
       name: persona.name,
+      displayName: persona.display_name?.trim() || persona.name,
       source: persona.source,
       readOnly: Boolean(persona.read_only),
       description: persona.description,
@@ -151,6 +199,7 @@ export default function PersonasSection() {
       const detail = await getPersona(persona.name);
       setViewer({
         name: detail.name,
+        displayName: detail.display_name?.trim() || persona.display_name?.trim() || persona.name,
         source: detail.source ?? persona.source,
         readOnly: Boolean(detail.read_only),
         description: detail.description,
@@ -269,6 +318,33 @@ export default function PersonasSection() {
         </div>
       )}
 
+      {/* Category tabs — hidden while loading or when there is nothing to filter. */}
+      {!loading && personas.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          {PERSONA_CATEGORY_TABS.map((tab) => {
+            const active = categoryFilter === tab.key;
+            return (
+              <button
+                key={tab.key}
+                type="button"
+                aria-pressed={active}
+                onClick={() => setCategoryFilter(tab.key)}
+                className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-[12px] font-medium transition-colors ${
+                  active
+                    ? "border-[var(--foreground)]/25 bg-[var(--muted)] text-[var(--foreground)]"
+                    : "border-[var(--border)] bg-[var(--card)] text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
+                }`}
+              >
+                {t(tab.label)}
+                <span className="text-[10.5px] tabular-nums opacity-60">
+                  {countForCategory(tab.key)}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {loading ? (
         <div className="flex items-center justify-center py-16">
           <Loader2 className="h-4 w-4 animate-spin text-[var(--muted-foreground)]" />
@@ -294,9 +370,24 @@ export default function PersonasSection() {
             {t("Create your first persona")}
           </button>
         </div>
+      ) : visiblePersonas.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-[var(--border)] bg-[var(--card)]/40 px-6 py-12 text-center">
+          <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-[var(--muted)]/60 text-[var(--muted-foreground)]">
+            <Sparkles size={18} />
+          </div>
+          <p className="text-[13.5px] font-medium text-[var(--foreground)]">
+            {t("No personas in this category yet.")}
+          </p>
+          <button
+            onClick={() => setCategoryFilter("all")}
+            className="mt-3 inline-flex items-center rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 py-1.5 text-[12px] font-medium text-[var(--foreground)] transition-colors hover:bg-[var(--muted)]"
+          >
+            {t("Show all")}
+          </button>
+        </div>
       ) : (
         <ul className={pageGridClass(2)}>
-          {personas.map((persona) => {
+          {visiblePersonas.map((persona) => {
             const readOnly = Boolean(persona.read_only);
             return (
               <Tooltip key={persona.name} label={t("View persona")} as="li" side="top">
@@ -322,7 +413,7 @@ export default function PersonasSection() {
                       <div className="min-w-0">
                         <div className="flex items-center gap-1.5">
                           <span className="truncate text-[14px] font-semibold tracking-tight text-[var(--foreground)]">
-                            {persona.name}
+                            {persona.display_name?.trim() || persona.name}
                           </span>
                           {persona.source === "admin" ? (
                             <span className="inline-flex shrink-0 items-center gap-1 rounded-md bg-[var(--muted)] px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[var(--muted-foreground)]">
@@ -380,6 +471,27 @@ export default function PersonasSection() {
                       </div>
                     )}
                   </div>
+                  {/*「召唤」— bottom-right corner: jump to the chat page with
+                      this persona already applied to the new conversation. */}
+                  <div className="mt-auto flex items-center justify-end pt-3">
+                    <Tooltip label={t("Summon persona")} side="top">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          summon(persona.name);
+                        }}
+                        onKeyDown={(e) => e.stopPropagation()}
+                        aria-label={`${t("Summon persona")}: ${
+                          persona.display_name?.trim() || persona.name
+                        }`}
+                        className="inline-flex items-center gap-1 rounded-lg border border-[var(--border)] bg-[var(--background)] px-2.5 py-1 text-[11.5px] font-medium text-[var(--foreground)] transition-colors hover:border-[var(--foreground)]/30 hover:bg-[var(--muted)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]/40"
+                      >
+                        <Zap size={11} strokeWidth={2} />
+                        {t("Summon")}
+                      </button>
+                    </Tooltip>
+                  </div>
                 </div>
               </Tooltip>
             );
@@ -406,7 +518,7 @@ export default function PersonasSection() {
                   className="shrink-0 text-[var(--muted-foreground)]"
                 />
                 <h3 className="truncate text-[14px] font-semibold text-[var(--foreground)]">
-                  {viewer.name}
+                  {viewer.displayName}
                 </h3>
                 {viewer.readOnly ? (
                   <span className="inline-flex shrink-0 items-center gap-1 rounded-md bg-[var(--muted)] px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[var(--muted-foreground)]">

@@ -55,6 +55,7 @@ const fixture = vi.hoisted(() => ({
     renameSessionTitle: vi.fn(async () => undefined),
   },
   routeSessionId: null as string | null,
+  router: { push: vi.fn(), replace: vi.fn() },
   composerProps: null as Record<string, unknown> | null,
   listProps: null as {
     messages: MessageItem[]
@@ -86,7 +87,7 @@ vi.mock('@/features/chat/ChatStateAdapter', () => ({
 vi.mock('@/features/chat/controllers/useChatRouteSession', () => ({
   useChatRouteSession: () => ({
     sessionId: fixture.routeSessionId,
-    router: { push: vi.fn(), replace: vi.fn() },
+    router: fixture.router,
   }),
 }))
 
@@ -197,6 +198,12 @@ vi.mock('@/lib/tools-settings', () => ({
 
 vi.mock('@/lib/notifications', () => ({
   notify: vi.fn(),
+}))
+
+// 「召唤」records the persona pick server-side; keep that best-effort call out
+// of the smoke run (no real fetch) and observe it via the spy instead.
+vi.mock('@/lib/personas-api', () => ({
+  touchPersonaUsage: vi.fn(async () => undefined),
 }))
 
 vi.mock('@/lib/chat-export', () => ({
@@ -573,5 +580,23 @@ describe('ChatWorkspace smoke', () => {
     // selection is preserved by the id comparison inside the panel.
     expect(fixture.viewer.clearSideChatSource).toHaveBeenCalledWith('thread-1', 1)
     view.unmount()
+  })
+
+  it('applies a summoned persona from ?persona= and drops the param', async () => {
+    // The persona gallery's「召唤」button lands here.
+    window.history.replaceState({}, '', '/chat?persona=cv-auditor')
+    try {
+      const view = renderWorkspace()
+      await waitFor(() =>
+        expect(fixture.adapter.setPersonaSelection).toHaveBeenCalledWith('cv-auditor'),
+      )
+      // The selection is conversation state from here on: the param goes away
+      // so a reload does not re-apply it to another conversation.
+      await waitFor(() => expect(fixture.router.replace).toHaveBeenCalled())
+      expect(String(fixture.router.replace.mock.calls.at(-1)?.[0])).not.toContain('persona=')
+      view.unmount()
+    } finally {
+      window.history.replaceState({}, '', '/')
+    }
   })
 })

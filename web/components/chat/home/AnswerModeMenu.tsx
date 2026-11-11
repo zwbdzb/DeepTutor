@@ -6,7 +6,7 @@ import { ArrowUpRight, Bot, MessageCircle, Minus, Plus, UserRound, Users } from 
 import { useTranslation } from "react-i18next";
 import { agentGlyph, agentKindLabel } from "@/components/agents/agent-icons";
 import PartnerAvatar from "@/components/partners/PartnerAvatar";
-import { listPersonas, type PersonaInfo } from "@/lib/personas-api";
+import { listPersonas, touchPersonaUsage, type PersonaInfo } from "@/lib/personas-api";
 import type { PartnerInfo } from "@/lib/partners-api";
 import type { PartnerGroup } from "@/lib/partner-groups-api";
 import type { ResourceKind } from "@/lib/resource-reuse";
@@ -107,9 +107,32 @@ export default function AnswerModeMenu({
   const id = kind ? chosen.slice(kind.length + 1) : "";
   const partner = kind === "partner" ? answerers?.partners.find((item) => item.partner_id === id) : undefined;
   const agent = kind === "subagent" ? answerers?.agents.find((item) => item.name === id) : undefined;
+  const personaName = persona?.value ?? "";
+  // A persona is stored under its slug (`cv-auditor`), but the trigger should
+  // read its label (`简历审计师`) — the same `display_name` the list uses. The
+  // list is cached client-side, so this is normally a map lookup. The resolved
+  // label is kept beside the slug it was resolved for, so switching to a
+  // persona that is not in the list yet falls back to the slug rather than
+  // showing the previous one's name.
+  const [resolved, setResolved] = useState<{ name: string; label: string } | null>(null);
+  useEffect(() => {
+    if (!personaName) return;
+    let alive = true;
+    void listPersonas()
+      .then((items) => {
+        if (!alive) return;
+        const found = items.find((item) => item.name === personaName);
+        setResolved({ name: personaName, label: found?.display_name?.trim() || "" });
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [personaName]);
+  const personaLabel = resolved?.name === personaName ? resolved.label : "";
   // The trigger names whoever answers; a voice only when DeepTutor does.
   let icon: ReactNode = <UserRound size={14} strokeWidth={1.7} className="shrink-0" />;
-  let value = persona?.value || t("Default");
+  let value = personaLabel || persona?.value || t("Default");
   if (partner || kind === "partner") {
     icon = partner ? <PartnerFace partner={partner} size={16} /> : icon;
     value = partner?.name ?? id;
@@ -120,7 +143,7 @@ export default function AnswerModeMenu({
   return (
     <TrayMenu
       icon={icon}
-      label={t("Preferences")}
+      label={t("Expert")}
       value={value}
       active={Boolean(chosen || persona?.value)}
       placement={placement}
@@ -158,7 +181,15 @@ function AnswerList({
   const needle = query.trim().toLocaleLowerCase();
   const matches = (...text: (string | undefined)[]) =>
     !needle || text.join(" ").toLocaleLowerCase().includes(needle);
-  const styleRows = personas.filter((item) => matches(item.name, item.description));
+  const styleRows = personas.filter((item) =>
+    matches(item.name, item.display_name, item.description),
+  );
+  // Most-used personas surface first (backend-tracked usage counts), the
+  // rest follow in list order. A fresh pick (below) bumps that persona's
+  // usage on the server so it climbs the list next time.
+  const sortedStyleRows = [...styleRows].sort(
+    (a, b) => (b.usage_count ?? 0) - (a.usage_count ?? 0),
+  );
   const partnerRows = answerers?.partners.filter((item) => matches(item.name)) ?? [];
   const agentRows = answerers?.agents.filter((item) => matches(item.name)) ?? [];
   const total = personas.length + (answerers?.partners.length ?? 0) + (answerers?.agents.length ?? 0);
@@ -188,16 +219,17 @@ function AnswerList({
                 meta={t("No persona — the assistant's standard behavior")}
               />
             )}
-            {styleRows.map((item) => (
+            {(needle ? sortedStyleRows : sortedStyleRows.slice(0, 5)).map((item) => (
               <TrayOption
                 key={item.name}
                 selected={persona.value === item.name}
                 onSelect={() => {
+                  void touchPersonaUsage(item.name);
                   persona.onChange(item.name);
                   close();
                 }}
                 leading={<UserRound size={14} strokeWidth={1.7} />}
-                title={item.name}
+                title={item.display_name?.trim() || item.name}
                 meta={item.description}
               />
             ))}
@@ -251,8 +283,10 @@ function AnswerList({
       </TrayList>
       <TrayFoot>
         {reuse.length > 0 && <TrayReuse kinds={reuse} />}
-        <Link href="/personalization" prefetch={false} onClick={close}>
-          {t("navigation.personalization")}
+        {/* 「召唤」opens the persona gallery under 专家·技能·连接器, where each
+            card can be summoned into a new chat. */}
+        <Link href="/space/personas" prefetch={false} onClick={close}>
+          {t("Summon")}
           <ArrowUpRight size={13} strokeWidth={1.9} />
         </Link>
       </TrayFoot>

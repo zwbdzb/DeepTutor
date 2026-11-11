@@ -1,7 +1,7 @@
 "use client";
 
 import { PageHeader, PAGE_SECTION_TITLE_CLASS, pageGridClass } from '@/components/layout/FeaturePage'
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { useTranslation } from "react-i18next";
 import { useUiLayoutLabel } from "@/features/ui-layout/tokens";
@@ -39,7 +39,8 @@ export default function SpaceDashboard({
   groups: shelves = DASHBOARD_GROUPS,
   onNavigate,
 }: {
-  title?: string;
+  /** A heading node is allowed so a hub can draw its title word by word. */
+  title?: ReactNode;
   description?: string;
   icon?: typeof Library;
   /** The shelves this hub opens onto; the workspace's materials by default. */
@@ -92,10 +93,12 @@ export default function SpaceDashboard({
 
       <div className="space-y-9">
         {groups.map(group => (
-          <section key={group.label.en}>
-            <h2 className={`mb-3 ${PAGE_SECTION_TITLE_CLASS}`}>
-              {tr(group.label)}
-            </h2>
+          <section key={group.label.en || group.items.map(item => item.key).join("-")}>
+            {tr(group.label) && (
+              <h2 className={`mb-3 ${PAGE_SECTION_TITLE_CLASS}`}>
+                {tr(group.label)}
+              </h2>
+            )}
             <div className={pageGridClass(2)}>
               {group.items.map(item => (
                 <DashboardCard

@@ -21,8 +21,10 @@ Each persona lives in its own directory:
     data/user/workspace/personas/<name>/PERSONA.md
 
 The file starts with a YAML frontmatter block holding ``name`` and
-``description``, followed by the Markdown body that becomes the system-prompt
-block when the persona is active.
+``description`` (optionally ``display_name`` and ``category``), followed by
+the Markdown body that becomes the system-prompt block when the persona is
+active. ``category`` is a free-form grouping label the gallery uses for its
+tabs; a persona without one is still valid and shows under "All" only.
 
 Legacy migration: persona-type entries that historically lived in the skills
 workspace (``peer`` / ``teacher`` / ``research-assistant``) are moved into the
@@ -62,11 +64,18 @@ class PersonaInfo:
     name: str
     description: str
     source: str = "user"  # "user" | "admin"
+    display_name: str = ""  # optional user-facing label (may be non-slug, e.g. Chinese)
+    # Optional grouping label used by the persona gallery's tabs
+    # (``education`` / ``work`` / ``code``). Empty means "no grouping": such a
+    # persona only shows under the gallery's "All" tab.
+    category: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
+            "display_name": self.display_name,
             "description": self.description,
+            "category": self.category,
             "source": self.source,
             "read_only": self.source != "user",
         }
@@ -78,11 +87,15 @@ class PersonaDetail:
     description: str
     content: str
     source: str = "user"
+    display_name: str = ""
+    category: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
+            "display_name": self.display_name,
             "description": self.description,
+            "category": self.category,
             "content": self.content,
             "source": self.source,
             "read_only": self.source != "user",
@@ -143,18 +156,55 @@ class PersonaService:
         return data, body
 
     @staticmethod
-    def _render_frontmatter(name: str, description: str) -> str:
-        header = yaml.safe_dump(
-            {"name": name, "description": description.strip()},
-            sort_keys=False,
-            allow_unicode=True,
-        ).strip()
+    def _render_frontmatter(
+        name: str,
+        description: str,
+        display_name: str = "",
+        category: str = "",
+    ) -> str:
+        data: dict[str, Any] = {"name": name, "description": description.strip()}
+        if display_name:
+            data["display_name"] = display_name
+        if category:
+            data["category"] = category
+        header = yaml.safe_dump(data, sort_keys=False, allow_unicode=True).strip()
         return f"---\n{header}\n---"
 
-    def _normalize_content(self, name: str, description: str, content: str) -> str:
-        """Ensure the saved file carries exactly ``name`` + ``description`` frontmatter."""
-        _, body = self._parse_frontmatter(content or "")
-        header = self._render_frontmatter(name, description)
+    @staticmethod
+    def _read_category(meta: dict[str, Any]) -> str:
+        """Normalise the optional ``category`` frontmatter key.
+
+        Personas written before the gallery gained category tabs simply lack
+        the key; an absent category is a valid state (only listed under "All"),
+        never an error.
+        """
+        return str(meta.get("category") or "").strip().lower()
+
+    def _normalize_content(
+        self,
+        name: str,
+        description: str,
+        content: str,
+        category: str = "",
+    ) -> str:
+        """Ensure the saved file carries ``name`` + ``description`` frontmatter.
+
+        An optional ``display_name`` already present in the content's
+        frontmatter is carried over unchanged — it is the user-facing label
+        (e.g. Chinese) that UIs show instead of the ASCII slug. The optional
+        ``category`` is preserved the same way, so editing a persona's body
+        never drops it from an older file; an explicit ``category`` argument
+        wins over the one embedded in ``content``.
+        """
+        meta, body = self._parse_frontmatter(content or "")
+        display_name = str(meta.get("display_name") or "").strip()
+        resolved_category = category.strip().lower() or self._read_category(meta)
+        header = self._render_frontmatter(
+            name,
+            description,
+            display_name,
+            resolved_category,
+        )
         return f"{header}\n\n{body.lstrip()}".rstrip() + "\n"
 
     # ── public read API ─────────────────────────────────────────────────
@@ -178,6 +228,8 @@ class PersonaService:
                 PersonaInfo(
                     name=entry.name,
                     description=str(meta.get("description") or "").strip(),
+                    display_name=str(meta.get("display_name") or "").strip(),
+                    category=self._read_category(meta),
                 )
             )
         return out
@@ -192,6 +244,8 @@ class PersonaService:
             name=self._validate_name(name),
             description=str(meta.get("description") or "").strip(),
             content=text,
+            display_name=str(meta.get("display_name") or "").strip(),
+            category=self._read_category(meta),
         )
 
     def load_for_context(self, name: str) -> str:
@@ -231,10 +285,16 @@ class PersonaService:
         target_dir = self._persona_dir(slug)
         if target_dir.exists():
             raise PersonaExistsError(slug)
-        body = self._normalize_content(slug, description, content)
+        meta, _ = self._parse_frontmatter(content or "")
+        category = self._read_category(meta)
+        body = self._normalize_content(slug, description, content, category=category)
         target_dir.mkdir(parents=True, exist_ok=False)
         self._persona_file(slug).write_text(body, encoding="utf-8")
-        return PersonaInfo(name=slug, description=description.strip())
+        return PersonaInfo(
+            name=slug,
+            description=description.strip(),
+            category=category,
+        )
 
     def update(
         self,
@@ -263,7 +323,13 @@ class PersonaService:
 
         text = self._normalize_content(slug, new_description, new_body_source)
         self._persona_file(slug).write_text(text, encoding="utf-8")
-        return PersonaInfo(name=slug, description=new_description.strip())
+        meta, _ = self._parse_frontmatter(text)
+        return PersonaInfo(
+            name=slug,
+            description=new_description.strip(),
+            display_name=str(meta.get("display_name") or "").strip(),
+            category=self._read_category(meta),
+        )
 
     def delete(self, name: str) -> None:
         slug = self._validate_name(name)
