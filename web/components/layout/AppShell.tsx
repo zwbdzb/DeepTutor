@@ -122,7 +122,7 @@ export default function AppShell({ sidebar, pageBar, children, homeHref = "/" }:
                 width={20}
                 height={20}
                 unoptimized
-                className="h-5 w-5"
+                className="h-5 w-5 dark:invert"
               />
               <span className="text-[14px] font-semibold tracking-tight text-[var(--foreground)]">
                 ThinkBuddy

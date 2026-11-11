@@ -305,7 +305,7 @@ export function SidebarShell({
             menu of settings and account), the way back out, then search. */}
         {bodySlot ? (
           <Link href={brandHref} prefetch={false} aria-label="ThinkBuddy" className="dt-rail-brand">
-            <Image src="/logo.png" alt="ThinkBuddy" width={22} height={22} unoptimized className="h-[22px] w-[22px] rounded-md" />
+            <Image src="/logo.png" alt="ThinkBuddy" width={22} height={22} unoptimized className="h-[22px] w-[22px] rounded-md dark:invert" />
           </Link>
         ) : (
           <WorkspaceMenu compact accountSlot={renderedFooter} onNavigate={() => drawer?.close()} />
@@ -369,7 +369,7 @@ export function SidebarShell({
               width={22}
               height={22}
               unoptimized
-              className="h-[22px] w-[22px] transition-transform duration-200 group-hover:scale-105"
+              className="h-[22px] w-[22px] transition-transform duration-200 group-hover:scale-105 dark:invert"
             />
             <span
               aria-label="ThinkBuddy"

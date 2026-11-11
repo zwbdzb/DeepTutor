@@ -18,7 +18,7 @@ export function WorkspaceGlyph({ name, general, size = 22 }: { name: string; gen
   if (general)
     return (
       <span aria-hidden className="dt-workspace-glyph is-general" style={{ width: size, height: size }}>
-        <Image src="/logo.png" alt="" width={size} height={size} unoptimized className="h-full w-full object-contain" />
+        <Image src="/logo.png" alt="" width={size} height={size} unoptimized className="h-full w-full object-contain dark:invert" />
       </span>
     )
   let hash = 0

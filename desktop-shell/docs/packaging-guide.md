@@ -72,8 +72,9 @@ PyInstaller 把 `desktop/main.py` 连同依赖的 Python 库（pywebview 等）�
 
 ```python
 datas = [
-    (assets/icon.ico, "assets"),   # 图标
-    (assets/icon.png, "assets"),
+    (assets/icon.ico, "assets"),   # 桌面/快捷方式图标
+    (assets/icon.png, "assets"),   # 托盘图标 / macOS .icns 源
+    (assets/icon_owl.png, "assets"),  # 登录页无外框猫头鹰
 ]
 runtime_zip = DIST / "runtime.zip"
 if runtime_zip.exists():            # 只有 zip 存在才内嵌

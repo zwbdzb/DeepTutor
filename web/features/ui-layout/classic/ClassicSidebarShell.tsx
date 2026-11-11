@@ -198,7 +198,7 @@ export function ClassicSidebarShell({
               width={22}
               height={22}
               unoptimized
-              className="h-[22px] w-[22px] rounded-md"
+              className="h-[22px] w-[22px] rounded-md dark:invert"
             />
           </Link>
           <button
@@ -263,7 +263,7 @@ export function ClassicSidebarShell({
             width={22}
             height={22}
             unoptimized
-            className="h-[22px] w-[22px] transition-transform duration-200 group-hover:scale-105"
+            className="h-[22px] w-[22px] transition-transform duration-200 group-hover:scale-105 dark:invert"
           />
           <span
             aria-label="ThinkBuddy"
