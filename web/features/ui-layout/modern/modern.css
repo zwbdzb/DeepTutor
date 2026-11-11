@@ -329,7 +329,7 @@ button.dt-record-toggle:focus-visible { outline: 2px solid var(--ring); outline-
    Claude does — warm against the sans UI. The composer and the suggestions
    join the modern surfaces. */
 :root[data-ui-layout="modern"] .dt-composer-surface {
-  z-index: 1; border-radius: 20px; border-color: transparent;
+  border-radius: 20px; border-color: transparent;
   box-shadow: 0 0 0 1px rgb(var(--dt-ink) / 0.1), 0 1px 2px rgb(15 15 15 / 0.04), 0 10px 28px -12px rgb(15 15 15 / 0.14);
   transition: box-shadow 200ms var(--dt-ease);
 }
@@ -375,6 +375,13 @@ button.dt-record-toggle:focus-visible { outline: 2px solid var(--ring); outline-
 .dt-lead-prefix { font-weight: 400; color: var(--foreground); }
 .dt-lead-more { font-variant-numeric: tabular-nums; cursor: default; }
 @keyframes dt-lead-in { from { opacity: 0; transform: translateX(-4px) scale(0.92); } }
+
+/* The tray tucks up behind the box (--dt-tray-tuck), so the box has to paint
+   above it. The invariant belongs here, next to the tray: a layout that only
+   restyles the box would otherwise let the tray paint over the box's bottom
+   edge as a detached grey bar — which is exactly what classic did while this
+   lived in the modern block alone. */
+.dt-composer-surface { z-index: 1; }
 
 /* The layer under the composer: what Dito can reach, and who answers.
    It sits behind the box, so only its lower edge shows.
