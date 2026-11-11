@@ -31,6 +31,7 @@ import {
 import { readingWorkspaceIdOf, sessionRoute } from "@/lib/mastery-session";
 import { readingCollectionRoute } from "@/lib/learning-routes";
 import { subscribeSessionChanges } from "@/lib/session-events";
+import { systemConfirm } from "@/lib/system-confirm";
 
 export default function WorkspaceSidebar() {
   const { t } = useTranslation();
@@ -178,7 +179,7 @@ export default function WorkspaceSidebar() {
 
   const handleDeleteSession = useCallback(
     async (sessionId: string) => {
-      if (!window.confirm(t("Permanently delete this chat and its tutor threads? This cannot be undone."))) return;
+      if (!(await systemConfirm(t("Permanently delete this chat and its tutor threads? This cannot be undone.")))) return;
       const deleted = sessions.find(item => item.session_id === sessionId);
       await deleteSession(sessionId, sessionWorkspaceId(deleted));
       setSessions((prev) =>

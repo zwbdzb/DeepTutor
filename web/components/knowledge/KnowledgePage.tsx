@@ -3,6 +3,7 @@
 import { knowledgeBaseRef } from "@/lib/knowledge-helpers";
 import { moveKnowledgeBase, resourceUsage } from "@/lib/workspaces-api";
 import { apiFetch, apiUrl } from "@/lib/api";
+import { systemConfirm } from "@/lib/system-confirm";
 import type { EmbeddingModelSelection } from "@/features/knowledge/model/types";
 
 import dynamic from "next/dynamic";
@@ -287,9 +288,9 @@ export default function KnowledgePage() {
             t("Used by workspaces: {{names}}", { names: workspaces.join(", ") })
           : "";
         if (
-          !window.confirm(
+          !(await systemConfirm(
             t('Delete knowledge base "{{name}}"?', { name }) + impact,
-          )
+          ))
         )
           return;
         await deleteKb(name);

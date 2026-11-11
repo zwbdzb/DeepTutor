@@ -16,6 +16,7 @@ import {
   type SubagentBackendInfo,
   type SubagentConnection,
 } from "@/lib/subagents-api";
+import { systemConfirm } from "@/lib/system-confirm";
 
 /** Live local and remote agents, separate from imported histories. */
 
@@ -63,12 +64,12 @@ export default function ConnectedAgents() {
   const handleDisconnect = useCallback(
     async (name: string) => {
       if (
-        !window.confirm(
+        !(await systemConfirm(
           t(
             "Disconnect “{{name}}”? This only removes the connection; your local agent is untouched.",
             { name },
           ),
-        )
+        ))
       )
         return;
       setBusyName(name);

@@ -3,6 +3,7 @@
 import { pageGridClass } from '@/components/layout/FeaturePage'
 import { navigateTask } from "@/lib/workspace-scope";
 import { sessionWorkspaceId } from "@/lib/session-api";
+import { systemConfirm } from "@/lib/system-confirm";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
@@ -197,7 +198,7 @@ export default function ChatHistorySection({
 
   const handleDelete = useCallback(
     async (sessionId: string) => {
-      if (!window.confirm(t("Permanently delete this chat and its tutor threads? This cannot be undone."))) return;
+      if (!(await systemConfirm(t("Permanently delete this chat and its tutor threads? This cannot be undone.")))) return;
       await deleteSession(
         sessionId,
         sessionWorkspaceId(

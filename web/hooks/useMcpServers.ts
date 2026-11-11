@@ -18,6 +18,7 @@ import {
   type McpUserView,
 } from "@/lib/mcp-api";
 import { describeMcpError } from "@/lib/mcp-store";
+import { systemConfirm } from "@/lib/system-confirm";
 
 /**
  * State + handlers behind an MCP server manager screen.
@@ -128,7 +129,7 @@ export function useMcpServers(surface: McpSurface) {
         const origin = surface.writes === "per-server" ? "account" : "deployment";
         const workspaces = await resourceUsage("mcp", `${origin}:${name}`);
         const impact = workspaces.length ? "\n\n" + t("Used by workspaces: {{names}}", { names: workspaces.join(", ") }) : "";
-        if (typeof window !== "undefined" && !window.confirm(t('Delete MCP server "{{name}}"?', { name }) + impact)) return;
+        if (!(await systemConfirm(t('Delete MCP server "{{name}}"?', { name }) + impact))) return;
       } catch (err) {
         setSaveError(describeMcpError(err, t));
         return;
@@ -153,8 +154,7 @@ export function useMcpServers(surface: McpSurface) {
     async (name: string) => {
       if (saving || surface.writes !== "per-server") return;
       if (
-        typeof window !== "undefined" &&
-        !window.confirm(t('Delete MCP server "{{name}}"?', { name }))
+        !(await systemConfirm(t('Delete MCP server "{{name}}"?', { name })))
       ) {
         return;
       }

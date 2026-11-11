@@ -10,6 +10,7 @@ import BankToolbar from "./BankToolbar";
 import CategoryManager from "./CategoryManager";
 import QuestionCard from "./QuestionCard";
 import { useQuestionBank } from "./useQuestionBank";
+import { systemConfirm } from "@/lib/system-confirm";
 
 function EmptyState({
   icon: Icon,
@@ -201,7 +202,11 @@ export default function QuestionBankSection({
                 onToggleBookmark={() => void bank.toggleBookmark(entry)}
                 onToggleResolved={() => void bank.toggleResolved(entry)}
                 onDelete={() => {
-                  if (window.confirm(t("Delete this entry?"))) void bank.removeEntry(entry);
+                  void (async () => {
+                    if (await systemConfirm(t("Delete this entry?"))) {
+                      await bank.removeEntry(entry);
+                    }
+                  })();
                 }}
                 onFile={categoryId => bank.fileEntries([entry.id], categoryId)}
                 onUnfile={categoryId => bank.unfileEntries([entry.id], categoryId)}

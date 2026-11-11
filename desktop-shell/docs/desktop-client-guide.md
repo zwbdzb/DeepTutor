@@ -274,6 +274,27 @@ refresh/device token、清本地凭证、并摘除 catalog 里的 Tokengine 连�
 （用户手动配的连接不受影响）。决策细节见
 `docs/adr/ADR-004-titlebar-account-chip.md`。
 
+### 5.5 应用页的二次确认（ADR-007）
+
+应用页的危险动作（删除对话及其导师子对话等）不再用 `window.confirm()`——它
+由 WebView2 实现，桌面壳里会渲染成「127.0.0.1:3782 显示」的浏览器框。
+
+现在统一走 `web/lib/system-confirm.ts` 的 `systemConfirm()`：
+
+```ts
+if (!(await systemConfirm(t("Permanently delete this chat and its tutor threads? This cannot be undone.")))) return;
+```
+
+- **壳里**：检测到 `window.pywebview.api.confirm` 就调壳的
+  `Api.confirm`（`desktop/main.py`），弹系统 MessageBox，标题固定
+  **ThinkBuddy**，按钮「确定 / 取消」，样式与「退出登录」确认同一套
+  （`desktop/dialogs.py` 的 `confirm()`；`warning=True` 才加警告图标）。
+- **浏览器直开**：桥不存在，回落 `window.confirm`，行为与改造前一致。
+- **铁律**：拿不到明确布尔答案一律按「取消」处理；调用点必须 `await`。
+
+机制与取舍（含为什么不去拦 WebView2 的 `ScriptDialogOpening`）见
+`docs/adr/ADR-007-native-confirm-dialogs.md`。
+
 ---
 
 ## 6. 版本对齐

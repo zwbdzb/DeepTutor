@@ -31,6 +31,7 @@ import {
 } from "@/lib/llm-options";
 import type { LLMSelection } from "@/features/chat/model/protocol";
 import { apiFetch, apiUrl } from "@/lib/api";
+import { systemConfirm } from "@/lib/system-confirm";
 import {
   useMemoryRun,
   type RunEvent,
@@ -224,13 +225,11 @@ export default function MemoryRunPanel({
 
   const handleReset = useCallback(async () => {
     if (isRunning) return;
-    const ok =
-      typeof window !== "undefined" &&
-      window.confirm(
-        t(
-          "Reset will delete the current memory file AND its seen-id state. The next Update will re-ingest every L1 entity from scratch. Continue?",
-        ),
-      );
+    const ok = await systemConfirm(
+      t(
+        "Reset will delete the current memory file AND its seen-id state. The next Update will re-ingest every L1 entity from scratch. Continue?",
+      ),
+    );
     if (!ok) return;
     try {
       const res = await apiFetch(
