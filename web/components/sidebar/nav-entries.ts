@@ -8,7 +8,6 @@ import {
   House,
   LayoutGrid,
   ListTodo,
-  PenLine,
   Settings,
   type LucideIcon,
 } from 'lucide-react'
@@ -77,14 +76,6 @@ export const PRIMARY_NAV: NavEntry[] = [
     icon: ListTodo,
     tooltipKey: 'kanban.intro',
     surfaces: ['chat'],
-  },
-  {
-    href: '/co-writer',
-    label: 'Co-Writer',
-    icon: PenLine,
-    tooltipKey: 'Co-Writer tooltip',
-    requires: 'llm',
-    defaultCollapsed: true,
   },
   {
     href: '/agents',

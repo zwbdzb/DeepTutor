@@ -20,7 +20,7 @@ vi.mock("@/hooks/useChatWorkspaces", () => ({ useChatWorkspaces: () => ({ worksp
 
 vi.mock("next/navigation", () => ({
   useSearchParams: () => new URLSearchParams(),
-  usePathname: () => "/co-writer",
+  usePathname: () => "/kanban",
   useRouter: () => ({ push: fixture.push }),
 }));
 vi.mock("next/image", () => ({ default: () => null }));
@@ -68,9 +68,9 @@ it("loads conversation history while navigation remains usable, then preserves s
     />,
   );
   expect(container.querySelector('[aria-busy="true"]')).toBeInTheDocument();
-  expect(screen.getByRole("link", { name: "Co-Writer" })).toHaveAttribute(
+  expect(screen.getByRole("link", { name: "Task Board" })).toHaveAttribute(
     "href",
-    "/co-writer",
+    "/kanban",
   );
 
   // The history list is a `dynamic(..., { ssr: false })` chunk behind Suspense,
@@ -83,7 +83,7 @@ it("loads conversation history while navigation remains usable, then preserves s
   });
   const scroller = history.closest(".overflow-y-auto");
   expect(scroller).toContainElement(
-    screen.getByRole("link", { name: "Co-Writer" }),
+    screen.getByRole("link", { name: "Task Board" }),
   );
   expect(scroller).not.toContainElement(
     screen.getByRole("tab", { name: "navigation.home" }),

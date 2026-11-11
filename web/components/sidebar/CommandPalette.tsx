@@ -84,8 +84,7 @@ export function CommandPalette({
       ...categories.map(item => ({ id: `category:${item.id}`, label: t(item.label), icon: glyph(item.icon), run: go(item.href) })),
       ...[
         { href: '/calendar', label: 'Calendar', icon: CalendarDays },
-              { href: '/kanban', label: 'Task Board', icon: Columns3 },
-        { href: '/co-writer', label: 'Co-Writer', icon: PenLine },
+        { href: '/kanban', label: 'Task Board', icon: Columns3 },
       ]
         .filter(item => navVisibleUnderPolicy(item.href, allowedSurfaces))
         .map(item => ({ id: item.href, label: t(item.label), icon: glyph(item.icon), run: go(item.href) })),

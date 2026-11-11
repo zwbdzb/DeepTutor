@@ -78,3 +78,13 @@ test("with whisper absent the real dashboard drops More Projects entirely", () =
   assert.ok(!shown.some((g) => g.items.some((i) => i.key === "whisper")));
   assert.ok(shown.length > 0, "the ungated groups must survive");
 });
+
+test("the Notebook tile lives in Learning Space as the only /co-writer entry", () => {
+  const items = DASHBOARD_GROUPS.flatMap((group) => group.items);
+  const tile = items.find((item) => item.key === "co_writer");
+  assert.ok(tile, "the co_writer tile must exist");
+  assert.equal(tile.href, "/co-writer");
+  // The sidebar's own /co-writer row is gone, so this tile is the only entry:
+  // two rows pointing at the same page would read as a duplicate in the hub.
+  assert.equal(items.filter((item) => item.href === "/co-writer").length, 1);
+});

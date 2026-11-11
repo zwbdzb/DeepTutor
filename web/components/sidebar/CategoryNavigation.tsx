@@ -6,7 +6,7 @@ import { useId, useState, startTransition, type ReactNode } from 'react'
 import dynamic from 'next/dynamic'
 import { usePathname, useRouter } from 'next/navigation'
 import { m, useReducedMotion } from 'framer-motion'
-import { MessageCircle, Search, Columns3, PenLine } from 'lucide-react'
+import { MessageCircle, Search, Columns3 } from 'lucide-react'
 import {
   HomeShelfIcon,
   LearningShelfIcon,
@@ -237,7 +237,6 @@ export function CategoryBody({
             {[
               { href: '/calendar', label: 'Calendar', icon: CalendarDays },
               { href: '/kanban', label: 'Task Board', icon: Columns3 },
-              { href: '/co-writer', label: 'Co-Writer', icon: PenLine },
             ]
               .filter(item => navVisibleUnderPolicy(item.href, nav.allowedSurfaces))
               .map(item => (

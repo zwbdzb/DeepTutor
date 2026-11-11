@@ -1,5 +1,5 @@
 import { CalendarDays } from 'lucide-react'
-import { Columns3, LayoutGrid, MessageCircle, PenLine, Plus, type LucideIcon } from 'lucide-react'
+import { Columns3, LayoutGrid, MessageCircle, Plus, type LucideIcon } from 'lucide-react'
 import {
   HomeShelfIcon,
   LearningShelfIcon,
@@ -68,7 +68,6 @@ export function pageSections({
         { href: '/chat', label: t('Chat'), icon: MessageCircle },
         { href: '/calendar', label: t('Calendar'), icon: CalendarDays, account: true },
         { href: '/kanban', label: t('Task Board'), icon: Columns3 },
-        { href: '/co-writer', label: t('Co-Writer'), icon: PenLine },
       ].filter(page => navVisibleUnderPolicy(page.href, allowedSurfaces)),
     },
     {

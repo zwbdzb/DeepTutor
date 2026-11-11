@@ -12,6 +12,7 @@ import {
   Ear,
   History,
   NotebookPen,
+  PenLine,
   Plug,
   Terminal,
   UserRound,
@@ -21,6 +22,7 @@ import {
 
 import { SPACE_MCP_SURFACE, loadMcpSurface } from "@/components/mcp/surface";
 import { getCliApps } from "@/lib/cli-apps-api";
+import { listCoWriterDocuments } from "@/lib/co-writer-api";
 import { listSessions } from "@/lib/session-api";
 import { listNotebooks, listNotebookEntries } from "@/lib/notebook-api";
 import { listPersonas } from "@/lib/personas-api";
@@ -38,6 +40,7 @@ export type DashKey =
   | "notebooks"
   | "journal"
   | "question_bank"
+  | "co_writer"
   | "personas"
   | "skills"
   | "mcp"
@@ -145,6 +148,19 @@ export const DASHBOARD_GROUPS: DashboardGroup[] = [
         unit: { zh: "个知识库", en: "knowledge bases" },
         tile: "bg-blue-500/10 text-blue-600 dark:text-blue-400",
         load: async () => (await listKnowledgeBases({ library: true })).length,
+      },
+      {
+        key: "co_writer",
+        href: "/co-writer",
+        icon: PenLine,
+        title: { zh: "笔记本", en: "Learning notebook" },
+        blurb: {
+          zh: "为正在学的东西建一页：书写、互相链接，再和 Dito 一起把它学透。",
+          en: "Pages for what you are learning — write, link, and study them with Dito.",
+        },
+        unit: { zh: "个页面", en: "pages" },
+        tile: "bg-purple-500/10 text-purple-600 dark:text-purple-400",
+        load: async () => (await listCoWriterDocuments()).length,
       },
     ],
   },

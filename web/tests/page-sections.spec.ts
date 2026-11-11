@@ -7,6 +7,8 @@ const sections = (allowedSurfaces: string[] | null = null) =>
 describe('page sections', () => {
   it('places each index page in the shelf the sidebar shows it under', () => {
     expect(locatePage('/space/journal', sections())?.section.id).toBe('resources')
+    // The notebook's entry now lives on the Learning Space shelf, not home.
+    expect(locatePage('/co-writer', sections())?.section.id).toBe('resources')
     expect(locatePage('/learning', sections())?.section.id).toBe('learning')
     expect(locatePage('/kanban', sections())?.section.id).toBe('home')
     // Account-level pages are the same in every workspace, so show no workspace.
