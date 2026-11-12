@@ -1,13 +1,15 @@
 """ThinkBuddy 主站与 Tokengine 认证服务接入配置。
 
-两个站点的语义分工：
+站点与接口的语义分工：
 
 * **ThinkBuddy 主站**（键 ``api_base``，默认 ``https://thinkbuddy.hanyoai.com``）：
   产品官网 / 邀请页 / 更新源 / 遥测上报等业务入口。
 * **Tokengine**（键 ``oauth_base``，默认 ``https://tokengine.hanyoai.com``）：
   登录认证（OAuth）+ token（模型中继）服务。
+* **公共知识库**（键 ``library_url``，默认
+  ``https://thinkbuddy-t.hanyoai.com/api/v1/library``）：GeekAI 下发知识库连接。
 
-端点解析优先级（高 → 低，两个站点一致）：
+端点解析优先级（高 → 低）：
 
 1. 环境变量（联调最快，无需改文件）
 2. ``<ROOT>/endpoints.json``（打包版可外部覆盖，免重建就能指向本地平台）
@@ -28,7 +30,8 @@
 ``revoke_url`` / ``relay_base`` / ``api_base`` / ``library_url``。
 
 环境变量：Tokengine 侧为 ``TOKENGINE_`` + 对应键的大写形式（根地址为
-``TOKENGINE_OAUTH_BASE``）；主站根地址为 ``THINKBUDDY_API_BASE``。
+``TOKENGINE_OAUTH_BASE``）；主站根地址为 ``THINKBUDDY_API_BASE``，公共知识库
+接口为 ``THINKBUDDY_LIBRARY_URL``。
 废弃键 ``thinkbuddy_website_url``（→ 改写为 ``api_base``）与 ``update_url`` /
 ``telemetry_url``（→ 随 ``api_base`` 自动派生）出现在 endpoints.json 时只告警、
 不生效。
@@ -61,6 +64,7 @@ PROD_OAUTH_BASE = "https://tokengine.hanyoai.com"
 DEFAULT_OAUTH_BASE = os.environ.get("TOKENGINE_DEFAULT_OAUTH_BASE", PROD_OAUTH_BASE)
 # ThinkBuddy 主站根地址（官网/邀请页/更新源/遥测的派生基准）。
 DEFAULT_API_BASE = "https://thinkbuddy.hanyoai.com"
+DEFAULT_LIBRARY_URL = "https://thinkbuddy-t.hanyoai.com/api/v1/library"
 
 # --------------------------------------------------------------------------- #
 # 端点解析
@@ -156,10 +160,10 @@ def thinkbuddy_api_base(root: Optional[Path] = None) -> str:
 
 
 def thinkbuddy_library_url(root: Optional[Path] = None) -> str:
-    """Public library endpoint; deployments can use a separate GeekAI origin."""
+    """Public GeekAI library endpoint, independent of the main-site base URL."""
     explicit = (os.environ.get("THINKBUDDY_LIBRARY_URL") or "").strip()
     configured = _read_endpoints_file(root).get("library_url", "")
-    return (explicit or configured or f"{thinkbuddy_api_base(root)}/api/v1/library").rstrip("/")
+    return (explicit or configured or DEFAULT_LIBRARY_URL).rstrip("/")
 
 
 def telemetry_url(root: Optional[Path] = None) -> str:
