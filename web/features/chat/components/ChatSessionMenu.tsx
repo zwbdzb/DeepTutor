@@ -30,6 +30,7 @@ import {
   type SessionOrganizationPatch,
 } from "@/lib/session-api";
 import type { SessionOrganization } from "@/hooks/useSessionOrganization";
+import { systemConfirm } from "@/lib/system-confirm";
 import { sessionTaskLinks, setTaskStatusLink } from "@/lib/task-board-api";
 import { useTaskBoard } from "@/lib/task-board-store";
 import type { ChatWorkspaceRegistration } from "@/lib/workspaces-api";
@@ -159,12 +160,12 @@ export default function ChatSessionMenu({
       .finally(() => setMoving(false));
   };
 
-  const remove = () => {
+  const remove = async () => {
     if (!sessionId) return;
     if (
-      !window.confirm(
+      !(await systemConfirm(
         t("Permanently delete this chat and its tutor threads? This cannot be undone."),
-      )
+      ))
     ) {
       return;
     }

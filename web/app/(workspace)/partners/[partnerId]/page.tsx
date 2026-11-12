@@ -59,6 +59,7 @@ import SaveToNotebookModal, {
 } from "@/components/notebook/SaveToNotebookModal";
 import { useAuthStatus } from "@/hooks/useAuthStatus";
 import { decodeResourceSegment } from "@/lib/resource-routes";
+import { systemConfirm } from "@/lib/system-confirm";
 
 type Tab = "chat" | "configure" | "channels" | "archive";
 
@@ -436,11 +437,11 @@ function PartnerDetail() {
 
   const handleDestroy = async () => {
     if (
-      !window.confirm(
+      !(await systemConfirm(
         t(
           "Delete this partner and ALL its data (workspace, sessions, channels)? This cannot be undone.",
         ),
-      )
+      ))
     )
       return;
     try {

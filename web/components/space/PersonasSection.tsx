@@ -26,6 +26,7 @@ import {
   updatePersona,
   type PersonaInfo,
 } from "@/lib/personas-api";
+import { systemConfirm } from "@/lib/system-confirm";
 
 interface PersonaEditorState {
   mode: "create" | "edit";
@@ -219,7 +220,7 @@ export default function PersonasSection() {
 
   const handleDelete = useCallback(
     async (name: string) => {
-      if (!window.confirm(t('Delete persona "{{name}}"?', { name }))) return;
+      if (!(await systemConfirm(t('Delete persona "{{name}}"?', { name })))) return;
       setDeleting(name);
       try {
         await deletePersona(name);

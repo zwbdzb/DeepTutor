@@ -36,6 +36,7 @@ import {
   updateSkill,
   type SkillInfo,
 } from "@/lib/skills-api";
+import { systemConfirm } from "@/lib/system-confirm";
 
 interface SkillEditorState {
   mode: "create" | "edit";
@@ -286,7 +287,7 @@ export default function SkillsSection() {
         const scope = new URLSearchParams(window.location.search).get("skill_workspace") ?? "";
         const workspaces = await resourceUsage("skills", name, scope);
         const impact = workspaces.length ? "\n\n" + t("Used by workspaces: {{names}}", { names: workspaces.join(", ") }) : "";
-        if (!window.confirm(t('Delete skill "{{name}}"?', { name }) + impact)) return;
+        if (!(await systemConfirm(t('Delete skill "{{name}}"?', { name }) + impact))) return;
         await deleteSkill(name);
         await load();
       } catch (err) {
@@ -372,7 +373,7 @@ export default function SkillsSection() {
 
   const handleDeleteTag = useCallback(
     async (tag: string) => {
-      if (!window.confirm(t('Delete tag "{{name}}"?', { name: tag }))) return;
+      if (!(await systemConfirm(t('Delete tag "{{name}}"?', { name: tag })))) return;
       try {
         await deleteSkillTag(tag);
         if (filterTag === tag) setFilterTag("all");

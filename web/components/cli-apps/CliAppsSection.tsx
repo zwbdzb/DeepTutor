@@ -36,6 +36,7 @@ import {
   setCliAppEnabled,
   uninstallCliApp,
 } from "@/lib/cli-apps-api";
+import { systemConfirm } from "@/lib/system-confirm";
 
 const PAGE_SIZE = 12;
 
@@ -282,17 +283,18 @@ function Installed({
                       type="button"
                       disabled={busy === app.id}
                       onClick={() => {
-                        if (
-                          typeof window !== "undefined" &&
-                          !window.confirm(
-                            t('Remove "{{name}}" from this deployment?', {
-                              name: app.display_name,
-                            }),
-                          )
-                        ) {
-                          return;
-                        }
-                        void act(app.id, () => uninstallCliApp(app.id));
+                        void (async () => {
+                          if (
+                            !(await systemConfirm(
+                              t('Remove "{{name}}" from this deployment?', {
+                                name: app.display_name,
+                              }),
+                            ))
+                          ) {
+                            return;
+                          }
+                          await act(app.id, () => uninstallCliApp(app.id));
+                        })();
                       }}
                       aria-label={t("Uninstall")}
                       className="rounded-md p-1.5 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--muted)] hover:text-red-500 disabled:opacity-50"

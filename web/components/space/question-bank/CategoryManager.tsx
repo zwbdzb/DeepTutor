@@ -4,6 +4,7 @@ import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Check, Pencil, Plus, Trash2, X } from "lucide-react";
 import type { NotebookCategory } from "@/lib/notebook-api";
+import { systemConfirm } from "@/lib/system-confirm";
 import Tooltip from "@/shared/ui/Tooltip";
 
 interface CategoryManagerProps {
@@ -126,14 +127,16 @@ export default function CategoryManager({
                       // Deleting a category unfiles its questions; it never
                       // deletes them. Say so — the wording is the whole point
                       // of the prompt.
-                      if (
-                        window.confirm(
-                          t(
-                            "Delete this tag? The questions themselves stay in your bank.",
-                          ),
+                      void (async () => {
+                        if (
+                          await systemConfirm(
+                            t(
+                              "Delete this tag? The questions themselves stay in your bank.",
+                            ),
+                          )
                         )
-                      )
-                        void run(() => onDelete(category.id));
+                          void run(() => onDelete(category.id));
+                      })();
                     }}
                     aria-label={t("Delete")}
                     className="rounded-md p-1 text-[var(--muted-foreground)] transition-colors hover:bg-red-50 hover:text-red-500 disabled:opacity-40 dark:hover:bg-red-950/30"

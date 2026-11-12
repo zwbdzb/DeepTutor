@@ -169,6 +169,26 @@ class Api:
     def open_browser(self) -> None:
         webbrowser.open(self._url)
 
+    # -- 页面二次确认（应用页 window.confirm 的系统弹窗替身）------------ #
+    def confirm(self, message: str, title: str = "") -> bool:
+        """用壳的系统弹窗回答应用页的一次「是/否」询问。
+
+        前端 `web/lib/system-confirm.ts` 检测到 ``window.pywebview.api`` 就调
+        这里，替掉 WebView2 自带的「127.0.0.1:3782 显示」提示框（那是宿主
+        chrome，没有品牌、也不是桌面端观感）。壳不在场（浏览器直开）时前端
+        自动回落到 ``window.confirm``。
+
+        标题缺省 APP_NAME（ThinkBuddy）。自定义标题栏已被 WM_NCCALCSIZE 抹平，
+        弹窗若不自己带品牌，用户只看到一条「无主」文案。
+
+        注意返回值必须严格是 bool —— pywebview 把返回值 JSON 化后交给 JS，
+        前端只认 true/false（拿不到就按「取消」处理，宁可不动数据）。
+        """
+        text = str(message or "").strip()
+        if not text:
+            return False
+        return dialogs.confirm(str(title or APP_NAME), text)
+
     # -- Tokengine 登录桥（登录门控页 / 应用内按钮共用）------------------ #
     def auth_status(self) -> dict:
         return self._auth.status()

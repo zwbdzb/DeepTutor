@@ -2,6 +2,7 @@
 
 import { activeWorkspaceId, navigateTask } from "@/lib/workspace-scope";
 import { sessionWorkspaceId } from "@/lib/session-api";
+import { systemConfirm } from "@/lib/system-confirm";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useTranslation } from "react-i18next";
@@ -107,7 +108,7 @@ export default function UtilitySidebar() {
 
   const handleDeleteSession = useCallback(
     async (sessionId: string) => {
-      if (!window.confirm(t("Permanently delete this chat and its tutor threads? This cannot be undone."))) return;
+      if (!(await systemConfirm(t("Permanently delete this chat and its tutor threads? This cannot be undone.")))) return;
       await deleteSession(sessionId, sessionWorkspaceId(sessions.find(item => item.session_id === sessionId)));
       setSessions((prev) =>
         prev.filter((session) => session.session_id !== sessionId),
