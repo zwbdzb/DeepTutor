@@ -1,6 +1,7 @@
 /**
  * The persona gallery's two affordances:
- *   - category tabs (全部 / 教育 / 工作 / 代码) above the card grid;
+ *   - category tabs (全部 / 教育 / 办公 / IT编程 / 设计 / 多媒体 / 营销) above
+ *     the card grid;
  *   - the 「召唤」button in each card's bottom-right corner, which hands the
  *     persona to the chat page through `?persona=`.
  *
@@ -73,21 +74,21 @@ it("narrows the grid to one category and keeps every persona under All", async (
   await screen.findByText("KET 备考策略师");
   expect(screen.getByText("简历审计师")).toBeInTheDocument();
   expect(screen.getByText("my-own")).toBeInTheDocument();
-  expect(tab("All")).toHaveAttribute("aria-pressed", "true");
+  expect(tab("persona.category.all")).toHaveAttribute("aria-pressed", "true");
 
-  fireEvent.click(tab("Education"));
+  fireEvent.click(tab("persona.category.education"));
   await waitFor(() => expect(screen.queryByText("简历审计师")).not.toBeInTheDocument());
   expect(screen.getByText("KET 备考策略师")).toBeInTheDocument();
   // An uncategorised persona belongs to no filtered tab.
   expect(screen.queryByText("my-own")).not.toBeInTheDocument();
-  expect(tab("Education")).toHaveAttribute("aria-pressed", "true");
+  expect(tab("persona.category.education")).toHaveAttribute("aria-pressed", "true");
 
-  fireEvent.click(tab("Work"));
+  fireEvent.click(tab("persona.category.work"));
   await waitFor(() => expect(screen.getByText("简历审计师")).toBeInTheDocument());
   expect(screen.queryByText("KET 备考策略师")).not.toBeInTheDocument();
 
   // A category with no persona says so instead of rendering an empty grid.
-  fireEvent.click(tab("Code"));
+  fireEvent.click(tab("persona.category.code"));
   await waitFor(() =>
     expect(screen.getByText("No personas in this category yet.")).toBeInTheDocument(),
   );

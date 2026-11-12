@@ -70,12 +70,22 @@ function stripFrontmatter(md: string): string {
  * the "no filter" pseudo tab. A persona whose PERSONA.md declares no
  * `category` (anything the user authored themselves) belongs to no filtered
  * tab and is only listed under "All".
+ *
+ * The keys are the `category` slugs stored in PERSONA.md, so they stay stable
+ * English (`work`, `code`) while the visible label comes from a dedicated
+ * `persona.category.*` i18n entry — the Chinese UI reads 办公 / IT编程.
+ * Renaming a slug would orphan every persona file already on disk, and
+ * borrowing the global "Work"/"Code" keys would relabel unrelated features
+ * (a tool is also called "Code"), so labels get their own namespace.
  */
 const PERSONA_CATEGORY_TABS: ReadonlyArray<{ key: string; label: string }> = [
-  { key: "all", label: "All" },
-  { key: "education", label: "Education" },
-  { key: "work", label: "Work" },
-  { key: "code", label: "Code" },
+  { key: "all", label: "persona.category.all" },
+  { key: "education", label: "persona.category.education" },
+  { key: "work", label: "persona.category.work" },
+  { key: "code", label: "persona.category.code" },
+  { key: "design", label: "persona.category.design" },
+  { key: "media", label: "persona.category.media" },
+  { key: "marketing", label: "persona.category.marketing" },
 ];
 
 export default function PersonasSection() {
