@@ -400,7 +400,7 @@ export default function PersonasSection() {
           {visiblePersonas.map((persona) => {
             const readOnly = Boolean(persona.read_only);
             return (
-              <Tooltip key={persona.name} label={t("View persona")} as="li" side="top">
+              <li key={persona.name}>
                 <div
                   role="button"
                   tabIndex={0}
@@ -505,7 +505,7 @@ export default function PersonasSection() {
                     </Tooltip>
                   </div>
                 </div>
-              </Tooltip>
+              </li>
             );
           })}
         </ul>
