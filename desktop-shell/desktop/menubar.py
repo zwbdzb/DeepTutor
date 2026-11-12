@@ -631,7 +631,7 @@ def _win_close() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 帮助：打开官网 / 配置使用指南 / 日志目录 ---------------------------------------- #
+# 帮助：打开官网 / 配置使用指南 / 数据目录 / 日志目录 ------------------------------ #
 def _open_website() -> None:
     """打开 ThinkBuddy 官网（文件菜单；URL 走 endpoints 覆盖链，默认官网首页）。"""
     try:
@@ -658,6 +658,36 @@ def _open_docs() -> None:
         log.exception("open docs failed")
 
 
+def _reveal_dir(path: str) -> None:
+    """在系统文件管理器中打开一个目录（三平台分支）。"""
+    if sys.platform == "darwin":
+        import subprocess
+
+        subprocess.Popen(["open", path])
+    elif os.name == "nt":
+        os.startfile(path)  # noqa: S606  仅 Windows 可用
+    else:
+        import subprocess
+
+        subprocess.Popen(["xdg-open", path])
+
+
+def _open_data_dir() -> None:
+    r"""在系统文件管理器中打开工作区根目录（帮助菜单）。
+
+    打开 ``default_workspace()`` 本身（会话数据、上传附件、导出产物所在的
+    工作区树顶），而不是它下面的 ``logs`` 子树——用户想自己翻数据、备份或
+    清理时需要的入口就是树顶。目录不存在时先建出来，否则资源管理器会报
+    「找不到路径」。
+    """
+    try:
+        workspace = default_workspace()
+        workspace.mkdir(parents=True, exist_ok=True)
+        _reveal_dir(str(workspace))
+    except Exception:  # noqa: BLE001
+        log.exception("open data dir failed")
+
+
 def _open_log_dir() -> None:
     r"""在系统文件管理器中打开日志目录（帮助菜单）。
 
@@ -670,16 +700,7 @@ def _open_log_dir() -> None:
     try:
         log_dir = default_workspace() / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
-        if sys.platform == "darwin":
-            import subprocess
-
-            subprocess.Popen(["open", str(log_dir)])
-        elif os.name == "nt":
-            os.startfile(str(log_dir))  # noqa: S606  仅 Windows 可用
-        else:
-            import subprocess
-
-            subprocess.Popen(["xdg-open", str(log_dir)])
+        _reveal_dir(str(log_dir))
     except Exception:  # noqa: BLE001
         log.exception("open log dir failed")
 
@@ -766,6 +787,7 @@ def build_native_menu(api) -> list[Menu]:
             "帮助",
             [
                 MenuAction("配置使用指南", lambda: _open_docs()),
+                MenuAction("打开数据目录", lambda: _open_data_dir()),
                 MenuAction("打开日志目录", lambda: _open_log_dir()),
                 MenuSeparator(),
                 MenuAction(f"关于{APP_NAME}", lambda: _menu_about(api)),

@@ -46,6 +46,7 @@ def build_menu():
         ]),
         Menu("帮助", items=[
             MenuAction("配置使用指南", noop),
+            MenuAction("打开数据目录", noop),
             MenuAction("打开日志目录", noop),
             MenuSeparator(),
             MenuAction("关于ThinkBuddy", noop),

@@ -104,6 +104,7 @@ Name: "autostart";   Description: "{cm:StartAtBoot}";       GroupDescription: "{
 Source: "..\dist\ThinkBuddyDesktop.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\assets\icon.ico";            DestDir: "{app}\assets"; Flags: ignoreversion
 Source: "..\assets\icon.png";            DestDir: "{app}\assets"; Flags: ignoreversion
+Source: "..\assets\icon_owl.png";        DestDir: "{app}\assets"; Flags: ignoreversion
 ; offline runtime —— 单归档投递（L1 安装提速，2026-10-27 实测驱动）
 ; 历史做法是把 staging 整棵树（4 万个文件）逐文件交给 Inno 写入，实测
 ; 40620 个文件耗时 337s，摊到每个文件 6.21ms，且与文件大小无关——瓶颈是

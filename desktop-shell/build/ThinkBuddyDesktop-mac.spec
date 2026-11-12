@@ -37,6 +37,7 @@ except Exception:
 
 datas = [
     (str(ASSETS / "icon.png"), "assets"),
+    (str(ASSETS / "icon_owl.png"), "assets"),
 ]
 # icon.icns 在 CI 里 inline 生成（sips + iconutil），本地开发可手动生成：
 #   mkdir -p /tmp/icon.iconset && sips -z 1024 1024 icon.png --out /tmp/icon.iconset/icon_512x512@2x.png && ...

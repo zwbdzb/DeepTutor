@@ -1381,15 +1381,31 @@ class QuestionPipeline:
     # ------------------------------------------------------------------
     # Quiz payload parsing / validation / normalization
     # ------------------------------------------------------------------
-    @staticmethod
-    def _parse_quiz_payload(raw: str) -> dict[str, Any]:
+    @classmethod
+    def _parse_quiz_payload(cls, raw: str) -> dict[str, Any]:
         text = (raw or "").strip()
         if not text:
             return {}
+        # ``question`` is Markdown and a coding answer is code, so a fence in the
+        # reply can sit inside a field. A complete object is taken as it is
+        # before any fence is read as a wrapper around the JSON.
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, dict):
+            return parsed
         # Strip a single fenced block if the model wrapped the JSON
         fence = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
         if fence:
-            text = fence.group(1).strip()
+            unwrapped = cls._first_json_object(fence.group(1).strip())
+            if unwrapped:
+                return unwrapped
+        # No fence, or the wrapped object's own fences cut the match short.
+        return cls._first_json_object(text)
+
+    @staticmethod
+    def _first_json_object(text: str) -> dict[str, Any]:
         try:
             parsed = json.loads(text)
         except json.JSONDecodeError:
@@ -1578,6 +1594,12 @@ class QuestionPipeline:
     # Tool integration (mirrors chat's policy)
     # ------------------------------------------------------------------
     async def _prepare_pageindex_tools(self) -> None:
+        from deeptutor.modules.catalog import require_module
+
+        self._pageindex_tool_context = None
+        if not self.kb_name:
+            return
+        require_module("knowledge")
         from deeptutor.services.rag.pipelines.pageindex.tools import (
             build_pageindex_tool_context,
         )
@@ -1683,7 +1705,7 @@ class QuestionPipeline:
             kwargs.setdefault("sort_by", "relevance")
         elif tool_name == "read_source":
             kwargs["source_index"] = self._source_index(context)
-        elif tool_name == "write_note":
+        elif tool_name == "save_favorite":
             kwargs["conversation_history"] = list(context.conversation_history or [])
             kwargs["current_user_message"] = context.user_message or ""
         return kwargs

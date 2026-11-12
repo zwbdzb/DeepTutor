@@ -62,8 +62,10 @@ def main() -> None:
     nfiles = 0
     with zipfile.ZipFile(out_zip, "w", mode, compresslevel=level) as zf:
         zf.write(exe, f"{PREFIX}/{exe.name}")
-        zf.write(ROOT / "assets" / "icon.ico", f"{PREFIX}/assets/icon.ico")
-        nfiles += 2
+        nfiles += 1
+        for asset in ("icon.ico", "icon.png", "icon_owl.png"):
+            zf.write(ROOT / "assets" / asset, f"{PREFIX}/assets/{asset}")
+            nfiles += 1
         for part in ("python", "node"):
             base = Path("runtime") / part
             for f in sorted((STAGING / part).rglob("*")):
@@ -80,7 +82,8 @@ def main() -> None:
         PORTABLE.mkdir(parents=True, exist_ok=True)
         shutil.copy2(exe, PORTABLE / exe.name)
         (PORTABLE / "assets").mkdir(exist_ok=True)
-        shutil.copy2(ROOT / "assets" / "icon.ico", PORTABLE / "assets" / "icon.ico")
+        for asset in ("icon.ico", "icon.png", "icon_owl.png"):
+            shutil.copy2(ROOT / "assets" / asset, PORTABLE / "assets" / asset)
         for part in ("python", "node"):
             shutil.copytree(STAGING / part, PORTABLE / "runtime" / part)
         print(f"portable dir at: {PORTABLE}")

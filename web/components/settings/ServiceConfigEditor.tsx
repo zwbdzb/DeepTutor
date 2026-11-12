@@ -88,6 +88,9 @@ const API_FORMAT_HINTS: Record<string, string> = {
   anthropic: "Send every request as Anthropic Messages (/v1/messages).",
 };
 const LLM_SHAPED = new Set<ServiceName>(["llm", "task"]);
+// LLM bindings that list their models from a local CLI login: no base URL,
+// no API key, and the model list comes from "Sync models".
+const CLI_LOGIN_BINDINGS = new Set(["codebuddy", "claude_code"]);
 
 const SERVICE_LABEL: Record<ServiceName, string> = {
   llm: "LLM",
@@ -379,7 +382,8 @@ export function ServiceConfigEditor({
     const binding = connection?.binding ?? activeProfile.binding ?? "";
     const baseUrl = connection?.base_url ?? activeProfile.base_url ?? "";
     const apiKey = connection?.api_key ?? activeProfile.api_key ?? "";
-    if (!binding || (binding !== "codebuddy" && !baseUrl.trim())) return;
+    if (!binding || (!CLI_LOGIN_BINDINGS.has(binding) && !baseUrl.trim()))
+      return;
 
     const profileId = activeProfile.id;
     setModelsSyncing(true);
@@ -447,6 +451,18 @@ export function ServiceConfigEditor({
               : {}),
           };
         });
+        if (
+          service === "llm" &&
+          ["minimax", "minimax_anthropic", "openrouter"].includes(binding)
+        ) {
+          // Discovery recommendations must not erase saved legacy/custom models.
+          const discovered = new Set(fetched.map((item) => item.id));
+          profile.models.push(
+            ...Array.from(existing.values()).filter(
+              (model) => !discovered.has(model.model),
+            ),
+          );
+        }
         if (
           target.active_profile_id === profile.id &&
           !profile.models.some(
@@ -681,10 +697,10 @@ export function ServiceConfigEditor({
                             previousProvider,
                           ) => {
                             if (service !== "llm" || !activeProfile) return;
-                            const crossesCodeBuddyBoundary =
-                              provider.value === "codebuddy" ||
-                              previousProvider === "codebuddy";
-                            if (crossesCodeBuddyBoundary) {
+                            const crossesCliLoginBoundary =
+                              CLI_LOGIN_BINDINGS.has(provider.value) ||
+                              CLI_LOGIN_BINDINGS.has(previousProvider);
+                            if (crossesCliLoginBoundary) {
                               const profileId = activeProfile.id;
                               mutateCatalog((next) => {
                                 const target = next.services.llm;
@@ -696,7 +712,7 @@ export function ServiceConfigEditor({
                                   profile.binding !== provider.value
                                 )
                                   return;
-                                if (provider.value === "codebuddy") {
+                                if (CLI_LOGIN_BINDINGS.has(provider.value)) {
                                   profile.models = [];
                                   if (
                                     target.active_profile_id === profile.id
@@ -716,7 +732,7 @@ export function ServiceConfigEditor({
                                   target.active_model_id = modelId;
                               });
                             }
-                            if (provider.value === "codebuddy") {
+                            if (CLI_LOGIN_BINDINGS.has(provider.value)) {
                               void syncProviderModels({
                                 binding: provider.value,
                                 base_url: provider.base_url || "",
@@ -728,7 +744,9 @@ export function ServiceConfigEditor({
 
                         {service !== "search" &&
                           !isCodexOAuth &&
-                          openedProfile.binding !== "codebuddy" && (
+                          !CLI_LOGIN_BINDINGS.has(
+                            openedProfile.binding ?? "",
+                          ) && (
                             <ProviderModelDiscovery
                               input={providerProbeInput}
                               selectedModels={openedProfile.models.map(
@@ -768,8 +786,9 @@ export function ServiceConfigEditor({
                               action={
                                 <span className="flex items-center gap-2">
                                   {service === "llm" &&
-                                    openedProfile.binding ===
-                                      "codebuddy" && (
+                                    CLI_LOGIN_BINDINGS.has(
+                                      openedProfile.binding ?? "",
+                                    ) && (
                                       <CardAction
                                         onClick={() =>
                                           void syncProviderModels()
@@ -1348,7 +1367,9 @@ function defaultModelLabel(language: AppLanguage, index: number): string {
       ? `Modèle ${safeIndex}`
       : language === "de"
         ? `Modell ${safeIndex}`
-        : `Model ${safeIndex}`;
+        : language === "vi"
+          ? `Mô hình ${safeIndex}`
+          : `Model ${safeIndex}`;
 }
 
 function formatCompactTokens(value: string | number | undefined): string {
@@ -1504,6 +1525,8 @@ function ProfileFields({
   );
   const isCodeBuddyAuth =
     service === "llm" && providerValue === "codebuddy";
+  const isCliLogin =
+    service === "llm" && CLI_LOGIN_BINDINGS.has(providerValue);
   const apiFormats = LLM_SHAPED.has(service)
     ? (providerOption?.api_formats ?? [])
     : [];
@@ -1531,7 +1554,7 @@ function ProfileFields({
   };
 
   const fields =
-    isCodexOAuth || isCodeBuddyAuth
+    isCodexOAuth || isCliLogin
       ? { apiKey: false, baseUrl: false, baseUrlRequired: false }
       : service === "search"
         ? searchProviderFields(profile.provider, providerOption)
@@ -1603,7 +1626,7 @@ function ProfileFields({
               if (renamed !== profile.name) {
                 updateProfileField(service, "name", renamed);
               }
-              if (val === "codebuddy") {
+              if (CLI_LOGIN_BINDINGS.has(val)) {
                 updateProfileField(service, "base_url", "");
                 updateProfileField(service, "api_key", "");
               } else if (match?.base_url) {
@@ -1749,7 +1772,7 @@ function ProfileFields({
           </div>
         </div>
       )}
-      {!isCodexOAuth && !isCodeBuddyAuth && (
+      {!isCodexOAuth && !isCliLogin && (
         <details
           key={providerValue}
           open={showConnectionOptions}

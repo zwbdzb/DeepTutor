@@ -17,6 +17,7 @@ import {
   resolveProgressPercent,
   type KnowledgeBase,
 } from "@/lib/knowledge-helpers";
+import { systemConfirm } from "@/lib/system-confirm";
 import type {
   LinkedFolderInfo,
   SyncFolderResponse,
@@ -114,11 +115,11 @@ export default function KbLinkedFoldersSection({
 
   const handleUnlink = async (folder: LinkedFolderInfo) => {
     if (
-      !window.confirm(
+      !(await systemConfirm(
         t(
           "Unlinking stops future syncs. Files already imported remain in this knowledge base.",
         ),
-      )
+      ))
     ) {
       return;
     }

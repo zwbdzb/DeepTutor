@@ -8,7 +8,7 @@
 
 - 原生 **WebView2 窗口**（1280×860）承载 DeepTutor 前端 `127.0.0.1:3782`
 - **登录门控**（WorkBuddy 同款交互）：启动时若未登录，窗口停留在登录页
-  （居中吉祥物 + 「懂了的那一下，很爽。」+ 黑色登录按钮）；点击用系统浏览器打开
+  （居中猫头鹰图标 + 「ThinkBuddy, 我懂你」+ 黑色登录按钮）；点击用系统浏览器打开
   Tokengine 平台注册/登录 → 客户端自动取回**域名 / 业务令牌 / 可用模型**写进
   DeepTutor 并进入应用。**退出登录即回到登录页，软件功能不可用**，重新登录后恢复
   （详见 [`docs/tokengine-integration.md`](docs/tokengine-integration.md) 与
@@ -195,7 +195,8 @@ tools/
   build_runtime.py 构建离线运行时
   make_portable.py 组装便携包
   （图标更新：品牌资产事实源在仓库根 brand/logo/，
-    同步 cp brand/logo/thinkbuddy-icon.ico → assets/icon.ico）
+    桌面/托盘/安装包同步 thinkbuddy-icon.ico → assets/icon.ico，
+    登录页无外框猫头鹰同步 thinkbuddy-icon-owl.png → assets/icon_owl.png）
 build/
   ThinkBuddyDesktop.spec   PyInstaller 配置
   installer.iss            Inno Setup 安装向导

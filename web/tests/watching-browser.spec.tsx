@@ -8,7 +8,7 @@ const mock = vi.hoisted(() => ({
   browse: vi.fn(),
   push: vi.fn(),
 }));
-vi.mock("next/navigation", () => ({ useRouter: () => ({ push: mock.push }) }));
+vi.mock("next/navigation", () => ({ usePathname: () => "/learning/reading", useRouter: () => ({ push: mock.push }) }));
 const translate = (key: string) => key;
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: translate }) }));
 vi.mock("@/hooks/useAuthStatus", () => ({
@@ -55,8 +55,18 @@ describe("Watching account browser", () => {
       />,
     );
 
+    // The row must be a *button* (that is what makes it clickable), so this
+    // keeps the role query instead of falling back to findByText. Mounting
+    // chains two mocked round-trips — invidiousAccount('status') decides the
+    // view, then browseInvidious fills the grid — and the 1s default expires
+    // whenever the whole suite runs in parallel (191 spec files); the row
+    // itself renders correctly, it just needs more wall clock.
     fireEvent.click(
-      await screen.findByRole("button", { name: /Neural networks/ }),
+      await screen.findByRole(
+        "button",
+        { name: /Neural networks/ },
+        { timeout: 5000 },
+      ),
     );
 
     expect(onSelectUrl).toHaveBeenCalledWith(

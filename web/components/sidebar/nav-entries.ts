@@ -1,12 +1,13 @@
+import { CalendarDays } from 'lucide-react'
 import { LEARNING_HUB } from '@/lib/learning-routes'
 import {
+  Blocks,
   Bot,
   GraduationCap,
   HeartHandshake,
   House,
   LayoutGrid,
   ListTodo,
-  PenLine,
   Settings,
   type LucideIcon,
 } from 'lucide-react'
@@ -60,21 +61,21 @@ export const PRIMARY_NAV: NavEntry[] = [
     tooltipKey: 'One tutor, your own way to learn.',
     surfaces: ['reading', 'chat', 'books'],
   },
+  {
+    href: '/personalization',
+    label: 'Experts · Skills · Connectors',
+    icon: Blocks,
+  },
   { href: '/space', label: 'Learning Space', icon: LayoutGrid, tooltipKey: 'Space tooltip' },
+  {
+    href: '/calendar', label: 'Calendar', icon: CalendarDays, surfaces: ['chat'],
+  },
   {
     href: '/kanban',
     label: 'Task Board',
     icon: ListTodo,
     tooltipKey: 'kanban.intro',
     surfaces: ['chat'],
-  },
-  {
-    href: '/co-writer',
-    label: 'Co-Writer',
-    icon: PenLine,
-    tooltipKey: 'Co-Writer tooltip',
-    requires: 'llm',
-    defaultCollapsed: true,
   },
   {
     href: '/agents',

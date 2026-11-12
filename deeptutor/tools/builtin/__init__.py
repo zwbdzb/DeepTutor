@@ -185,7 +185,7 @@ class RAGTool(_PromptHintsMixin, BaseTool):
                     type="string",
                     required=False,
                     nullable=True,
-                    description="Exact document path from kb_files for visual/page inspection; prevents substitution across sources.",
+                    description="Exact document path from kb_files for visual/page inspection with a page, figure, region or asset_id. Source-only scoped text retrieval is unsupported; it never falls back to a whole-KB search.",
                 ),
                 ToolParameter(
                     name="asset_id",
@@ -263,9 +263,22 @@ class RAGTool(_PromptHintsMixin, BaseTool):
                         sources = await presenter(
                             result.metadata["presentation_sources"], presentation
                         )
+                        rows = [{**row, "presentation": presentation} for row in sources]
                         result.public_result = {
                             "content": "Selected source view presented.",
-                            "sources": [{**row, "presentation": presentation} for row in sources],
+                            "sources": rows,
+                            # Rides on the tool_result event so the web client can
+                            # show each page at the call that presented it.
+                            "metadata": {
+                                "presented_sources": [
+                                    {
+                                        "title": row.get("title"),
+                                        "preview_url": row.get("preview_url"),
+                                        "presentation": presentation,
+                                    }
+                                    for row in rows
+                                ]
+                            },
                         }
                         result.content += "\nThe selected source view was publicly presented."
                     except (ValueError, MasteryInteractionError) as exc:
@@ -288,15 +301,24 @@ class RAGTool(_PromptHintsMixin, BaseTool):
             raise ValueError("RAG requires an explicit kb_name.")
         event_sink = None if kwargs.get("_mastery_source_context") else kwargs.get("event_sink")
         vision_supported = bool(kwargs.get("_vision_supported", False))
-        from deeptutor.services.rag.source_visuals import figure_labels, retrieve_visual
+        from deeptutor.services.rag.source_visuals import (
+            figure_labels,
+            page_reference,
+            retrieve_visual,
+        )
 
         exact_keys = ("source_path", "asset_id", "figure", "page", "region", "source_hash")
         selectors = _normalize_rag_selectors(kwargs)
         if isinstance(selectors, str):
             return _rag_selector_error(selectors)
-        if any(
-            selectors.get(key) is not None and selectors.get(key) != "" for key in exact_keys
-        ) or figure_labels(query):
+        visual_requested = any(
+            selectors.get(key) is not None and selectors.get(key) != ""
+            for key in ("asset_id", "figure", "page", "region")
+        ) or bool(figure_labels(query))
+        if (
+            any(selectors.get(key) is not None and selectors.get(key) != "" for key in exact_keys)
+            or visual_requested
+        ):
             from deeptutor.multi_user.knowledge_access import resolve_for_rag
             from deeptutor.services.rag.kb_paths import resolve_kb_dir
 
@@ -304,6 +326,20 @@ class RAGTool(_PromptHintsMixin, BaseTool):
             if resource is None:
                 return ToolResult(
                     content=f"Knowledge base '{kb_name}' is not accessible.", success=False
+                )
+            if (
+                selectors.get("source_path")
+                and not visual_requested
+                and page_reference(query) is None
+            ):
+                return ToolResult(
+                    content=(
+                        "RAG does not support scoped text retrieval by source_path. "
+                        "No search was run. For exact visual inspection, also select "
+                        "a page, figure, region or asset_id."
+                    ),
+                    success=False,
+                    metadata={"error_type": "source_scope_unsupported"},
                 )
             try:
                 evidence = await asyncio.to_thread(
@@ -1067,6 +1103,8 @@ class ReadSourceTool(_PromptHintsMixin, BaseTool):
     ``_augment_tool_kwargs``. The tool itself stays stateless.
     """
 
+    HISTORY_PAGE_CHARS = 16_000
+
     def get_definition(self) -> ToolDefinition:
         return ToolDefinition(
             name="read_source",
@@ -1075,7 +1113,8 @@ class ReadSourceTool(_PromptHintsMixin, BaseTool):
                 "the preview shown in the Attached Sources manifest is "
                 "insufficient to answer the user's question. The id must be "
                 "copied verbatim from the manifest — do not invent ids. Do not "
-                "call this on every source 'just in case'."
+                "call this on every source 'just in case'. Tutoring history "
+                "(hs-tutor-*) is paginated; use next_offset to read the next page."
             ),
             parameters=[
                 ToolParameter(
@@ -1087,6 +1126,14 @@ class ReadSourceTool(_PromptHintsMixin, BaseTool):
                         "bk- (book reference), rd- (reading unit), hs- (history "
                         "session), qb- (question-bank entry), at- (document attachment)."
                     ),
+                ),
+                ToolParameter(
+                    name="offset",
+                    type="integer",
+                    description="Character offset for an hs-tutor-* history page; starts at 0.",
+                    required=False,
+                    default=0,
+                    minimum=0,
                 ),
             ],
         )
@@ -1117,9 +1164,32 @@ class ReadSourceTool(_PromptHintsMixin, BaseTool):
                 ),
                 success=False,
             )
+        content = str(full_text)
+        metadata: dict[str, Any] = {"source_id": source_id, "char_count": len(content)}
+        if source_id.startswith("hs-tutor-"):
+            offset = kwargs.get("offset", 0)
+            if type(offset) is not int or not 0 <= offset < len(content):
+                return ToolResult(
+                    content="Error: offset must be a non-negative integer within the archive.",
+                    success=False,
+                )
+            if offset or len(content) > self.HISTORY_PAGE_CHARS:
+                end = min(offset + self.HISTORY_PAGE_CHARS, len(content))
+                next_offset = end if end < len(content) else None
+                metadata.update(offset=offset, next_offset=next_offset)
+                content = json.dumps(
+                    {
+                        "archive_id": source_id,
+                        "offset": offset,
+                        "next_offset": next_offset,
+                        "total_chars": len(content),
+                        "content": content[offset:end],
+                    },
+                    ensure_ascii=False,
+                )
         return ToolResult(
-            content=str(full_text),
-            metadata={"source_id": source_id, "char_count": len(str(full_text))},
+            content=content,
+            metadata=metadata,
             public_result={"content": "Attached source inspected privately."}
             if kwargs.get("_mastery_source_context")
             else None,
@@ -1338,12 +1408,12 @@ class ListNotebookTool(_PromptHintsMixin, BaseTool):
         return ToolDefinition(
             name="list_notebook",
             description=(
-                "Discover the user's notebooks and the records inside "
+                "Discover the user's favorites collections and the records inside "
                 "them. Call with no arguments to list every notebook "
                 "the user owns (id + name + record count). Call with a "
                 "specific `notebook_id` to drill in and list its "
                 "records (record_id + title + summary + timestamp). "
-                "Use this BEFORE `write_note` in edit mode so you have "
+                "Use this BEFORE `save_favorite` in edit mode so you have "
                 "valid record ids."
             ),
             parameters=[
@@ -1373,6 +1443,59 @@ class ListNotebookTool(_PromptHintsMixin, BaseTool):
             content=outcome.text,
             metadata=outcome.summary or {},
         )
+
+
+class ListFavoritesTool(ListNotebookTool):
+    def get_definition(self) -> ToolDefinition:
+        definition = super().get_definition()
+        definition.name = "list_favorites"
+        definition.description = (
+            "List favorites collections and archived original records. Use notebook_id "
+            "to open a collection; specify record_id with notebook_id to read one "
+            "saved source body in 8,000-character pages, continuing with offset. "
+            "Calls without record_id list metadata only. Authored pages are found "
+            "with search_notes."
+        )
+        definition.parameters.extend(
+            [
+                ToolParameter(
+                    name="record_id",
+                    type="string",
+                    description=(
+                        "Optional saved record ID from the collection listing. "
+                        "Requires notebook_id; when omitted, no body is read."
+                    ),
+                    required=False,
+                ),
+                ToolParameter(
+                    name="offset",
+                    type="integer",
+                    description=(
+                        "Optional zero-based character offset for record_id reads. "
+                        "Defaults to 0; use next_offset from the prior result to continue."
+                    ),
+                    required=False,
+                    default=0,
+                    minimum=0,
+                ),
+            ]
+        )
+        return definition
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        if not kwargs.get("record_id"):
+            return await super().execute(**kwargs)
+
+        from deeptutor.tools.list_notebook import read_favorite_record
+
+        outcome = read_favorite_record(
+            notebook_id=str(kwargs.get("notebook_id") or ""),
+            record_id=str(kwargs["record_id"]),
+            offset=kwargs.get("offset", 0),
+        )
+        if not outcome.ok:
+            return ToolResult(content=outcome.error, success=False)
+        return ToolResult(content=outcome.text, metadata=outcome.summary or {})
 
 
 class QuestionBankTool(_PromptHintsMixin, BaseTool):
@@ -1542,8 +1665,8 @@ class QuestionBankTool(_PromptHintsMixin, BaseTool):
         )
 
 
-class WriteNoteTool(_PromptHintsMixin, BaseTool):
-    """Create OR edit a notebook record from the chat agent.
+class SaveFavoriteTool(_PromptHintsMixin, BaseTool):
+    """Create OR edit a favorite record from the chat agent.
 
     Two modes mirror what a human sees in the notebook UI:
 
@@ -1551,8 +1674,8 @@ class WriteNoteTool(_PromptHintsMixin, BaseTool):
       a title; the body defaults to the actual chat transcript built
       from injected conversation history, or to an agent-authored
       markdown body if ``content`` is explicitly provided).
-    * ``edit`` — patch an existing record's title / body / summary.
-      Requires a known ``record_id`` (obtained via ``list_notebook``).
+    * ``edit`` — update an existing record's title or note, preserving its body.
+      Requires a known ``record_id`` (obtained via ``list_favorites``).
 
     Auto-mounted only when the user has at least one notebook. The
     pipeline injects ``conversation_history`` + ``current_user_message``
@@ -1561,14 +1684,14 @@ class WriteNoteTool(_PromptHintsMixin, BaseTool):
 
     def get_definition(self) -> ToolDefinition:
         return ToolDefinition(
-            name="write_note",
+            name="save_favorite",
             description=(
-                "Save or edit a notebook record. mode='append' creates "
+                "Save or edit a favorite record. mode='append' creates "
                 "a NEW record (default body = the actual recent chat "
                 "transcript built by the tool; pass `content` instead "
                 "to save an agent-authored markdown body). "
-                "mode='edit' patches an existing record's title / body "
-                "/ summary — `record_id` is required (call `list_notebook` "
+                "mode='edit' updates an existing record's title or note "
+                "/ summary — `record_id` is required (call `list_favorites` "
                 "first to discover valid ids)."
             ),
             parameters=[
@@ -1582,13 +1705,13 @@ class WriteNoteTool(_PromptHintsMixin, BaseTool):
                     name="notebook_id",
                     type="string",
                     description=(
-                        "Id of the target notebook from the schema enum (do not invent ids)."
+                        "Id of the target favorites collection from the schema enum (do not invent ids)."
                     ),
                 ),
                 ToolParameter(
                     name="record_id",
                     type="string",
-                    description=("Required for mode='edit'. Discover with `list_notebook` first."),
+                    description=("Required for mode='edit'. Discover with `list_favorites` first."),
                     required=False,
                 ),
                 ToolParameter(
@@ -1608,7 +1731,7 @@ class WriteNoteTool(_PromptHintsMixin, BaseTool):
                         "For append: optional agent-authored markdown body "
                         "(when omitted the tool inserts the real Q&A "
                         "transcript itself, the recommended default). "
-                        "For edit: replacement body (leave empty to keep "
+                        "For edit: must be omitted; favorites preserve "
                         "the existing body)."
                     ),
                     required=False,
@@ -1641,6 +1764,12 @@ class WriteNoteTool(_PromptHintsMixin, BaseTool):
     async def execute(self, **kwargs: Any) -> ToolResult:
         from deeptutor.tools.write_note import write_note
 
+        if kwargs.get("mode") == "edit" and kwargs.get("content"):
+            return ToolResult(
+                content="Favorites preserve original content; add to a notebook page to edit.",
+                success=False,
+            )
+
         outcome = write_note(
             mode=str(kwargs.get("mode") or ""),
             notebook_id=str(kwargs.get("notebook_id") or ""),
@@ -1657,7 +1786,7 @@ class WriteNoteTool(_PromptHintsMixin, BaseTool):
         action = "Saved new record" if outcome.mode == "append" else "Updated record"
         return ToolResult(
             content=(
-                f"{action} in notebook {outcome.notebook_name!r} (record id: {outcome.record_id})."
+                f"{action} in favorites collection {outcome.notebook_name!r} (record id: {outcome.record_id})."
             ),
             metadata={
                 "mode": outcome.mode,
@@ -2184,7 +2313,10 @@ CONFIGURABLE_BUILTIN_TOOL_NAMES: tuple[str, ...] = (
     "learning_update",
     "read_skill",
     "list_notebook",
+    "list_favorites",
     "write_note",
+    "save_favorite",
+    "search_notes",
     "question_bank",
     "web_fetch",
     "github",
