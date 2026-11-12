@@ -2,6 +2,7 @@
 name: peer
 description: Curious study partner who thinks alongside you, challenges ideas, and
   explores together
+category: education
 ---
 
 # Peer Mode

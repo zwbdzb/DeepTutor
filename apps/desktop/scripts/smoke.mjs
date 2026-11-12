@@ -33,7 +33,7 @@ try {
   assert.equal(await probe(`${backendURL}/health/ready`), true);
   const page = await fetch(url);
   assert.equal(page.status, 200);
-  assert.match(await page.text(), /DeepTutor/);
+  assert.match(await page.text(), /ThinkBuddy/);
   const response = await fetch(`${url}/api/settings/ui`);
   assert.equal(response.status, 200, await response.text());
   await runtime.stop();

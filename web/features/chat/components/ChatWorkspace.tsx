@@ -94,6 +94,7 @@ import {
 } from "@/features/chat/controllers/pending-attachments";
 import { readChatLaunchIntent } from "@/lib/chat-launch-intent";
 import { useAttachmentLimits } from "@/lib/attachment-limits";
+import { touchPersonaUsage } from "@/lib/personas-api";
 import {
   hasPendingAskUser,
   hasPendingUserCard,
@@ -1340,6 +1341,29 @@ export default function ChatWorkspace() {
     return () => {
       initialLoadRef.current = false;
     };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 「召唤」entry point — a persona card pushes ``/chat?persona=<name>``.
+  //
+  // Declared after the mount effect above on purpose: React runs effects in
+  // declaration order, so the fresh draft has already been dispatched by the
+  // time this one dispatches SET_PERSONA_SELECTION, and the reducer applies
+  // them in that order — the selection therefore lands on the *new* draft
+  // rather than being wiped by it. (``newSession`` also resets the entry's
+  // persona, which is why the two can not simply be merged.)
+  //
+  // The parameter is consumed once and then dropped from the URL: the persona
+  // is conversation state from here on, and a reload must not silently
+  // re-apply it to whatever conversation is on screen.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    const summoned = (url.searchParams.get("persona") || "").trim();
+    if (!summoned) return;
+    url.searchParams.delete("persona");
+    setPersonaSelection(summoned);
+    void touchPersonaUsage(summoned);
+    router.replace(`${url.pathname}${url.search}${url.hash}`, { scroll: false });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // When URL param changes (sidebar navigation), load the corresponding session
@@ -2735,18 +2759,19 @@ export default function ChatWorkspace() {
                 // window leaves the greeting no room.
                 <div className="flex w-full flex-1 min-h-0 items-end justify-center overflow-hidden pb-14 animate-fade-in px-6">
                   <div className="w-full max-w-[960px] flex items-center justify-center gap-4">
-                    <img
-                      src="/logo.png"
-                      alt="ThinkBuddy"
-                      width={40}
-                      height={40}
-                      // CJK glyphs sit low in their line box (measured: the
-                      // 40px heading's ink center runs 2px below the box
-                      // center), so box-centering leaves the logo floating
-                      // high. Nudge it down to meet the glyph ink center.
-                      className="h-10 w-10 translate-y-[2px] select-none dark:invert"
-                      draggable={false}
-                    />
+                    {/* Ink-to-ink, not box-to-box: the PNG carries roughly 10%
+                        padding on every side, so a 46px box puts the drawn owl
+                        at the same optical height as the 40px heading's glyphs.
+                        The wrapper holds the hover so the bobbing owl can move
+                        without sliding out from under the pointer. */}
+                    <span className="dt-owl-hover flex h-[46px] w-[46px] shrink-0 items-center justify-center">
+                      <img
+                        src="/logo.png"
+                        alt=""
+                        aria-hidden="true"
+                        className="dt-owl-bob h-[46px] w-[46px] select-none dark:invert"
+                      />
+                    </span>
                     <h1 className="font-serif text-[40px] font-medium leading-[1.1] tracking-[-0.015em] text-[var(--foreground)]">
                       {t(welcomeGreeting)}
                     </h1>

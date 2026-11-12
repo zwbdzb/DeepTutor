@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from deeptutor.services.persona.service import (
+    PRESETS_DIR,
     InvalidPersonaNameError,
     PersonaExistsError,
     PersonaNotFoundError,
@@ -115,15 +116,55 @@ def test_migrate_is_idempotent(tmp_path: Path) -> None:
     assert service.migrate_legacy_skills(skills_root) == []
 
 
+def test_category_survives_update_rewrite(service: PersonaService) -> None:
+    """Editing a body rebuilds the frontmatter — category must come back with it."""
+    service.create(
+        "cv-auditor",
+        "Resume auditor",
+        "---\nname: cv-auditor\ndescription: d\n"
+        "display_name: 简历审计师\ncategory: work\n---\n\nBody",
+    )
+    current = service.get_detail("cv-auditor").content
+    info = service.update("cv-auditor", description="d2", content=current)
+    assert info.category == "work"
+    assert info.display_name == "简历审计师"
+    detail = service.get_detail("cv-auditor")
+    assert detail.category == "work"
+    assert "category: work" in detail.content
+    assert "Body" in detail.content
+
+
+def test_persona_without_category_is_valid(service: PersonaService) -> None:
+    """Personas written before categories existed must keep working."""
+    service.create("plain", "d", "Body only")
+    [info] = service.list_personas()
+    assert info.name == "plain"
+    assert info.category == ""
+
+
 def test_seed_presets_creates_defaults(service: PersonaService) -> None:
     # Issue #659: fresh installs must expose peer / teacher / research-assistant.
+    # The bundled preset set grows over time (the expert personas were added
+    # later), so the expectation is "every preset on disk", not a fixed list.
+    bundled = {p.name for p in PRESETS_DIR.iterdir() if (p / "PERSONA.md").exists()}
     seeded = service.seed_presets()
-    assert set(seeded) == {"peer", "teacher", "research-assistant"}
+    assert set(seeded) == bundled
     names = {p.name for p in service.list_personas()}
+    assert bundled <= names
     assert {"peer", "teacher", "research-assistant"} <= names
     teacher = service.get_detail("teacher")
     assert teacher.description  # frontmatter description survived
     assert "Teacher Mode" in teacher.content
+
+
+def test_seed_presets_keeps_categories(service: PersonaService) -> None:
+    """The gallery's category tabs read this frontmatter key off the seeded copy."""
+    service.seed_presets()
+    categories = {p.name: p.category for p in service.list_personas()}
+    assert categories["ket-strategist"] == "education"
+    assert categories["cv-auditor"] == "work"
+    assert categories["software-engineer"] == "code"
+    assert categories["teacher"] == "education"
 
 
 def test_seed_presets_is_idempotent_and_non_destructive(service: PersonaService) -> None:

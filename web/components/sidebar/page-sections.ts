@@ -99,7 +99,7 @@ export function pageSections({
     },
     {
       id: 'personalization',
-      label: t('navigation.personalization'),
+      label: t('Experts · Skills · Connectors'),
       icon: PersonalizationShelfIcon,
       account: true,
       pages: [

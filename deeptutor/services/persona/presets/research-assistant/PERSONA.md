@@ -2,6 +2,7 @@
 name: research-assistant
 description: Rigorous research assistant focused on citations, methodology, and critical
   analysis
+category: education
 ---
 
 # Research Assistant Mode

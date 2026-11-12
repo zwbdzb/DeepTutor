@@ -70,6 +70,7 @@ import { modeIcon } from "./ComposerIcons";
 import type { ComposerResourceCatalog } from "@/hooks/useComposerResources";
 import type { ResourceSelection } from "@/features/chat/ChatStateAdapter";
 import { CREATE_KINDS, isCreationKind } from "@/lib/creations";
+import { listPersonas } from "@/lib/personas-api";
 
 import TaskLinkSelector from "@/components/tasks/TaskLinkSelector";
 import { useTaskBoard } from "@/lib/task-board-store";
@@ -522,6 +523,22 @@ export default memo(function ChatComposer({
   const [hasContent, setHasContent] = useState(false);
   const [moreCapsOpen, setMoreCapsOpen] = useState(false);
   const [lastCapMenuOpen, setLastCapMenuOpen] = useState(capMenuOpen);
+  // The persona rides as its slug; the chip names it the way the picker does
+  // (``display_name``). Resolved label kept beside the slug it was resolved
+  // for, so a persona missing from the list falls back to the slug instead of
+  // showing the previous one's name.
+  const [personaResolved, setPersonaResolved] = useState<{ slug: string; label: string } | null>(null);
+  useEffect(() => {
+    if (!selectedPersona) return;
+    let mounted = true;
+    void listPersonas({ force: false }).then(items => {
+      if (!mounted) return;
+      const hit = items.find(i => i.name === selectedPersona);
+      setPersonaResolved({ slug: selectedPersona, label: hit?.display_name?.trim() || hit?.name || selectedPersona });
+    }).catch(() => undefined);
+    return () => { mounted = false; };
+  }, [selectedPersona]);
+  const personaDisplayName = personaResolved?.slug === selectedPersona ? personaResolved.label : null;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const restoreFocusOnReturnRef = useRef(false);
   const inputHandleRef = useRef<ComposerInputHandle>(null);
@@ -1027,8 +1044,8 @@ export default memo(function ChatComposer({
           {
             key: "persona",
             icon: UserRound,
-            kind: t("Persona"),
-            label: selectedPersona,
+            kind: t("Expert"),
+            label: personaDisplayName || selectedPersona,
             onRemove: onClearPersona,
           } satisfies ContextTreeItem,
         ]

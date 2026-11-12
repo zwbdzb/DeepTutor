@@ -52,6 +52,17 @@ module.exports = {
           'Georgia',
           'serif',
         ],
+        // The brand wordmark only (see @font-face in app/globals.css). Never
+        // use it for body copy: it is self-hosted, Latin-only and designed to
+        // be set once, large, in the sidebar header.
+        brand: [
+          'Space Grotesk',
+          'var(--font-sans)',
+          'PingFang SC',
+          'Microsoft YaHei',
+          'system-ui',
+          'sans-serif',
+        ],
       },
       colors: {
         border: alpha('--border'),

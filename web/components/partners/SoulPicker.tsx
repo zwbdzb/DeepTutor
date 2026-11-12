@@ -191,7 +191,11 @@ export default function SoulPicker({
       {tab === "persona" && (
         <div className="flex flex-wrap gap-2">
           {(sources?.personas ?? []).map((persona) => (
-            <Tooltip key={persona.name} label={persona.name} description={persona.description}>
+            <Tooltip
+              key={persona.name}
+              label={persona.display_name?.trim() || persona.name}
+              description={persona.description}
+            >
               <button
                 type="button"
                 onClick={() => selectPersona(persona.name)}
@@ -201,7 +205,7 @@ export default function SoulPicker({
                     : "border-[var(--border)] text-[var(--muted-foreground)] hover:border-[var(--ring)] hover:text-[var(--foreground)]"
                 }`}
               >
-                {persona.name}
+                {persona.display_name?.trim() || persona.name}
               </button>
             </Tooltip>
           ))}

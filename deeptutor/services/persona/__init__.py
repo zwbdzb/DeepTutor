@@ -12,6 +12,7 @@ from .service import (
     get_persona_service,
     load_visible_for_context,
 )
+from .usage import bump_persona_usage, load_persona_usage
 
 __all__ = [
     "InvalidPersonaNameError",
@@ -22,6 +23,8 @@ __all__ = [
     "PersonaInfo",
     "PersonaNotFoundError",
     "PersonaService",
+    "bump_persona_usage",
     "get_persona_service",
+    "load_persona_usage",
     "load_visible_for_context",
 ]

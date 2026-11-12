@@ -192,7 +192,7 @@ export const DASHBOARD_GROUPS: DashboardGroup[] = [
  */
 export const PERSONALIZATION_GROUPS: DashboardGroup[] = [
   {
-    label: { zh: "个性化", en: "Personalization" },
+    label: { zh: "", en: "" },
     items: [
       {
         key: "agents",

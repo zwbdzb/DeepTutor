@@ -119,12 +119,12 @@ export default function AppShell({ sidebar, pageBar, children, homeHref = "/" }:
               <Image
                 src="/logo.png"
                 alt="ThinkBuddy"
-                width={20}
-                height={20}
+                width={22}
+                height={22}
                 unoptimized
-                className="h-5 w-5 dark:invert"
+                className="h-[22px] w-[22px] dark:invert"
               />
-              <span className="text-[14px] font-semibold tracking-tight text-[var(--foreground)]">
+              <span className="font-brand text-[15px] font-bold leading-none tracking-[-0.01em] text-[var(--foreground)]">
                 ThinkBuddy
               </span>
             </Link>

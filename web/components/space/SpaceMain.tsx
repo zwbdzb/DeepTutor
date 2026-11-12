@@ -27,7 +27,7 @@ function BackToHub({ pathname }: { pathname: string }) {
         strokeWidth={1.8}
         className="transition-transform group-hover:-translate-x-0.5"
       />
-      {personal ? t("navigation.personalization") : spaceLabel}
+      {personal ? t("Experts · Skills · Connectors") : spaceLabel}
     </Link>
   );
 }

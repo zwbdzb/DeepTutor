@@ -57,7 +57,7 @@ export default function PersonaPicker({
     const keyword = query.trim().toLowerCase();
     if (!keyword) return personas;
     return personas.filter((persona) => {
-      const name = persona.name.toLowerCase();
+      const name = `${persona.name} ${persona.display_name ?? ""}`.toLowerCase();
       const desc = (persona.description || "").toLowerCase();
       return name.includes(keyword) || desc.includes(keyword);
     });
@@ -160,7 +160,7 @@ export default function PersonaPicker({
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2">
                           <span className="truncate text-[14px] font-medium text-[var(--foreground)]">
-                            {persona.name}
+                            {persona.display_name?.trim() || persona.name}
                           </span>
                           {persona.source === "admin" ? (
                             <span className="rounded-md bg-[var(--muted)] px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[var(--muted-foreground)]">

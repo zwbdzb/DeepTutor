@@ -2,6 +2,27 @@
 @tailwind components;
 @tailwind utilities;
 
+/* The wordmark face. Space Grotesk is a geometric grotesque whose angled
+   terminals and open apertures read as a designed mark rather than UI text,
+   which is what the header "ThinkBuddy" wordmark needs next to the line-art
+   owl. Self-hosted (public/fonts) so the desktop build never reaches out to
+   Google at runtime, and Latin-only — the wordmark is always Latin. */
+@font-face {
+  font-family: "Space Grotesk";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/space-grotesk-600.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Space Grotesk";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/space-grotesk-700.woff2") format("woff2");
+}
+
 /* Feature-page standards. Queries measure usable content after the sidebar
    and gutters, so the same cards behave consistently in both route groups. */
 .dt-page-container {
@@ -782,6 +803,34 @@
   animation: fade-in 0.35s ease-out forwards;
 }
 
+/* ─── The greeting mascot ────────────────────────────────────────────────
+   The owl rests perfectly still and only bobs once the pointer is over it.
+   Idle motion competes with the greeting text for attention, and a mascot
+   that never stops moving reads as a loading spinner; hover-triggered motion
+   reads as the bird reacting to you instead.
+
+   The bob is 4px over 1.4s with ease-in-out at both ends, so the bird eases
+   into the turn rather than bouncing off a hard stop. `translateY` only — no
+   scale — so the ink stays crisp and nothing reflows. */
+@keyframes dt-owl-bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-4px);
+  }
+}
+
+/* The hover target is the static wrapper, not the owl: the owl translates up
+   while bobbing, so if it carried the hover itself a pointer resting on its
+   bottom edge would be left behind on each rise, dropping the hover and
+   restarting the animation — a visible flicker. The wrapper never moves, so
+   the hit area stays put for the whole cycle. */
+.dt-owl-hover:hover .dt-owl-bob {
+  animation: dt-owl-bob 1.4s ease-in-out infinite;
+}
+
 /* Picker chrome: a soft scrim fade + a small spring-in for the card, so
    modal pickers feel placed rather than popped. */
 @keyframes dt-overlay-in {
@@ -1368,6 +1417,7 @@ a[href^="#dt-locator-"]:hover {
   .dt-detail-in,
   .dt-dot-live,
   .dt-breathing-text,
+  .dt-owl-bob,
   .animate-spin {
     animation: none !important;
   }

@@ -54,6 +54,7 @@ import type {
 } from "@/features/chat/ChatStateAdapter";
 import { apiFetch, apiUrl } from "@/lib/api";
 import { notify } from "@/lib/notifications";
+import { listPersonas } from "@/lib/personas-api";
 import { docIconFor } from "@/lib/doc-attachments";
 import { isQuoteAttachment, quoteText } from "@/lib/quote-attachments";
 import { QUOTE_RULE_CLASS } from "@/components/chat/home/QuotedPassage";
@@ -1568,6 +1569,24 @@ export const UserMessage = memo(function UserMessage({
   // reference chip can badge it with the agent's brand icon.
   const agentKinds = useConnectedAgentKinds();
   const consultation = useConsultationReference(msg.requestSnapshot?.config);
+  // The snapshot keeps the persona as its slug; the line under the bubble
+  // names it the way the picker does (``display_name``). Read from the message
+  // rather than ``snap``, which is declared below the guard at the top of this
+  // component; the slug stands in until the list lands, and if it never does.
+  const [personaLabel, setPersonaLabel] = useState("");
+  const personaName = msg.requestSnapshot?.persona ?? "";
+  useEffect(() => {
+    if (!personaName) { setPersonaLabel(""); return; }
+    let alive = true;
+    void listPersonas()
+      .then((items) => {
+        if (!alive) return;
+        const hit = items.find((item) => item.name === personaName);
+        setPersonaLabel(hit?.display_name?.trim() || "");
+      })
+      .catch(() => undefined);
+    return () => { alive = false; };
+  }, [personaName]);
   // ``msg.id`` can be a negative client-side sentinel for optimistic
   // (just-sent, not yet reconciled with the server) rows. We still allow
   // the Edit button to surface — ``editMessage`` in the context handles
@@ -1730,8 +1749,9 @@ export const UserMessage = memo(function UserMessage({
           {
             key: "persona",
             icon: UserRound,
-            kind: t("Persona"),
-            label: snap.persona,
+            // No kind prefix: the chip is just the persona's name.
+            kind: "",
+            label: personaLabel || snap.persona,
           } satisfies ContextTreeItem,
         ]
       : []),

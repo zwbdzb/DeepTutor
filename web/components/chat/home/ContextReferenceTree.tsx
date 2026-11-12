@@ -146,9 +146,11 @@ export default memo(function ContextReferenceTree({
                 className="shrink-0 text-[var(--muted-foreground)]"
               />
             )}
-            <span className="shrink-0 font-medium text-[var(--muted-foreground)]">
-              {item.kind}
-            </span>
+            {item.kind ? (
+              <span className="shrink-0 font-medium text-[var(--muted-foreground)]">
+                {item.kind}
+              </span>
+            ) : null}
             <span className="min-w-0 truncate text-[var(--muted-foreground)]/80">
               {item.label}
             </span>
