@@ -1049,6 +1049,55 @@ def test_source_frontend_dev_mode_is_explicit_and_skips_production_build(
     assert runtime.command == ["/bin/npm", "run", "dev", "--", "--port", "3782"]
 
 
+@pytest.mark.parametrize(
+    ("dev", "has_source", "expected_kind"),
+    [
+        (True, True, "source"),
+        (False, True, "source-production"),
+        (True, False, "packaged"),
+        (False, False, "packaged"),
+    ],
+)
+def test_frontend_resolution_with_packaged_and_source_assets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    dev: bool,
+    has_source: bool,
+    expected_kind: str,
+) -> None:
+    source = tmp_path / "web"
+    (source / "node_modules").mkdir(parents=True)
+    packaged = tmp_path / "packaged"
+    runtime_web = tmp_path / "runtime-web"
+    monkeypatch.setattr(launcher, "_source_web_dir", lambda _home: source if has_source else None)
+    monkeypatch.setattr(launcher, "_packaged_web_dir", lambda: packaged)
+    monkeypatch.setattr(launcher, "_copy_packaged_web_if_needed", lambda *_a, **_kw: runtime_web)
+    monkeypatch.setattr(launcher.shutil, "which", lambda name: f"/bin/{name}")
+    builds: list[Path] = []
+    monkeypatch.setattr(
+        launcher,
+        "_ensure_source_production_build",
+        lambda path, *_a, **_kw: builds.append(path),
+    )
+
+    runtime = launcher._resolve_frontend(
+        tmp_path, 3782, api_base="http://localhost:8001", auth_enabled=False, dev=dev
+    )
+
+    assert runtime.kind == expected_kind
+    if expected_kind == "source":
+        assert runtime.cwd == source
+        assert runtime.command == ["/bin/npm", "run", "dev", "--", "--port", "3782"]
+    elif expected_kind == "source-production":
+        standalone = source / launcher.SOURCE_PRODUCTION_DIST_DIR / "standalone"
+        assert runtime.cwd == standalone
+        assert runtime.command == ["/bin/node", str(standalone / "server.js")]
+    else:
+        assert runtime.cwd == runtime_web
+        assert runtime.command == ["/bin/node", str(runtime_web / "server.js")]
+    assert builds == ([source] if expected_kind == "source-production" else [])
+
+
 def test_source_production_build_is_reused_until_an_input_changes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
