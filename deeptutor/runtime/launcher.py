@@ -1241,9 +1241,11 @@ def _resolve_frontend(
     auth_enabled: bool,
     dev: bool = False,
 ) -> FrontendRuntime:
+    source = _source_web_dir(home)
     packaged = _packaged_web_dir()
     node = shutil.which("node")
-    if packaged is not None:
+    # A source backend must use its matching frontend, including production builds.
+    if packaged is not None and source is None:
         if not node:
             raise SystemExit("Node.js 20+ is required to run the packaged DeepTutor Web app.")
         runtime_web = _copy_packaged_web_if_needed(
@@ -1254,7 +1256,6 @@ def _resolve_frontend(
         )
         return FrontendRuntime("packaged", [node, str(runtime_web / "server.js")], runtime_web)
 
-    source = _source_web_dir(home)
     if source is not None:
         npm = shutil.which("npm")
         if not npm:
