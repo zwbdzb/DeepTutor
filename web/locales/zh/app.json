@@ -6587,7 +6587,7 @@
   "settings.modelImport.draftHint": "模型将添加到草稿，点击应用更改后保存；默认模型保持不变。",
   "settings.modelImport.selected": "已选择：{{count}}",
   "language.korean": "한국어 (일부 번역)",
-  "Summon": "召唤",
+  "Summon": "召唤更多",
   "Summon persona": "召唤人格",
   "Education": "教育",
   "Work": "工作",

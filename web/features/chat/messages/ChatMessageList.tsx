@@ -1749,7 +1749,8 @@ export const UserMessage = memo(function UserMessage({
           {
             key: "persona",
             icon: UserRound,
-            kind: t("Expert"),
+            // No kind prefix: the chip is just the persona's name.
+            kind: "",
             label: personaLabel || snap.persona,
           } satisfies ContextTreeItem,
         ]
