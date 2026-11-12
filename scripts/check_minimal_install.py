@@ -180,6 +180,12 @@ config._LLM_CONFIG_CACHE = config.LLMConfig(
     base_url=f"http://127.0.0.1:{server.server_port}/v1",
     wire_api="chat_completions",
 )
+# ``get_llm_config`` invalidates the cache when model_catalog.json changes, so a
+# desktop shell writing it behind the API's back is picked up. The fixture above
+# never writes that file, so a previous smoke run sharing this ``--home`` would
+# leave one behind, drop the fixture and fail with "No active LLM model is
+# configured". Pin the signature: this process owns its LLM config throughout.
+config._catalog_file_signature = lambda: None
 try:
     asyncio.run(asyncio.wait_for(main(), timeout=30))
 finally:
