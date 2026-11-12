@@ -398,11 +398,25 @@ class PersonaService:
                 continue
             meta, body = self._parse_frontmatter(text)
             description = str(meta.get("description") or "").strip()
+            category = self._read_category(meta)
+            if not category:
+                # Legacy SKILL.md files predate the category concept. If a
+                # bundled preset with the same name has a category, adopt it so
+                # the persona doesn't disappear from its expected gallery tab
+                # after migration (#).
+                preset_file = PRESETS_DIR / name / PERSONA_FILE
+                if preset_file.exists():
+                    try:
+                        preset_text = preset_file.read_text(encoding="utf-8")
+                        preset_meta, _ = self._parse_frontmatter(preset_text)
+                        category = self._read_category(preset_meta)
+                    except OSError:
+                        pass
             self._root.mkdir(parents=True, exist_ok=True)
             target_dir = self._persona_dir(name)
             target_dir.mkdir(parents=True, exist_ok=True)
             self._persona_file(name).write_text(
-                self._normalize_content(name, description, body),
+                self._normalize_content(name, description, body, category=category),
                 encoding="utf-8",
             )
             shutil.rmtree(source_file.parent)

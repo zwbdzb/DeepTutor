@@ -283,10 +283,12 @@ function AnswerList({
       </TrayList>
       <TrayFoot>
         {reuse.length > 0 && <TrayReuse kinds={reuse} />}
-        {/* 「召唤」opens the persona gallery under 专家·技能·连接器, where each
-            card can be summoned into a new chat. */}
+        {/* "Summon more" — opens the persona gallery under 专家·技能·连接器,
+            where each card can be summoned into a new chat. The card's own
+            button says just "召唤" (Summon): there you are summoning that one
+            persona, not browsing for others. */}
         <Link href="/space/personas" prefetch={false} onClick={close}>
-          {t("Summon")}
+          {t("Summon more")}
           <ArrowUpRight size={13} strokeWidth={1.9} />
         </Link>
       </TrayFoot>

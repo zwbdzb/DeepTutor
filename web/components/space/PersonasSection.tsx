@@ -471,8 +471,10 @@ export default function PersonasSection() {
                       </div>
                     )}
                   </div>
-                  {/*「召唤」— bottom-right corner: jump to the chat page with
-                      this persona already applied to the new conversation. */}
+                  {/*「召唤」(Summon) — bottom-right corner: jump to the chat
+                      page with this persona already applied to the new
+                      conversation. Deliberately not "召唤更多" (Summon more),
+                      which belongs to the tray link that opens this gallery. */}
                   <div className="mt-auto flex items-center justify-end pt-3">
                     <Tooltip label={t("Summon persona")} side="top">
                       <button

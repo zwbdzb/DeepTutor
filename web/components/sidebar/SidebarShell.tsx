@@ -305,7 +305,7 @@ export function SidebarShell({
             menu of settings and account), the way back out, then search. */}
         {bodySlot ? (
           <Link href={brandHref} prefetch={false} aria-label="ThinkBuddy" className="dt-rail-brand">
-            <Image src="/logo.png" alt="ThinkBuddy" width={22} height={22} unoptimized className="h-[22px] w-[22px] rounded-md dark:invert" />
+            <Image src="/logo.png" alt="ThinkBuddy" width={24} height={24} unoptimized className="h-6 w-6 rounded-md dark:invert" />
           </Link>
         ) : (
           <WorkspaceMenu compact accountSlot={renderedFooter} onNavigate={() => drawer?.close()} />
@@ -362,18 +362,18 @@ export function SidebarShell({
     >
       {bodySlot ? (
         <div className="flex h-[52px] shrink-0 items-center justify-between px-4">
-          <Link href={brandHref} prefetch={false} className="group flex items-center gap-1.5">
+          <Link href={brandHref} prefetch={false} className="group flex items-center gap-2">
             <Image
               src="/logo.png"
               alt="ThinkBuddy"
-              width={22}
-              height={22}
+              width={26}
+              height={26}
               unoptimized
-              className="h-[22px] w-[22px] transition-transform duration-200 group-hover:scale-105 dark:invert"
+              className="h-[26px] w-[26px] transition-transform duration-200 group-hover:scale-105 dark:invert"
             />
             <span
               aria-label="ThinkBuddy"
-              className="text-[15px] relative top-[1px] font-semibold tracking-tight text-[var(--foreground)] transition-transform duration-200 group-hover:scale-105"
+              className="font-brand relative top-[1px] text-[17px] font-bold leading-none tracking-[-0.01em] text-[var(--foreground)] transition-transform duration-200 group-hover:scale-105"
             >
               ThinkBuddy
             </span>

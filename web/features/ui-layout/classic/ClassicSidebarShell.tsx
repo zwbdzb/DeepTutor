@@ -195,10 +195,10 @@ export function ClassicSidebarShell({
             <Image
               src="/logo.png"
               alt="ThinkBuddy"
-              width={22}
-              height={22}
+              width={24}
+              height={24}
               unoptimized
-              className="h-[22px] w-[22px] rounded-md dark:invert"
+              className="h-6 w-6 rounded-md dark:invert"
             />
           </Link>
           <button
@@ -256,18 +256,20 @@ export function ClassicSidebarShell({
     >
       {/* Header: logo + collapse toggle */}
       <div className="flex h-[52px] shrink-0 items-center justify-between px-4">
-        <Link href="/" prefetch={false} className="group flex items-center gap-1.5">
+        <Link href="/" prefetch={false} className="group flex items-center gap-2">
           <Image
             src="/logo.png"
             alt="ThinkBuddy"
-            width={22}
-            height={22}
+            width={26}
+            height={26}
             unoptimized
-            className="h-[22px] w-[22px] transition-transform duration-200 group-hover:scale-105 dark:invert"
+            className="h-[26px] w-[26px] transition-transform duration-200 group-hover:scale-105 dark:invert"
           />
+          {/* Space Grotesk (font-brand): a geometric grotesque reads as a
+              designed wordmark rather than as the UI's own sans. */}
           <span
             aria-label="ThinkBuddy"
-            className="text-[15px] relative top-[1px] font-semibold tracking-tight text-[var(--foreground)] transition-transform duration-200 group-hover:scale-105"
+            className="font-brand relative top-[1px] text-[17px] font-bold leading-none tracking-[-0.01em] text-[var(--foreground)] transition-transform duration-200 group-hover:scale-105"
           >
             ThinkBuddy
           </span>
