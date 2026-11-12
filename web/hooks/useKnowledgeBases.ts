@@ -158,6 +158,22 @@ export function useKnowledgeBases() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState === "visible") {
+        void refreshRef.current({ force: true, showSpinner: false });
+      }
+    };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    const timer = window.setInterval(refresh, 60_000);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+      window.clearInterval(timer);
+    };
+  }, []);
+
   // Combined view: merge live progress into each KB so consumers see a
   // single source of truth (status + progress).
   const combinedKbs = useMemo<KnowledgeBase[]>(

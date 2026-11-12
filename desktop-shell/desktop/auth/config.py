@@ -25,7 +25,7 @@
     }
 
 可覆写的键：``oauth_base`` / ``authorize_url`` / ``token_url`` / ``userinfo_url`` /
-``revoke_url`` / ``relay_base`` / ``api_base``。
+``revoke_url`` / ``relay_base`` / ``api_base`` / ``library_url``。
 
 环境变量：Tokengine 侧为 ``TOKENGINE_`` + 对应键的大写形式（根地址为
 ``TOKENGINE_OAUTH_BASE``）；主站根地址为 ``THINKBUDDY_API_BASE``。
@@ -73,7 +73,7 @@ _TOKENGINE_ENDPOINT_KEYS = (
     "revoke_url",
     "relay_base",
 )
-_CONFIG_KEYS = (*_TOKENGINE_ENDPOINT_KEYS, "api_base")
+_CONFIG_KEYS = (*_TOKENGINE_ENDPOINT_KEYS, "api_base", "library_url")
 
 
 def _read_endpoints_file(root: Optional[Path]) -> dict[str, str]:
@@ -153,6 +153,13 @@ def thinkbuddy_api_base(root: Optional[Path] = None) -> str:
         if isinstance(candidate, str) and candidate.strip():
             return candidate.strip().rstrip("/")
     return ""
+
+
+def thinkbuddy_library_url(root: Optional[Path] = None) -> str:
+    """Public library endpoint; deployments can use a separate GeekAI origin."""
+    explicit = (os.environ.get("THINKBUDDY_LIBRARY_URL") or "").strip()
+    configured = _read_endpoints_file(root).get("library_url", "")
+    return (explicit or configured or f"{thinkbuddy_api_base(root)}/api/v1/library").rstrip("/")
 
 
 def telemetry_url(root: Optional[Path] = None) -> str:

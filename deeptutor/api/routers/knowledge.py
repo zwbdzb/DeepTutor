@@ -2877,10 +2877,10 @@ def _list_knowledge_bases():
     ):
         return _resource_knowledge_bases()
     try:
+        access_items = list_visible_kb_access()
         manager = get_kb_manager()
         kb_names = manager.list_knowledge_bases()
         default_name = manager.get_default(available_names=kb_names)
-        access_items = list_visible_kb_access()
         access_by_id = {str(item.get("id") or ""): item for item in access_items}
         own_prefix = "admin:kb:" if get_current_user().is_admin else "user:kb:"
 

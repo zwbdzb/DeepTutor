@@ -401,6 +401,10 @@ class DeepTutorProcess:
             env["PATH"] = str(self.node_dir) + os.pathsep + env.get("PATH", "")
         # DeepTutor respects DEEPTUTOR_HOME too; pass --home explicitly.
         env["DEEPTUTOR_HOME"] = str(self.home)
+        from desktop.auth.config import thinkbuddy_library_url
+        from desktop.runtime import ROOT
+
+        env["THINKBUDDY_LIBRARY_URL"] = thinkbuddy_library_url(ROOT)
         # 子进程 stdio 强制 UTF-8（2026-10-22）：zh-CN Windows 上 Python 子进程
         # stdout 默认 cp936/GBK，thinkbuddy.log 会落成 GBK 字节——VS Code /
         # Win11 记事本等 UTF-8 工具打开全是乱码（用户机实证：banner 十余次

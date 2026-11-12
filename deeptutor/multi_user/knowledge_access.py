@@ -294,6 +294,9 @@ def _with_account_subagents(items: list[dict[str, Any]], *, origin: str) -> list
 
 
 def _list_visible_knowledge_bases() -> list[dict[str, Any]]:
+    from deeptutor.services.platform_library.catalog import sync_weknora_connections
+
+    sync_weknora_connections()
     user = get_current_user()
     manager = current_kb_manager()
     items: list[dict[str, Any]] = []
