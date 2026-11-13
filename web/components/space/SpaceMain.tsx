@@ -12,23 +12,27 @@ import { categoryForPath } from "@/lib/navigation";
 // Hub-and-spoke: the dashboard at `/space` is the only navigator. Once inside a
 // section we don't re-list every sibling on a rail — a single "back to the hub"
 // link keeps the section focused and sends you to the overview to switch.
-function BackToHub({ pathname }: { pathname: string }) {
+// Account sections whose pages live at top-level URLs (`/agents`, `/memory`)
+// render this too, so every personalization page enters the same way.
+export function BackToHub({ pathname }: { pathname: string }) {
   const { t } = useTranslation();
   const spaceLabel = useUiLayoutLabel("space");
   // Account-level sections hang off their own hub, not the workspace's.
   const personal = categoryForPath(pathname) === "personalization";
   return (
-    <Link
-      href={personal ? "/personalization" : "/space"}
-      className="dt-section-back group inline-flex items-center gap-1.5 text-[13px] text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]"
-    >
-      <ArrowLeft
-        size={15}
-        strokeWidth={1.8}
-        className="transition-transform group-hover:-translate-x-0.5"
-      />
-      {personal ? t("Experts · Skills · Connectors") : spaceLabel}
-    </Link>
+    <div className="mb-5">
+      <Link
+        href={personal ? "/personalization" : "/space"}
+        className="dt-section-back group inline-flex items-center gap-1.5 text-[13px] text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]"
+      >
+        <ArrowLeft
+          size={15}
+          strokeWidth={1.8}
+          className="transition-transform group-hover:-translate-x-0.5"
+        />
+        {personal ? t("Experts · Skills · Connectors") : spaceLabel}
+      </Link>
+    </div>
   );
 }
 
@@ -40,11 +44,7 @@ export default function SpaceMain({
 
   return (
     <FeaturePage>
-      {!isDashboard && (
-        <div className="mb-5">
-          <BackToHub pathname={pathname} />
-        </div>
-      )}
+      {!isDashboard && <BackToHub pathname={pathname} />}
       {['/space/skills', '/space/mcp'].includes(pathname) && (
         <div className="mb-5 rounded-lg border border-[var(--border)] p-3 text-sm text-[var(--muted-foreground)]">
           <ResourceLibraryNote />
