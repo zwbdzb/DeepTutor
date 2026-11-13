@@ -1,6 +1,7 @@
 "use client";
 
 import { FeaturePage, PageHeader, pageActionClass, pageGridClass } from '@/components/layout/FeaturePage'
+import { BackToHub } from "@/components/space/SpaceMain";
 import { knowledgeBaseRef } from "@/lib/knowledge-helpers";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -234,6 +235,7 @@ export default function KnowledgeHome({
 
   return (
     <FeaturePage>
+        <BackToHub pathname="/knowledge-bases" />
         <PageHeader
           icon={BookOpen}
           title={t("Knowledge Center")}

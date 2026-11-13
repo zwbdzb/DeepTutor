@@ -35,7 +35,9 @@ MENU_ACTIONS = (
 )
 
 # 更新就绪状态（ADR-007）：menubar._check_updates 下载完成后设置，
-# chip_model 据此在下拉菜单顶部插入「有新版本，点击重启」项。
+# chip_model 据此在账号区左侧亮起「点击重启以更新」药丸（Win/mac 同款）。
+# 提示只走药丸，下拉菜单里不再重复插「有新版本，点击重启」项——两个入口
+# 同时出现会让用户以为要更新两次，且药丸可 ✕ 收起、菜单项却不能。
 _UPDATE_READY: dict = {}  # {version: str, path: str}
 UPDATE_BADGE_LABEL = "点击重启以更新"
 
@@ -188,7 +190,6 @@ def account_menu_model(status: dict) -> dict:
                        "sub": sub,
                        "refresh_icon": True},
             "items": [
-                *_update_menu_items(),
                 {"action": "invite", "label": "邀请好友赢积分"},
                 {"action": "checkin", "label": "签到得积分"},
                 {"action": "refresh", "label": "刷新可用模型"},
@@ -234,19 +235,6 @@ def account_menu_model(status: dict) -> dict:
     }
 
 
-def _update_menu_items() -> list[dict]:
-    """更新就绪时在下拉菜单顶部插入「有新版本 vX，点击重启」项。
-
-    无更新时返回空列表（调用方用 ``*_update_menu_items()`` 展开即可）。
-    macOS 没有自绘标题栏，靠这一项触发重启；Windows 同时显示标题栏角标。
-    """
-    version = update_ready_version()
-    if not version:
-        return []
-    label = f"有新版本 v{version}，点击重启"
-    return [{"action": "update_restart", "label": label}]
-
-
 def chip_model(st: dict) -> dict:
     """标题栏账号区完整模型：{label, title, logged_in, menu, update, checkin}。
 
@@ -258,9 +246,10 @@ def chip_model(st: dict) -> dict:
       未登录      → 无菜单，点击直发登录
 
     ``update`` 非 None 时，账号区左侧多画一枚「点击重启以更新」角标
-    （Windows 自绘；见 native_menu_backend.AccountChip）。角标只在账号区
-    可见时露出，而账号区在登录门控页是隐藏的——所以它天然是「登录进去后
-    才出现」，不打扰登录流程。
+    （Windows 见 native_menu_backend.AccountChip，macOS 见
+    inject.AccountChipInjector）。更新提示**只走角标**，菜单里不重复出现；
+    角标只在账号区可见时露出，而账号区在登录门控页是隐藏的——所以它天然是
+    「登录进去后才出现」，不打扰登录流程。
 
     ``checkin`` 非 None 时，账号文案左侧再画一枚浅绿「签到+100积分」药丸，
     位置在更新角标**右侧**（布局恒为 ``[黄·更新][绿·签到][账号文字]``）。
