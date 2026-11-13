@@ -3158,6 +3158,7 @@ async def list_kb_raw_files(kb_name: str):
                 {
                     "id": document["id"],
                     "name": document.get("file_name") or document.get("title") or document["id"],
+                    "folder_path": document.get("folder_path") or "",
                     "type": "file",
                     "size": document.get("file_size"),
                     "mime_type": mimetypes.guess_type(
