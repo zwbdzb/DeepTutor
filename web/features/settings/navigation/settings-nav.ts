@@ -24,7 +24,6 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
-  ChartNoAxesCombined,
   UserRound,
   Wrench,
   type LucideIcon,
@@ -507,13 +506,6 @@ export const SETTINGS_CATEGORIES: SettingsCategory[] = [
     icon: Bot,
     href: "/settings#agents",
     children: AGENT_CHILDREN,
-  },
-  {
-    key: "progress",
-    label: { zh: "学习进度", en: "Learning progress" },
-    blurb: { zh: "查看自己的阅读与学习记录。", en: "Review your reading and learning activity." },
-    icon: ChartNoAxesCombined,
-    href: "/settings/progress",
   },
   {
     key: "learner-profile",

@@ -70,6 +70,10 @@ const Guardian = dynamic(
     loading,
   },
 );
+const LearningProgress = dynamic(
+  () => import("@/features/settings/sections/LearningProgressSettingsSection"),
+  { loading },
+);
 const Connections = dynamic(
   () =>
     import("@/features/settings/sections/models/ConnectionsSettingsSection"),
@@ -182,6 +186,7 @@ const PAGES: Record<string, React.ComponentType> = {
   workspace: Workspace,
   knowledge: Knowledge,
   memory: Memory,
+  progress: LearningProgress,
   about: About,
   "learner-profile": Learner,
   guardian: Guardian,

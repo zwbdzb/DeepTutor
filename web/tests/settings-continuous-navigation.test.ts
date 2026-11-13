@@ -45,6 +45,11 @@ test("legacy settings bookmarks resolve to independent pages, preserving profile
   }
 });
 
+test("every available setting is listed once", () => {
+  const keys = visibleSettingsPages(admin).map(page => page.key);
+  assert.equal(new Set(keys).size, keys.length);
+});
+
 test("every available setting is reachable through a navigation family", () => {
   const reachable = new Set(
     SETTINGS_PAGE_GROUPS.flatMap(group =>
