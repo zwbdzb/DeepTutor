@@ -19,6 +19,7 @@ from deeptutor.services.skill.hub import (
     HubError,
     HubSkillRef,
     HubVerdict,
+    SkillHubCnProvider,
     _extract_skill_zip,
     get_hub_provider,
     install_from_hub,
@@ -184,8 +185,8 @@ def test_parse_hub_ref_forms() -> None:
     )
     assert split_owner_slug("acme/my-skill") == ("acme", "my-skill")
     assert split_owner_slug("my-skill") == ("", "my-skill")
-    # No prefix resolves to the built-in default hub (EduHub).
-    assert parse_hub_ref("my-skill") == ("eduhub", "my-skill", None)
+    # No prefix resolves to the built-in default hub (SkillHub).
+    assert parse_hub_ref("my-skill") == ("skillhub", "my-skill", None)
     assert parse_hub_ref("eduhub:my-skill") == ("eduhub", "my-skill", None)
     assert parse_hub_ref("other:pkg@1.2.0") == ("other", "pkg", "1.2.0")
     with pytest.raises(HubError):
@@ -385,6 +386,114 @@ def test_clawhub_web_origin_strips_api_suffix() -> None:
     assert provider.web_origin == "https://eduhub.deeptutor.info"
 
 
+# ── SkillHubCnProvider (skillhub.cn) ─────────────────────────────────────
+
+
+def _skillhub_client(*, status: str = "benign") -> httpx.Client:
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/skills":
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "data": {
+                        "skills": [
+                            {
+                                "slug": "dev-god",
+                                "name": "编程大神.Skill",
+                                "description": "Full-stack helper.",
+                                "version": "1.2.4",
+                                "downloads": 11515854,
+                                "stars": 121,
+                                "namespace": {"handle": "ake", "displayName": "ake"},
+                                "publisher": {"name": "阿客实验室"},
+                                "subCategories": [{"key": "dev-code-gen", "name": "代码生成"}],
+                            },
+                            {"slug": ""},  # dropped: no slug
+                        ]
+                    },
+                },
+            )
+        if path == "/api/v1/search":
+            return httpx.Response(
+                200,
+                json={"results": [{"slug": "dev-god", "name": "编程大神.Skill"}]},
+            )
+        if path == "/api/v1/skills/dev-god":
+            return httpx.Response(
+                200,
+                json={
+                    "skill": {
+                        "slug": "dev-god",
+                        "displayName": "编程大神.Skill",
+                        "summary": "Full-stack helper.",
+                        "stats": {"downloads": 11515854, "stars": 121},
+                        "subCategories": [{"key": "dev-code-gen", "name": "代码生成"}],
+                    },
+                    "namespace": {"handle": "ake"},
+                    "latestVersion": {"version": "1.2.4"},
+                    "securityReports": {"keen": {"status": status}},
+                },
+            )
+        if path == "/api/v1/skills/dev-god/file":
+            return httpx.Response(200, text="---\nname: dev-god\n---\n\n# Body\n")
+        if path == "/api/v1/download":
+            return httpx.Response(
+                200,
+                content=_zip_bytes({"SKILL.md": "---\nname: dev-god\ndescription: d\n---\n\nbody\n"}),
+            )
+        return httpx.Response(404, text="nope")
+
+    return httpx.Client(transport=httpx.MockTransport(handler))
+
+
+def test_skillhub_catalog_normalises_rows() -> None:
+    rows = SkillHubCnProvider(client=_skillhub_client()).catalog()
+    assert len(rows) == 1  # the blank-slug row is dropped
+    row = rows[0]
+    assert (row["slug"], row["name"]) == ("dev-god", "编程大神.Skill")
+    assert (row["downloads"], row["stars"]) == (11515854, 121)
+    assert row["owner"] == "阿客实验室"
+    assert row["owner_handle"] == "ake"
+    assert row["tags"] == ["代码生成"]
+
+
+def test_skillhub_detail_reads_body_from_file_endpoint() -> None:
+    detail = SkillHubCnProvider(client=_skillhub_client()).detail("dev-god")
+    assert detail["version"] == "1.2.4"  # resolved from latestVersion
+    assert "# Body" in detail["content"]
+    assert detail["tags"] == ["代码生成"]
+
+
+def test_skillhub_verify_maps_security_reports() -> None:
+    assert SkillHubCnProvider(client=_skillhub_client()).verify("dev-god").status == "ok"
+    flagged = SkillHubCnProvider(client=_skillhub_client(status="malicious"))
+    assert flagged.verify("dev-god").status == "suspicious"
+
+    def boom(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("offline")
+
+    offline = SkillHubCnProvider(client=httpx.Client(transport=httpx.MockTransport(boom)))
+    assert offline.verify("dev-god").status == "unknown"
+
+
+def test_skillhub_fetch_uses_namespace() -> None:
+    fetched = SkillHubCnProvider(client=_skillhub_client()).fetch("dev-god")
+    try:
+        assert (fetched.root / "SKILL.md").is_file()
+        assert fetched.ref.version == "1.2.4"
+        assert fetched.ref.owner_handle == "ake"
+    finally:
+        fetched.cleanup()
+
+
+def test_skillhub_web_origin_is_site_not_api_host() -> None:
+    provider = SkillHubCnProvider()
+    assert provider.web_origin == "https://skillhub.cn"
+    assert provider.base_url == "https://api.skillhub.cn"
+
+
 # ── orchestration ────────────────────────────────────────────────────────
 
 
@@ -526,11 +635,13 @@ def test_command_provider_failure_cleans_up() -> None:
 
 def test_get_hub_provider_default_and_unknown() -> None:
     assert isinstance(get_hub_provider("clawhub"), ClawHubProvider)
-    # EduHub is a built-in hub: resolvable with no settings file.
-    eduhub = get_hub_provider("eduhub")
-    assert isinstance(eduhub, ClawHubProvider)
-    assert eduhub.name == "eduhub"
-    # Empty name falls back to the default hub, which is also a provider.
-    assert isinstance(get_hub_provider(""), ClawHubProvider)
+    # SkillHub is a built-in hub: resolvable with no settings file.
+    skillhub = get_hub_provider("skillhub")
+    assert isinstance(skillhub, SkillHubCnProvider)
+    assert skillhub.name == "skillhub"
+    # EduHub stays available for explicit ``eduhub:`` refs.
+    assert isinstance(get_hub_provider("eduhub"), ClawHubProvider)
+    # Empty name falls back to the default hub, which is SkillHub.
+    assert isinstance(get_hub_provider(""), SkillHubCnProvider)
     with pytest.raises(HubError):
         get_hub_provider("no-such-hub")

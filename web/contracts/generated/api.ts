@@ -6494,6 +6494,26 @@ export interface paths {
     readonly patch?: never;
     readonly trace?: never;
   };
+  readonly "/api/personas/{name}/touch": {
+    readonly parameters: {
+      readonly query?: never;
+      readonly header?: never;
+      readonly path?: never;
+      readonly cookie?: never;
+    };
+    readonly get?: never;
+    readonly put?: never;
+    /**
+     * Touch Persona
+     * @description Record that the account picked this persona; bump its usage count.
+     */
+    readonly post: operations["touch_persona_api_personas__name__touch_post"];
+    readonly delete?: never;
+    readonly options?: never;
+    readonly head?: never;
+    readonly patch?: never;
+    readonly trace?: never;
+  };
   readonly "/api/plugins/{plugin_id}/{plugin_path}": {
     readonly parameters: {
       readonly query?: never;
@@ -10125,10 +10145,10 @@ export interface paths {
      * Hub Catalog
      * @description Proxy a skill hub's public catalog for the in-app browser.
      *
-     *     The web "Import from EduHub" panel renders these rows in DeepTutor's own
+     *     The web "Import from SkillHub" panel renders these rows in DeepTutor's own
      *     UI — no embedded iframe, no login — so users can browse, search, and
      *     one-click download skills. Returns ``web_url`` (the hub's site origin) so
-     *     the panel can offer a "view on EduHub" link out.
+     *     the panel can offer a "view on SkillHub" link out.
      */
     readonly get: operations["hub_catalog_api_skills_hub_catalog_get"];
     readonly put?: never;
@@ -10170,7 +10190,7 @@ export interface paths {
     readonly put?: never;
     /**
      * Install Skill
-     * @description Import a hub skill (e.g. from EduHub) into the caller's own skill layer.
+     * @description Import a hub skill (e.g. from SkillHub) into the caller's own skill layer.
      *
      *     Lands the package in the same per-user dir that ``/create`` writes to, so
      *     the imported skill shows up in this user's Skills list. The install gate
@@ -14444,9 +14464,9 @@ export interface components {
      * @description Install a hub skill into the caller's own skill layer.
      *
      *     ``ref`` is a ``<hub>:<slug>[@version]`` reference (the bare hub prefix
-     *     defaults to ``eduhub``). The web "import from EduHub" flow always builds an
-     *     ``eduhub:`` ref so a spoofed bridge message can't redirect the install to an
-     *     arbitrary registry.
+     *     defaults to ``skillhub``). The web "import from SkillHub" flow always builds
+     *     a ``skillhub:`` ref so a spoofed bridge message can't redirect the install
+     *     to an arbitrary registry.
      */
     readonly InstallSkillRequest: {
       /**
@@ -33753,6 +33773,43 @@ export interface operations {
         content: {
           readonly "application/json": {
             readonly [key: string]: string;
+          };
+        };
+      };
+      /** @description Validation Error */
+      readonly 422: {
+        headers: {
+          readonly [name: string]: unknown;
+        };
+        content: {
+          readonly "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  readonly touch_persona_api_personas__name__touch_post: {
+    readonly parameters: {
+      readonly query?: never;
+      readonly header?: {
+        readonly Authorization?: string | null;
+      };
+      readonly path: {
+        readonly name: string;
+      };
+      readonly cookie?: {
+        readonly dt_token?: string | null;
+      };
+    };
+    readonly requestBody?: never;
+    readonly responses: {
+      /** @description Successful Response */
+      readonly 200: {
+        headers: {
+          readonly [name: string]: unknown;
+        };
+        content: {
+          readonly "application/json": {
+            readonly [key: string]: unknown;
           };
         };
       };

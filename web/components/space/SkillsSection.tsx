@@ -22,7 +22,7 @@ import {
   X,
 } from "lucide-react";
 import SpaceSectionHeader from "@/components/space/SpaceSectionHeader";
-import EduHubImportModal from "@/components/space/EduHubImportModal";
+import SkillHubImportModal from "@/components/space/SkillHubImportModal";
 import { isValidSkillName, slugifySkillName } from "@/lib/skill-slug";
 import {
   createSkill,
@@ -417,7 +417,7 @@ export default function SkillsSection() {
               className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--card)] px-3.5 py-1.5 text-[12.5px] font-medium text-[var(--foreground)] shadow-sm transition-colors hover:bg-[var(--muted)]/50"
             >
               <Store size={13} strokeWidth={1.9} />
-              {t("Import from EduHub")}
+              {t("Import from SkillHub")}
             </button>
             <button
               onClick={openCreate}
@@ -990,7 +990,7 @@ export default function SkillsSection() {
       )}
 
       {importOpen && (
-        <EduHubImportModal
+        <SkillHubImportModal
           onClose={() => setImportOpen(false)}
           onInstalled={() => void load()}
           installedNames={new Set(skills.map((s) => s.name))}
