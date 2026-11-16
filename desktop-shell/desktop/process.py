@@ -807,7 +807,7 @@ class DeepTutorProcess:
         # INFO 把"读到一行"这个动作标成了级别，导致 app.log 里 ERROR/WARNING
         # 全部伪装成 INFO（级别语义在转发链路上从未被传递）。子进程输出的
         # 完整原样副本仍在 <home>/logs/thinkbuddy.log；结构化事实源是
-        # 引擎自己的 <home>/data/user/logs/deeptutor.jsonl（error 遥测走
+        # 引擎自己的 <home>/data/user/logs/thinkbuddy.jsonl（error 遥测走
         # EngineLogTail 增量读它，不依赖本行）。
         log.debug("deeptutor: %s", line)
         lowered = line.lower()

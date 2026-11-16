@@ -288,7 +288,7 @@ based on evidence; there is no need to run every command for every problem.
    network errors for UI problems, and correlate server logs by time and
    `request_id`, `session_id`, or `turn_id` when present. For detached launches,
    check `<runtime-home>/data/user/runtime/launcher.log`; application logs
-   normally live in `data/user/logs/deeptutor.jsonl`, subject to logging settings.
+   normally live in `data/user/logs/thinkbuddy.jsonl`, subject to logging settings.
    Container deployments may also require container output. Read a narrow
    relevant excerpt and remove credentials and private content before sharing.
 

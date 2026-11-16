@@ -626,7 +626,10 @@ def bootstrap(window, api: Api, auth: AuthManager) -> None:
             )
 
         tail = EngineLogTail(
-            home / "data" / "user" / "logs" / "deeptutor.jsonl",
+            # 契约：与 deeptutor/logging/config.py 的 LOG_FILE_NAME 必须一致。
+            # 壳不 import 引擎包——引擎运行时缺失/损坏时壳仍要能起来并报错，
+            # 所以这里只能写字面量，改名字时两处一起改（tests/logging 有校验）。
+            home / "data" / "user" / "logs" / "thinkbuddy.jsonl",
             on_error=_on_engine_error,
         )
         _shared["engine_log_tail"] = tail
