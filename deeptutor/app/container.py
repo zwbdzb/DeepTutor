@@ -5,9 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
-import socket
 from typing import Any
-import uuid
 
 from deeptutor.runtime.capability_catalog import get_capability_catalog
 from deeptutor.runtime.coordination import (
@@ -18,6 +16,7 @@ from deeptutor.runtime.coordination import (
     RuntimeCoordinator,
     TurnRecoveryService,
 )
+from deeptutor.runtime.coordination.worker_identity import new_worker_id
 from deeptutor.runtime.registry.capability_registry import CapabilityRegistry
 from deeptutor.runtime.turn_engine import TurnEngine
 from deeptutor.services.config import load_integrations_settings, load_system_settings
@@ -117,7 +116,7 @@ class ApplicationContainer:
             )
         else:
             coordinator = MemoryCoordinator(lease_ttl_seconds=settings.lease_ttl_seconds)
-        worker_id = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
+        worker_id = new_worker_id()
         return cls(settings=settings, coordinator=coordinator, worker_id=worker_id)
 
     async def start(self) -> None:
@@ -138,14 +137,6 @@ class ApplicationContainer:
             lease.__exit__(None, None, None)
             self._module_lease = None
             raise
-        # Warm the cl100k encoder in a background thread before the first
-        # turn needs it: tiktoken's cold load downloads the vocabulary with a
-        # blocking, un-timed HTTP call that stalled first-conversation turns
-        # past the lease TTL (seen as "worker executing this turn was lost"
-        # on fresh installs).
-        from deeptutor.services.session.context_builder import start_tokenizer_warmup
-
-        start_tokenizer_warmup()
 
     async def close(self) -> None:
         if not self._started:

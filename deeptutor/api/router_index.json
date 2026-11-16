@@ -1,5 +1,5 @@
 {
-  "fingerprint": "466476f18c25300187f3017f0d453abde832a0275276e27d86ae5dbf516295a3",
+  "fingerprint": "ad377f8a50ffd8412a8e2d122b8b5b8424e22a8b0be0b18e021517d70099f1af",
   "routers": {
     "deeptutor.api.routers.auth:router": [
       {
@@ -2300,6 +2300,38 @@
         ]
       },
       {
+        "path": "/books/{book_id}/chapters",
+        "name": "add_chapter",
+        "kind": "http",
+        "methods": [
+          "POST"
+        ]
+      },
+      {
+        "path": "/books/{book_id}/chapters/{chapter_id}",
+        "name": "update_chapter",
+        "kind": "http",
+        "methods": [
+          "PATCH"
+        ]
+      },
+      {
+        "path": "/books/{book_id}/chapters/{chapter_id}",
+        "name": "delete_chapter",
+        "kind": "http",
+        "methods": [
+          "DELETE"
+        ]
+      },
+      {
+        "path": "/books/{book_id}/chapters/{chapter_id}/move",
+        "name": "move_chapter",
+        "kind": "http",
+        "methods": [
+          "POST"
+        ]
+      },
+      {
         "path": "/books/deep-dive",
         "name": "deep_dive",
         "kind": "http",
@@ -2398,6 +2430,38 @@
       {
         "path": "/books/rebuild",
         "name": "rebuild_book",
+        "kind": "http",
+        "methods": [
+          "POST"
+        ]
+      },
+      {
+        "path": "/books/{book_id}/edits/preview",
+        "name": "preview_book_edit",
+        "kind": "http",
+        "methods": [
+          "POST"
+        ]
+      },
+      {
+        "path": "/books/{book_id}/edits",
+        "name": "get_book_edits",
+        "kind": "http",
+        "methods": [
+          "GET"
+        ]
+      },
+      {
+        "path": "/books/{book_id}/edits/{edit_id}/apply",
+        "name": "apply_book_edit",
+        "kind": "http",
+        "methods": [
+          "POST"
+        ]
+      },
+      {
+        "path": "/books/{book_id}/edits/{edit_id}/undo",
+        "name": "undo_book_edit",
         "kind": "http",
         "methods": [
           "POST"
@@ -3610,6 +3674,22 @@
         ]
       },
       {
+        "path": "/web-fetch",
+        "name": "get_web_fetch_settings",
+        "kind": "http",
+        "methods": [
+          "GET"
+        ]
+      },
+      {
+        "path": "/web-fetch",
+        "name": "update_web_fetch_settings",
+        "kind": "http",
+        "methods": [
+          "PUT"
+        ]
+      },
+      {
         "path": "/chat-attachments",
         "name": "get_chat_attachment_settings",
         "kind": "http",
@@ -4639,6 +4719,14 @@
         "kind": "http",
         "methods": [
           "GET"
+        ]
+      },
+      {
+        "path": "/personas/{name}/touch",
+        "name": "touch_persona",
+        "kind": "http",
+        "methods": [
+          "POST"
         ]
       },
       {

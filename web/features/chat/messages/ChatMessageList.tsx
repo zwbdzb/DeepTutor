@@ -182,6 +182,7 @@ interface ChatMessageItem {
   /** The server never accepted this submission (#1594) — rendered as an
    *  unsent message, not an ordinary sent one. */
   failedSubmission?: boolean;
+  failedSubmissionNoLlmAccess?: boolean;
   failedSubmissionNeedsReview?: boolean;
   orphanedFailedTurn?: OrphanedFailedTurn;
 }
@@ -816,6 +817,14 @@ export const AssistantMessage = memo(function AssistantMessage({
   const readingMaterialId = researchRequestSnapshot?.readingMaterialId;
   const readingMaterialRevision =
     researchRequestSnapshot?.readingMaterialRevision;
+  // The language this reply was generated in, as recorded on the turn's
+  // request snapshot when it was sent. Prose is tagged with it rather than
+  // the session's current language so changing the reply language never
+  // re-tags past replies (a Chinese answer keeps zh fonts after the session
+  // moves on to Japanese). Replies without a recorded language — legacy
+  // rows from before snapshots carried it — fall back to the session
+  // language, which is the best guess available for them.
+  const turnLanguage = researchRequestSnapshot?.language || language;
   const resultEvent = useMemo(
     () => msg.events?.find((event) => event.type === "result") ?? null,
     [msg.events],
@@ -1092,14 +1101,14 @@ export const AssistantMessage = memo(function AssistantMessage({
         segments={segments}
         events={events}
         settled={processSettled}
-        language={language}
+        language={turnLanguage}
         isStreaming={isStreaming}
         readingMaterialId={readingMaterialId}
         readingMaterialRevision={readingMaterialRevision}
       />
     ),
     [
-      language,
+      turnLanguage,
       isStreaming,
       readingMaterialId,
       readingMaterialRevision,
@@ -1197,7 +1206,7 @@ export const AssistantMessage = memo(function AssistantMessage({
           {showResearchBody ? (
             <AssistantResponse
               content={msg.content}
-              language={language}
+              language={turnLanguage}
               isStreaming={isStreaming}
               readingMaterialId={readingMaterialId}
               readingMaterialRevision={readingMaterialRevision}
@@ -1215,7 +1224,7 @@ export const AssistantMessage = memo(function AssistantMessage({
           {msg.content ? (
             <AssistantResponse
               content={msg.content}
-              language={language}
+              language={turnLanguage}
               isStreaming={isStreaming}
               readingMaterialId={readingMaterialId}
               readingMaterialRevision={readingMaterialRevision}
@@ -1237,7 +1246,7 @@ export const AssistantMessage = memo(function AssistantMessage({
           {msg.content ? (
             <AssistantResponse
               content={msg.content}
-              language={language}
+              language={turnLanguage}
               isStreaming={isStreaming}
               readingMaterialId={readingMaterialId}
               readingMaterialRevision={readingMaterialRevision}
@@ -1285,7 +1294,7 @@ export const AssistantMessage = memo(function AssistantMessage({
             <AssistantResponse
               key={block.key}
               content={block.segment.text}
-              language={language}
+              language={turnLanguage}
               isStreaming={isStreaming}
               readingMaterialId={readingMaterialId}
               readingMaterialRevision={readingMaterialRevision}
@@ -1296,7 +1305,7 @@ export const AssistantMessage = memo(function AssistantMessage({
       ) : (
         <AssistantResponse
           content={body}
-          language={language}
+          language={turnLanguage}
           isStreaming={isStreaming}
           readingMaterialId={readingMaterialId}
           readingMaterialRevision={readingMaterialRevision}
@@ -1870,7 +1879,8 @@ export const UserMessage = memo(function UserMessage({
           >
             <AlertCircle className="h-3.5 w-3.5" aria-hidden="true" />
             {t("Not sent")}
-            {onRetryFailedSubmission && !msg.failedSubmissionNeedsReview && typeof msg.id === "number" && (
+            {onRetryFailedSubmission && !msg.failedSubmissionNeedsReview &&
+              typeof msg.id === "number" && (
               <button type="button" disabled={editDisabled || retrying} onClick={async () => {
                 if (retrying || typeof msg.id !== "number") return;
                 setRetrying(true);
