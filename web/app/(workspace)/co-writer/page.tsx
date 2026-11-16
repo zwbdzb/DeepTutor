@@ -22,6 +22,7 @@ import {
   PageHeader,
   pageActionClass,
 } from "@/components/layout/FeaturePage";
+import { BackToHub } from "@/components/space/SpaceMain";
 import { deleteCoWriterDocument, importCoWriterDocx } from "@/lib/co-writer-api";
 import { notifyCoWriterChanged } from "@/lib/co-writer-events";
 import { createNote, listNotes, saveNote, type NoteSummary } from "@/lib/notes-api";
@@ -257,6 +258,7 @@ export default function CoWriterHomePage() {
 
   return (
     <FeaturePage>
+      <BackToHub pathname="/co-writer" />
       <input
         ref={importInputRef}
         type="file"

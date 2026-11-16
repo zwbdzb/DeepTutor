@@ -22,6 +22,7 @@ import {
   pageActionClass,
 } from "@/components/layout/FeaturePage";
 import { PageBarSlot } from "@/components/layout/PageChrome";
+import { BackToHub } from "@/components/space/SpaceMain";
 import {
   InstanceCrumb,
   type CrumbItem,
@@ -245,6 +246,7 @@ function NotebookList({
 
   return (
     <FeaturePage>
+      <BackToHub pathname="/notebooks" />
       <PageHeader
         title={t("Notebooks")}
         icon={Bookmark}

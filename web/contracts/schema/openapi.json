@@ -5827,7 +5827,7 @@
         "type": "object"
       },
       "InstallSkillRequest": {
-        "description": "Install a hub skill into the caller's own skill layer.\n\n``ref`` is a ``<hub>:<slug>[@version]`` reference (the bare hub prefix\ndefaults to ``eduhub``). The web \"import from EduHub\" flow always builds an\n``eduhub:`` ref so a spoofed bridge message can't redirect the install to an\narbitrary registry.",
+        "description": "Install a hub skill into the caller's own skill layer.\n\n``ref`` is a ``<hub>:<slug>[@version]`` reference (the bare hub prefix\ndefaults to ``skillhub``). The web \"import from SkillHub\" flow always builds\na ``skillhub:`` ref so a spoofed bridge message can't redirect the install\nto an arbitrary registry.",
         "properties": {
           "allow_unverified": {
             "default": false,
@@ -45330,6 +45330,83 @@
         ]
       }
     },
+    "/api/personas/{name}/touch": {
+      "post": {
+        "description": "Record that the account picked this persona; bump its usage count.",
+        "operationId": "touch_persona_api_personas__name__touch_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "dt_token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Dt Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Touch Persona Api Personas  Name  Touch Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Touch Persona",
+        "tags": [
+          "personas"
+        ]
+      }
+    },
     "/api/plugins/catalog": {
       "get": {
         "operationId": "plugin_catalog_api_plugins_catalog_get",
@@ -61972,7 +62049,7 @@
     },
     "/api/skills/hub/catalog": {
       "get": {
-        "description": "Proxy a skill hub's public catalog for the in-app browser.\n\nThe web \"Import from EduHub\" panel renders these rows in DeepTutor's own\nUI — no embedded iframe, no login — so users can browse, search, and\none-click download skills. Returns ``web_url`` (the hub's site origin) so\nthe panel can offer a \"view on EduHub\" link out.",
+        "description": "Proxy a skill hub's public catalog for the in-app browser.\n\nThe web \"Import from SkillHub\" panel renders these rows in DeepTutor's own\nUI — no embedded iframe, no login — so users can browse, search, and\none-click download skills. Returns ``web_url`` (the hub's site origin) so\nthe panel can offer a \"view on SkillHub\" link out.",
         "operationId": "hub_catalog_api_skills_hub_catalog_get",
         "parameters": [
           {
@@ -61980,7 +62057,7 @@
             "name": "hub",
             "required": false,
             "schema": {
-              "default": "eduhub",
+              "default": "skillhub",
               "title": "Hub",
               "type": "string"
             }
@@ -62087,7 +62164,7 @@
             "name": "hub",
             "required": false,
             "schema": {
-              "default": "eduhub",
+              "default": "skillhub",
               "title": "Hub",
               "type": "string"
             }
@@ -62157,7 +62234,7 @@
     },
     "/api/skills/install": {
       "post": {
-        "description": "Import a hub skill (e.g. from EduHub) into the caller's own skill layer.\n\nLands the package in the same per-user dir that ``/create`` writes to, so\nthe imported skill shows up in this user's Skills list. The install gate\n(``suspicious`` verdict abort, safe extraction, ``always`` stripping)\nlives in :func:`deeptutor.services.skill.hub.install_from_hub`.",
+        "description": "Import a hub skill (e.g. from SkillHub) into the caller's own skill layer.\n\nLands the package in the same per-user dir that ``/create`` writes to, so\nthe imported skill shows up in this user's Skills list. The install gate\n(``suspicious`` verdict abort, safe extraction, ``always`` stripping)\nlives in :func:`deeptutor.services.skill.hub.install_from_hub`.",
         "operationId": "install_skill_api_skills_install_post",
         "parameters": [
           {

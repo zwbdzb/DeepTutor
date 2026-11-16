@@ -118,10 +118,10 @@ export interface InstalledSkill {
 }
 
 /**
- * Import a hub skill (e.g. from EduHub) into the caller's own skill layer.
- * `ref` is a `<hub>:<slug>[@version]` reference — the EduHub import flow always
- * builds an `eduhub:` ref. Surfaces the hub's security verdict so callers can
- * warn on `unknown`/`suspicious` packages.
+ * Import a hub skill (e.g. from SkillHub) into the caller's own skill layer.
+ * `ref` is a `<hub>:<slug>[@version]` reference — the SkillHub import flow
+ * always builds a `skillhub:` ref. Surfaces the hub's security verdict so
+ * callers can warn on `unknown`/`suspicious` packages.
  */
 export async function installSkillFromHub(
   ref: string,
@@ -149,8 +149,8 @@ export async function installSkillFromHub(
   };
 }
 
-// ── EduHub / hub browsing ───────────────────────────────────────────────
-// Powers the in-app "Import from EduHub" browser. The backend proxies the
+// ── SkillHub / hub browsing ─────────────────────────────────────────────
+// Powers the in-app "Import from SkillHub" browser. The backend proxies the
 // hub's public catalog (no login, no iframe), so the panel can render hub
 // skills in DeepTutor's own UI and download them with one click.
 
@@ -167,7 +167,7 @@ export interface HubSkillListing {
 
 export interface HubCatalog {
   hub: string;
-  /** The hub's website origin (for a "view on EduHub" link out). */
+  /** The hub's website origin (for a "view on SkillHub" link out). */
   webUrl: string;
   skills: HubSkillListing[];
 }
@@ -192,7 +192,7 @@ function normalizeHubListing(item: Record<string, unknown>): HubSkillListing {
   };
 }
 
-/** List skills available on a hub (default EduHub). `query` filters server-side. */
+/** List skills available on a hub (default SkillHub). `query` filters server-side. */
 export async function fetchHubCatalog(options?: {
   hub?: string;
   query?: string;
@@ -210,7 +210,7 @@ export async function fetchHubCatalog(options?: {
   const data = await asJson(response);
   const skills = Array.isArray(data?.skills) ? data.skills : [];
   return {
-    hub: String(data?.hub ?? "eduhub"),
+    hub: String(data?.hub ?? "skillhub"),
     webUrl: String(data?.web_url ?? ""),
     skills: skills.map((item: Record<string, unknown>) =>
       normalizeHubListing(item),

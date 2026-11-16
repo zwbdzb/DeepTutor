@@ -27,9 +27,9 @@ import {
   type HubSkillListing,
 } from "@/lib/skills-api";
 
-// Where the EduHub site lives, for "view on EduHub" links. The catalog
+// Where the SkillHub site lives, for "view on SkillHub" links. The catalog
 // response carries the authoritative origin; this only backstops a failed load.
-const EDUHUB_FALLBACK = "https://thinkbuddy.hanyoai.com";
+const SKILLHUB_FALLBACK = "https://skillhub.cn";
 
 // Lazy-load the markdown renderer so the heavier deps only ship when a user
 // opens a skill's detail view (matches the Skills viewer in SkillsSection).
@@ -49,7 +49,7 @@ type InstallState =
   | { kind: "done"; verdict: string }
   | { kind: "error"; message: string };
 
-export default function EduHubImportModal({
+export default function SkillHubImportModal({
   onClose,
   onInstalled,
   installedNames,
@@ -64,7 +64,7 @@ export default function EduHubImportModal({
   const tr = useCallback((cn: string, en: string) => (zh ? cn : t(en)), [zh, t]);
 
   const [skills, setSkills] = useState<HubSkillListing[] | null>(null);
-  const [webUrl, setWebUrl] = useState<string>(EDUHUB_FALLBACK);
+  const [webUrl, setWebUrl] = useState<string>(SKILLHUB_FALLBACK);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -142,9 +142,9 @@ export default function EduHubImportModal({
     async (slug: string, opts?: { force?: boolean }) => {
       setInstallState((s) => ({ ...s, [slug]: { kind: "installing" } }));
       try {
-        // The `eduhub:` hub is hardcoded so the install can never be redirected
+        // The `skillhub:` hub is hardcoded so the install can never be redirected
         // to another registry, and the slug comes from our own proxied catalog.
-        const result = await installSkillFromHub(`eduhub:${slug}`, {
+        const result = await installSkillFromHub(`skillhub:${slug}`, {
           force: opts?.force,
         });
         setInstallState((s) => ({
@@ -185,18 +185,18 @@ export default function EduHubImportModal({
               className="shrink-0 text-[var(--muted-foreground)]"
             />
             <h3 className="truncate text-[14px] font-semibold text-[var(--foreground)]">
-              {tr("从 EduHub 导入技能", "Import skills from EduHub")}
+              {tr("从 SkillHub 导入技能", "Import skills from SkillHub")}
             </h3>
           </div>
           <div className="flex shrink-0 items-center gap-1">
             <a
-              href={`${webUrl}/skills`}
+              href={`${webUrl}/skills?sortBy=score`}
               target="_blank"
               rel="noopener noreferrer"
               className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[12px] text-[var(--muted-foreground)] transition-colors hover:bg-[var(--muted)] hover:text-[var(--foreground)]"
             >
               <ExternalLink size={13} />
-              {tr("在 EduHub 打开", "Open EduHub")}
+              {tr("在 SkillHub 打开", "Open SkillHub")}
             </a>
             <button
               onClick={onClose}
@@ -297,7 +297,7 @@ function ListView({
         ) : error ? (
           <div className="mx-auto max-w-md rounded-lg border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-center text-[12.5px] text-amber-700 dark:text-amber-400">
             <AlertTriangle size={16} className="mx-auto mb-1.5" />
-            <p>{tr("无法连接 EduHub。", "Couldn't reach EduHub.")}</p>
+            <p>{tr("无法连接 SkillHub。", "Couldn't reach SkillHub.")}</p>
             <p className="mt-0.5 break-words text-[11.5px] opacity-80">
               {error}
             </p>
@@ -312,7 +312,7 @@ function ListView({
         ) : skills.length === 0 ? (
           <div className="py-16 text-center text-[13px] text-[var(--muted-foreground)]">
             {total === 0
-              ? tr("EduHub 上暂时还没有技能。", "No skills on EduHub yet.")
+              ? tr("SkillHub 上暂时还没有技能。", "No skills on SkillHub yet.")
               : tr("没有匹配的技能。", "No skills match your search.")}
           </div>
         ) : (
@@ -471,7 +471,7 @@ function DetailView({
             className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[12px] text-[var(--muted-foreground)] transition-colors hover:bg-[var(--muted)] hover:text-[var(--foreground)]"
           >
             <ExternalLink size={13} />
-            {tr("在 EduHub 查看", "View on EduHub")}
+            {tr("在 SkillHub 查看", "View on SkillHub")}
           </a>
           <InstallButton
             state={installState}

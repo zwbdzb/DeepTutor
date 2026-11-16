@@ -19,11 +19,12 @@ not a format translation:
    and records provenance in ``.hub-lock.json``.
 
 Providers are addressed as ``<hub>:<slug>[@version]`` (e.g.
-``eduhub:socratic-tutor@1.2.0``; the hub prefix defaults to ``eduhub``).
-ClawHub skills can also be publisher-scoped as
-``<hub>:<ownerHandle>/<slug>[@version]``.
-Two provider shapes ship in v1:
+``skillhub:socratic-tutor@1.2.0``; the hub prefix defaults to ``skillhub``).
+Publisher-scoped refs are written ``<hub>:<ownerHandle>/<slug>[@version]``.
+Three provider shapes ship in v1:
 
+* :class:`SkillHubCnProvider` — speaks the skillhub.cn HTTP API (score-sorted
+  browse feed, search, security reports, namespace-scoped download);
 * :class:`ClawHubProvider` — speaks the ClawHub HTTP API directly (search /
   download / verify), so no Node toolchain is required;
 * :class:`CommandProvider` — wraps an arbitrary fetch command for registries
@@ -64,17 +65,24 @@ from .service import SkillImportError, SkillInstallResult, SkillService
 
 logger = logging.getLogger(__name__)
 
-# DeepTutor ships pointing at EduHub, its native open skill registry: a bare
-# ``install <slug>`` with no ``<hub>:`` prefix resolves here.
-DEFAULT_HUB = "eduhub"
+# DeepTutor ships pointing at SkillHub: a bare ``install <slug>`` with no
+# ``<hub>:`` prefix resolves here.
+DEFAULT_HUB = "skillhub"
 _CLAWHUB_BASE_URL = "https://clawhub.ai/api/v1"
 _EDUHUB_BASE_URL = "https://eduhub.deeptutor.info/api/v1"
+_SKILLHUB_BASE_URL = "https://api.skillhub.cn"
+_SKILLHUB_SITE_URL = "https://skillhub.cn"
 _HUBS_SETTINGS_FILE = "skill_hubs"
 
-# Hubs available out of the box, no settings file required. Both speak the
-# ClawHub HTTP protocol. A user's ``skill_hubs.json`` is layered on top and may
-# override any entry (e.g. point ``eduhub`` at a local dev server).
+# Hubs available out of the box, no settings file required. A user's
+# ``skill_hubs.json`` is layered on top and may override any entry (e.g. point
+# ``skillhub`` at a local dev server).
 _BUILTIN_HUBS: dict[str, dict[str, str]] = {
+    "skillhub": {
+        "type": "skillhub",
+        "base_url": _SKILLHUB_BASE_URL,
+        "site_url": _SKILLHUB_SITE_URL,
+    },
     "clawhub": {"type": "clawhub", "base_url": _CLAWHUB_BASE_URL},
     "eduhub": {"type": "clawhub", "base_url": _EDUHUB_BASE_URL},
 }
@@ -95,6 +103,9 @@ _ZIP_MAX_RATIO = 200.0
 
 _HTTP_TIMEOUT = 30.0
 _FETCH_CMD_TIMEOUT = 120.0
+
+# Security-scan verdicts SkillHub counts as clean; anything else blocks install.
+_SKILLHUB_BENIGN = frozenset({"benign", "safe", "ok", "pass"})
 
 
 class HubError(Exception):
@@ -597,6 +608,232 @@ class ClawHubProvider:
             return {}
 
 
+class SkillHubCnProvider:
+    """skillhub.cn registry over its public JSON API.
+
+    SkillHub's API differs from ClawHub's in three ways that matter here: the
+    browse feed is ``/api/skills`` (paginated, score-sorted), the SKILL.md body
+    lives behind a separate ``/file`` endpoint, and downloads must be scoped by
+    the publisher namespace carried in the detail payload.
+    """
+
+    def __init__(
+        self,
+        name: str = "skillhub",
+        *,
+        base_url: str = _SKILLHUB_BASE_URL,
+        site_url: str = _SKILLHUB_SITE_URL,
+        client: httpx.Client | None = None,
+    ) -> None:
+        self.name = name
+        self._base_url = base_url.rstrip("/")
+        self._site_url = site_url.rstrip("/")
+        self._client = client or httpx.Client(timeout=_HTTP_TIMEOUT, follow_redirects=True)
+
+    @property
+    def base_url(self) -> str:
+        """The configured API base URL (``https://api.skillhub.cn``)."""
+        return self._base_url
+
+    @property
+    def web_origin(self) -> str:
+        """The hub's website origin, used for "view on SkillHub" links."""
+        return self._site_url
+
+    def _get(self, route: str, **params: Any) -> httpx.Response:
+        url = f"{self._base_url}{route}"
+        try:
+            response = self._client.get(
+                url, params={k: v for k, v in params.items() if v is not None}
+            )
+        except httpx.HTTPError as exc:
+            raise HubError(f"{self.name}: request failed: {exc}") from exc
+        if response.status_code == 404:
+            raise HubError(f"{self.name}: not found: {route}")
+        if response.status_code >= 400:
+            raise HubError(
+                f"{self.name}: HTTP {response.status_code} for {route}: {response.text[:200]}"
+            )
+        return response
+
+    def _json(self, route: str, **params: Any) -> Any:
+        try:
+            return self._get(route, **params).json()
+        except ValueError as exc:
+            raise HubError(f"{self.name}: {route} returned invalid JSON") from exc
+
+    def _rows(self, query: str, limit: int) -> list[dict[str, Any]]:
+        """Browse rows (no query) or server-side search results."""
+        if query.strip():
+            payload = self._json("/api/v1/search", q=query.strip(), limit=limit)
+            rows = payload.get("results") if isinstance(payload, dict) else payload
+        else:
+            payload = self._json("/api/skills", page=1, pageSize=limit, sortBy="score")
+            data = payload.get("data") if isinstance(payload, dict) else None
+            rows = data.get("skills") if isinstance(data, dict) else payload
+        if not isinstance(rows, list):
+            raise HubError(f"{self.name}: unrecognised catalog response shape")
+        return [row for row in rows if isinstance(row, dict)]
+
+    @staticmethod
+    def _owner_from_row(row: dict[str, Any]) -> tuple[str, str]:
+        """``(namespace handle, display name)`` for one listing row."""
+        namespace = row.get("namespace") if isinstance(row.get("namespace"), dict) else {}
+        publisher = row.get("publisher") if isinstance(row.get("publisher"), dict) else {}
+        handle = str(namespace.get("handle") or "").strip()
+        display = str(publisher.get("name") or namespace.get("displayName") or "").strip()
+        return handle, display
+
+    @classmethod
+    def _listing_from_row(cls, row: dict[str, Any]) -> dict[str, Any] | None:
+        slug = str(row.get("slug") or "").strip()
+        if not slug:
+            return None
+        stats = row.get("stats") if isinstance(row.get("stats"), dict) else {}
+        handle, display = cls._owner_from_row(row)
+        subcategories = row.get("subCategories")
+        tags = [
+            str(item["name"])
+            for item in (subcategories if isinstance(subcategories, list) else [])
+            if isinstance(item, dict) and item.get("name")
+        ]
+        return {
+            "slug": slug,
+            "owner_handle": handle,
+            "name": str(row.get("name") or row.get("displayName") or slug),
+            "summary": str(
+                row.get("summary") or row.get("description_zh") or row.get("description") or ""
+            ),
+            "version": str(row.get("version") or ""),
+            "downloads": int(row.get("downloads") or stats.get("downloads") or 0),
+            "stars": int(row.get("stars") or stats.get("stars") or 0),
+            "owner": display,
+            "owner_url": "",
+            "updated_at": row.get("updated_at") or row.get("updatedAt"),
+            "tags": tags,
+        }
+
+    def search(self, query: str, *, limit: int = 10) -> list[HubSkillRef]:
+        refs: list[HubSkillRef] = []
+        for row in self._rows(query, limit):
+            listing = self._listing_from_row(row)
+            if listing is None:
+                continue
+            refs.append(
+                HubSkillRef(
+                    hub=self.name,
+                    slug=listing["slug"],
+                    owner_handle=listing["owner_handle"],
+                    display_name=listing["name"],
+                    summary=listing["summary"],
+                    version=listing["version"],
+                )
+            )
+        return refs
+
+    def catalog(
+        self, *, query: str = "", limit: int = 50, sort: str = "createdAt"
+    ) -> list[dict[str, Any]]:
+        """List skills for the in-app browser (always score-sorted on SkillHub)."""
+        out: list[dict[str, Any]] = []
+        for row in self._rows(query, limit):
+            listing = self._listing_from_row(row)
+            if listing is not None:
+                out.append(listing)
+        return out
+
+    def _detail_payload(self, slug: str) -> dict[str, Any]:
+        owner_handle, skill_slug = split_owner_slug(slug)
+        payload = self._json(f"/api/v1/skills/{skill_slug}")
+        if not isinstance(payload, dict):
+            raise HubError(f"{self.name}: unrecognised skill detail shape")
+        if owner_handle:
+            payload["_owner_handle"] = owner_handle
+        return payload
+
+    @staticmethod
+    def _namespace(payload: dict[str, Any]) -> str:
+        namespace = payload.get("namespace")
+        handle = str(namespace.get("handle") or "") if isinstance(namespace, dict) else ""
+        return str(payload.get("_owner_handle") or handle or "").strip()
+
+    def _skill_md(self, slug: str, namespace: str) -> str:
+        try:
+            return self._get(
+                f"/api/v1/skills/{slug}/file", path="SKILL.md", namespace=namespace or None
+            ).text
+        except HubError:
+            return ""
+
+    def verify(self, slug: str, *, version: str | None = None) -> HubVerdict:
+        try:
+            payload = self._detail_payload(slug)
+        except (HubError, ValueError) as exc:
+            return HubVerdict(status="unknown", detail=str(exc))
+        reports = payload.get("securityReports")
+        if not isinstance(reports, dict) or not reports:
+            return HubVerdict(status="unknown", detail="hub has no security report")
+        statuses = [
+            str(report.get("status") or "").strip().lower()
+            for report in reports.values()
+            if isinstance(report, dict)
+        ]
+        risky = sorted({status for status in statuses if status and status not in _SKILLHUB_BENIGN})
+        if risky:
+            return HubVerdict(status="suspicious", detail=", ".join(risky))
+        return HubVerdict(status="ok", detail="security scan passed")
+
+    def detail(self, slug: str) -> dict[str, Any]:
+        """Full metadata + SKILL.md body for one hub skill (browser detail view)."""
+        owner_handle, skill_slug = split_owner_slug(slug)
+        payload = self._detail_payload(slug)
+        skill = payload.get("skill") if isinstance(payload.get("skill"), dict) else payload
+        listing = self._listing_from_row(skill) or {"slug": skill_slug, "name": skill_slug}
+        namespace = self._namespace(payload)
+        listing["owner_handle"] = listing.get("owner_handle") or namespace or owner_handle
+        latest = payload.get("latestVersion")
+        if isinstance(latest, dict):
+            listing["version"] = str(latest.get("version") or listing.get("version") or "")
+        listing["content"] = self._skill_md(skill_slug, namespace) or str(
+            skill.get("overviewMd") or ""
+        )
+        return listing
+
+    def fetch(self, slug: str, *, version: str | None = None) -> FetchedSkill:
+        owner_handle, skill_slug = split_owner_slug(slug)
+        payload = self._detail_payload(slug)
+        namespace = self._namespace(payload)
+        if not namespace:
+            raise HubError(f"{self.name}: `{skill_slug}` is missing its publisher namespace")
+        response = self._get(
+            "/api/v1/download", slug=skill_slug, namespace=namespace, version=version
+        )
+        tmp = Path(tempfile.mkdtemp(prefix="deeptutor-skill-"))
+        try:
+            zip_path = tmp / "package.zip"
+            zip_path.write_bytes(response.content)
+            extracted = tmp / "extracted"
+            _extract_skill_zip(zip_path, extracted)
+            root = _locate_package_root(extracted)
+        except Exception:
+            shutil.rmtree(tmp, ignore_errors=True)
+            raise
+        latest = payload.get("latestVersion")
+        resolved_version = version or (
+            str(latest.get("version") or "") if isinstance(latest, dict) else ""
+        )
+        return FetchedSkill(
+            ref=HubSkillRef(
+                hub=self.name,
+                slug=skill_slug,
+                owner_handle=namespace,
+                version=resolved_version,
+            ),
+            root=root,
+            cleanup_dir=tmp,
+        )
+
+
 class CommandProvider:
     """Generic fetch-by-command provider for registries without a public API.
 
@@ -689,9 +926,9 @@ def _load_hub_settings() -> dict[str, dict[str, Any]]:
 def default_hub() -> str:
     """The hub used when a ref carries no ``<hub>:`` prefix.
 
-    Settings-driven (``"default": "eduhub"`` in skill_hubs.json) so a
+    Settings-driven (``"default": "skillhub"`` in skill_hubs.json) so a
     deployment can point the bare ``install <slug>`` at its own hub without
-    forking the code; falls back to the built-in ``eduhub``.
+    forking the code; falls back to the built-in ``skillhub``.
     """
     chosen = str(_load_hub_config().get("default") or "").strip().lower()
     return chosen or DEFAULT_HUB
@@ -700,13 +937,20 @@ def default_hub() -> str:
 def get_hub_provider(name: str) -> SkillHubProvider:
     """Resolve a hub name to a provider.
 
-    Built-in hubs (``eduhub``, ``clawhub``) work with no configuration; entries
-    in ``settings/skill_hubs.json`` are layered on top and override built-ins.
+    Built-in hubs (``skillhub``, ``clawhub``, ``eduhub``) work with no
+    configuration; entries in ``settings/skill_hubs.json`` are layered on top
+    and override built-ins.
     """
     hub = (name or DEFAULT_HUB).strip().lower()
     configured = _load_hub_settings().get(hub) or _BUILTIN_HUBS.get(hub)
     if configured is not None:
         kind = str(configured.get("type") or "").strip().lower()
+        if kind == "skillhub":
+            return SkillHubCnProvider(
+                hub,
+                base_url=str(configured.get("base_url") or _SKILLHUB_BASE_URL),
+                site_url=str(configured.get("site_url") or _SKILLHUB_SITE_URL),
+            )
         if kind == "clawhub":
             return ClawHubProvider(
                 hub, base_url=str(configured.get("base_url") or _CLAWHUB_BASE_URL)

@@ -60,9 +60,9 @@ class InstallSkillRequest(BaseModel):
     """Install a hub skill into the caller's own skill layer.
 
     ``ref`` is a ``<hub>:<slug>[@version]`` reference (the bare hub prefix
-    defaults to ``eduhub``). The web "import from EduHub" flow always builds an
-    ``eduhub:`` ref so a spoofed bridge message can't redirect the install to an
-    arbitrary registry.
+    defaults to ``skillhub``). The web "import from SkillHub" flow always builds
+    a ``skillhub:`` ref so a spoofed bridge message can't redirect the install
+    to an arbitrary registry.
     """
 
     ref: str = Field(..., min_length=1, max_length=256)
@@ -147,27 +147,27 @@ async def list_skills() -> dict[str, list[dict[str, object]]]:
     return {"skills": merged}
 
 
-# ── hub browse (in-app EduHub skill browser; declared before `/{name}`) ──
+# ── hub browse (in-app SkillHub skill browser; declared before `/{name}`) ──
 
 
 @router.get("/hub/catalog")
-async def hub_catalog(hub: str = "eduhub", q: str = "", limit: int = 50) -> dict[str, object]:
+async def hub_catalog(hub: str = "skillhub", q: str = "", limit: int = 50) -> dict[str, object]:
     """Proxy a skill hub's public catalog for the in-app browser.
 
-    The web "Import from EduHub" panel renders these rows in DeepTutor's own
+    The web "Import from SkillHub" panel renders these rows in DeepTutor's own
     UI — no embedded iframe, no login — so users can browse, search, and
     one-click download skills. Returns ``web_url`` (the hub's site origin) so
-    the panel can offer a "view on EduHub" link out.
+    the panel can offer a "view on SkillHub" link out.
     """
     import asyncio
 
-    from deeptutor.services.skill.hub import ClawHubProvider, HubError, get_hub_provider
+    from deeptutor.services.skill.hub import HubError, get_hub_provider
 
     try:
         provider = get_hub_provider(hub)
     except HubError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    if not isinstance(provider, ClawHubProvider):
+    if not hasattr(provider, "catalog"):
         raise HTTPException(status_code=400, detail=f"Hub `{hub}` does not support browsing.")
     try:
         skills = await asyncio.to_thread(provider.catalog, query=q, limit=limit)
@@ -177,17 +177,17 @@ async def hub_catalog(hub: str = "eduhub", q: str = "", limit: int = 50) -> dict
 
 
 @router.get("/hub/detail")
-async def hub_detail(slug: str, hub: str = "eduhub") -> dict[str, object]:
+async def hub_detail(slug: str, hub: str = "skillhub") -> dict[str, object]:
     """Full metadata + SKILL.md body for one hub skill (browser detail view)."""
     import asyncio
 
-    from deeptutor.services.skill.hub import ClawHubProvider, HubError, get_hub_provider
+    from deeptutor.services.skill.hub import HubError, get_hub_provider
 
     try:
         provider = get_hub_provider(hub)
     except HubError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    if not isinstance(provider, ClawHubProvider):
+    if not hasattr(provider, "detail"):
         raise HTTPException(status_code=400, detail=f"Hub `{hub}` does not support browsing.")
     try:
         detail = await asyncio.to_thread(provider.detail, slug)
@@ -242,7 +242,7 @@ async def create_skill(payload: CreateSkillRequest) -> dict[str, object]:
 
 @router.post("/install")
 async def install_skill(payload: InstallSkillRequest) -> dict[str, object]:
-    """Import a hub skill (e.g. from EduHub) into the caller's own skill layer.
+    """Import a hub skill (e.g. from SkillHub) into the caller's own skill layer.
 
     Lands the package in the same per-user dir that ``/create`` writes to, so
     the imported skill shows up in this user's Skills list. The install gate

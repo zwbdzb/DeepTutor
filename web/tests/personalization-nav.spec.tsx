@@ -5,6 +5,7 @@ import {
   NAV_BY_HREF,
   PRIMARY_NAV_HREFS,
   DEFAULT_COLLAPSED_NAV,
+  isNavActive,
   navVisibleUnderPolicy,
 } from "@/components/sidebar/nav-entries";
 import { resolveNavLayout } from "@/lib/sidebar-layout";
@@ -85,6 +86,41 @@ it("hides under a learning policy exactly like the other account entries", () =>
   expect(navVisibleUnderPolicy(HREF, [])).toBe(false);
   // Declaring `surfaces` would make the entry policy-dependent; it must not.
   expect(NAV_BY_HREF.get(HREF)?.surfaces).toBeUndefined();
+});
+
+it("marks itself active on every personalization page", () => {
+  for (const pathname of [
+    "/space/personas",
+    "/space/personas/abc",
+    "/space/skills",
+    "/space/mcp",
+    "/space/cli-apps",
+    "/memory",
+    "/memory/l1",
+    "/agents",
+  ]) {
+    expect(isNavActive(pathname, HREF)).toBe(true);
+    // "Learning Space" must not also light up for the same path.
+    expect(isNavActive(pathname, "/space")).toBe(false);
+  }
+  expect(isNavActive("/space", "/space")).toBe(true);
+  expect(isNavActive("/space", HREF)).toBe(false);
+  // `/agents` keeps its own row lit alongside the shelf entry.
+  expect(isNavActive("/agents", "/agents")).toBe(true);
+});
+
+it("keeps Learning Space lit on its top-level resource surfaces", () => {
+  for (const pathname of [
+    "/notebooks",
+    "/notebooks/abc",
+    "/knowledge-bases",
+    "/knowledge-bases/kb-1",
+    "/co-writer",
+    "/co-writer/doc-1",
+  ]) {
+    expect(isNavActive(pathname, "/space")).toBe(true);
+    expect(isNavActive(pathname, HREF)).toBe(false);
+  }
 });
 
 it("reaches profiles whose saved sidebar order predates the entry", () => {
