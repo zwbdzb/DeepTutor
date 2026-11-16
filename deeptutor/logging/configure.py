@@ -10,7 +10,7 @@ from typing import TextIO
 
 from deeptutor.utils.secret_files import ensure_private_directory, ensure_private_file
 
-from .config import LoggingConfig, load_logging_config
+from .config import LOG_FILE_NAME, LoggingConfig, load_logging_config
 from .formatters import ConsoleFormatter, ContextFilter, JsonlFormatter
 from .loguru_bridge import install_loguru_bridge
 
@@ -65,7 +65,7 @@ def configure_logging(
     if config.file_output:
         log_dir = Path(config.log_dir) if config.log_dir else Path("data/user/logs")
         ensure_private_directory(log_dir)
-        log_path = log_dir / "deeptutor.jsonl"
+        log_path = log_dir / LOG_FILE_NAME
         file_handler = _managed(
             RotatingFileHandler(
                 log_path,

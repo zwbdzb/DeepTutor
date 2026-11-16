@@ -2,7 +2,7 @@
 
 为什么存在：引擎（DeepTutor）自身的日志落盘是**正确的**——
 ``configure_logging`` 用 ``RotatingFileHandler`` + ``JsonlFormatter`` 写
-``<home>/data/user/logs/deeptutor.jsonl``，每行一个 JSON 对象，``level``
+``<home>/data/user/logs/thinkbuddy.jsonl``，每行一个 JSON 对象，``level``
 是结构化字段、traceback 在 ``exception`` 字段里天然单行。壳的 app.log 转发
 副本反而把级别混淆成了统一 INFO（``process.py._handle_line`` 曾无条件
 ``log.info``）。因此 error 遥测的数据源**不是**壳日志，而是这个 JSONL。

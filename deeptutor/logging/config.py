@@ -5,6 +5,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+#: Product-facing name of the structured JSONL log.
+#:
+#: The engine *package* is ``deeptutor`` and its logger namespaces stay that
+#: way (they are an import path, not a brand), but the file a user opens,
+#: attaches to a bug report, or finds in ``data/user/logs`` is a ThinkBuddy
+#: artifact. Keep this the single source of truth on the engine side; the
+#: desktop shell carries its own literal because it must start even when the
+#: engine runtime is missing or broken (see ``desktop-shell/desktop/main.py``).
+LOG_FILE_NAME = "thinkbuddy.jsonl"
+
 
 @dataclass(frozen=True)
 class LoggingConfig:
