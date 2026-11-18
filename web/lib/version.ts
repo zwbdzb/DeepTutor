@@ -51,10 +51,23 @@ const DESKTOP_AGENT = /\bOpenDeepTutor\/\S+ \(([^)]+)\)/;
 
 /** The client this page runs in: a desktop edition, or the web UI in a browser. */
 export function clientEdition(userAgent?: string | null): ClientEdition {
+  const platform = desktopPlatform(userAgent);
+  return (platform && EDITIONS[platform]) || WEB;
+}
+
+/**
+ * The platform token a desktop shell put in its user agent, or `null` in a
+ * browser.
+ *
+ * Exposed apart from `clientEdition` because a decision that depends on the
+ * *platform* rather than on the user-visible label must not be read off the
+ * label: those strings are rebranded freely, while this token is the wire
+ * contract with the shipped shells.
+ */
+export function desktopPlatform(userAgent?: string | null): string | null {
   const agent =
     userAgent ?? (typeof navigator === "undefined" ? "" : navigator.userAgent);
-  const platform = DESKTOP_AGENT.exec(agent)?.[1];
-  return (platform && EDITIONS[platform]) || WEB;
+  return DESKTOP_AGENT.exec(agent)?.[1] ?? null;
 }
 
 /** ``ThinkBuddy for MacOS with Apple Silicon v1.7.1`` / ``ThinkBuddy Web v1.7.1``. */
