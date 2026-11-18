@@ -13,6 +13,7 @@ import pytest
 DESKTOP_SHELL = Path(__file__).resolve().parents[2] / "desktop-shell"
 sys.path.insert(0, str(DESKTOP_SHELL))
 
+from desktop.http_ssl import trusted_ssl_context
 from desktop.thinkbuddy_website import ThinkBuddyWebsiteError, checkin
 
 
@@ -46,7 +47,12 @@ def test_checkin_posts_only_provider_user_id() -> None:
     assert json.loads(request.data) == {"provider_user_id": "u_314"}
     assert request.get_header("Content-type") == "application/json"
     assert request.get_header("Authorization") is None
-    assert urlopen.call_args.kwargs == {"timeout": 3.5}
+    # 必须显式传统一信任链：打包运行时默认 CA 库缺失会让裸 urlopen
+    # 直接 CERTIFICATE_VERIFY_FAILED（Mac 签到"连接失败"根因）。
+    assert urlopen.call_args.kwargs == {
+        "timeout": 3.5,
+        "context": trusted_ssl_context(),
+    }
     assert result["reward"]["points_awarded"] == 100
 
 

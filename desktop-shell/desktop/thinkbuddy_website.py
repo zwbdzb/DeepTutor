@@ -7,6 +7,8 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+from desktop.http_ssl import trusted_ssl_context
+
 _PROVIDER_USER_ID = re.compile(r"u_[1-9][0-9]*\Z")
 
 
@@ -58,7 +60,13 @@ def checkin(
             },
             method="POST",
         )
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        # 打包运行时的默认 OpenSSL 信任库不可靠（python-build-standalone /
+        # embeddable 的 CA 路径在用户机上不存在），必须走统一信任链：
+        # 裸 urlopen 在 Mac 上必报 CERTIFICATE_VERIFY_FAILED → status_code=0
+        # → "签到服务连接失败"（登录链路传 certifi context 所以一直正常）。
+        with urllib.request.urlopen(
+            request, timeout=timeout, context=trusted_ssl_context()
+        ) as response:
             raw = response.read()
     except urllib.error.HTTPError as exc:
         try:

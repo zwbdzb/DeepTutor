@@ -29,6 +29,8 @@ import time
 from typing import Any
 import urllib.request
 
+from desktop.http_ssl import trusted_ssl_context
+
 log = logging.getLogger("dt.telemetry")
 
 _MESSAGE_MAX_CHARS = 200
@@ -170,7 +172,12 @@ class TelemetryReporter:
                 headers=headers,
                 method="POST",
             )
-            opener = urllib.request.build_opener(_NoRedirect())
+            # HTTPS 走统一信任链（同 checkin 的根因：打包运行时默认 CA
+            # 库缺失时遥测会一直静默失败，fire-and-forget 无人察觉）。
+            opener = urllib.request.build_opener(
+                _NoRedirect(),
+                urllib.request.HTTPSHandler(context=trusted_ssl_context()),
+            )
             with opener.open(request, timeout=self._timeout if timeout is None else timeout) as response:
                 response.read(1024)
             with self._lock:

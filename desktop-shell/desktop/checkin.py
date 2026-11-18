@@ -63,8 +63,9 @@ class CheckinCoordinator:
     def _provider_error(exc: ThinkBuddyWebsiteError) -> dict[str, Any]:
         detail = str(exc)
         log.warning(
-            "thinkbuddy-website check-in failed: status=%s",
+            "thinkbuddy-website check-in failed: status=%s detail=%s",
             exc.status_code,
+            detail,
         )
         if detail == "invalid provider user id":
             message = "登录用户信息无效，请切换账号后重试"
