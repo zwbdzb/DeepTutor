@@ -93,6 +93,11 @@ def prepare_workspace_execution_env(
         "HF_HOME": str(locations["cache"] / "huggingface"),
         "TORCH_HOME": str(locations["cache"] / "torch"),
         "MPLCONFIGDIR": str(locations["cache"] / "matplotlib"),
+        # The exec sandbox has no GUI session. A figure's ``show()`` (including
+        # schemdraw's default ``Drawing(show=True)`` on context exit) blocks
+        # until the tool timeout in that environment. Pin the non-interactive
+        # backend so printing, saving, and ``plt.show()`` all return at once.
+        "MPLBACKEND": "Agg",
         "LANG": os.environ.get("LANG", "C.UTF-8"),
         "PYTHONUNBUFFERED": "1",
         "PYTHONDONTWRITEBYTECODE": "1",
@@ -108,7 +113,10 @@ def prepare_workspace_execution_env(
         # A stable symbolic handle for model-authored code that needs to open
         # an existing binary workspace file. Prompts teach the model to append
         # an exact workspace-relative path and never reveal the physical value.
-        env["DEEPTUTOR_WORKSPACE_ROOT"] = str(Path(workspace_root).expanduser().resolve())
+        # The name is brand-neutral on purpose: this variable is visible to the
+        # model (in the workspace prompt and in ``env`` output inside exec), so
+        # it must not carry the upstream product name.
+        env["WORKSPACE_ROOT"] = str(Path(workspace_root).expanduser().resolve())
     return env
 
 

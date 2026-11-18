@@ -564,7 +564,7 @@ class AuthManager:
             self._finalize({
                 "ok": True, "token": token, "models": models or [], "phone": phone,
                 "relay_base": relay_base, "message": "令牌已获取",
-                "warning": f"令牌已获取，但写入 DeepTutor 配置失败：{exc}",
+                "warning": f"令牌已获取，但写入 ThinkBuddy 配置失败：{exc}",
             })
             return
 

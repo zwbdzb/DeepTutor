@@ -19,7 +19,8 @@ vi.mock("@/hooks/useAuthStatus", () => ({
 vi.mock("@/hooks/useChatWorkspaces", () => ({ useChatWorkspaces: () => ({ workspaces: [], error: "" }) }));
 
 vi.mock("next/navigation", () => ({
-  usePathname: () => "/co-writer",
+  useSearchParams: () => new URLSearchParams(),
+  usePathname: () => "/kanban",
   useRouter: () => ({ push: fixture.push }),
 }));
 vi.mock("next/image", () => ({ default: () => null }));
@@ -67,23 +68,30 @@ it("loads conversation history while navigation remains usable, then preserves s
     />,
   );
   expect(container.querySelector('[aria-busy="true"]')).toBeInTheDocument();
-  expect(screen.queryByRole("link", { name: "Co-Writer" })).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: /More/ }));
-  expect(screen.getByRole("link", { name: "Co-Writer" })).toHaveAttribute(
+  expect(screen.getByRole("link", { name: "Task Board" })).toHaveAttribute(
     "href",
-    "/co-writer",
+    "/kanban",
   );
 
-  const history = await screen.findByText("Retained session");
+  // The history list is a `dynamic(..., { ssr: false })` chunk behind Suspense,
+  // so this wait races the chunk load: measured at ~1s in a parallel worker,
+  // which is exactly the findBy* default and made the case a coin flip once a
+  // second spec file shared the run. The assertion stays the same — only the
+  // wait budget grows.
+  const history = await screen.findByText("Retained session", undefined, {
+    timeout: 5000,
+  });
   const scroller = history.closest(".overflow-y-auto");
   expect(scroller).toContainElement(
-    screen.getByRole("link", { name: "Partners" }),
+    screen.getByRole("link", { name: "Task Board" }),
   );
   expect(scroller).not.toContainElement(
-    screen.getByRole("link", { name: "Home" }),
+    screen.getByRole("tab", { name: "navigation.home" }),
   );
+  // Settings lives in the header's workspace menu, outside the history scroller.
+  fireEvent.click(screen.getByRole("button", { name: /General workspace/ }));
   expect(scroller).not.toContainElement(
-    screen.getByRole("link", { name: "Settings" }),
+    screen.getByRole("menuitem", { name: "Settings" }),
   );
 
   fireEvent.click(await screen.findByText("Retained session"));
@@ -114,26 +122,27 @@ it("keeps Home pinned even when a previous layout folded it into More", () => {
     }),
   );
   render(<SidebarShell />);
-  expect(screen.getAllByRole("link", { name: "Home" })).toHaveLength(1);
+  expect(screen.getAllByRole("tab", { name: "navigation.home" })).toHaveLength(1);
   expect(screen.queryByRole("button", { name: "Arrange Home" })).toBeNull();
-  fireEvent.click(screen.getByRole("link", { name: "Home" }));
-  expect(fixture.push).toHaveBeenCalledWith("/chat");
+  fireEvent.click(screen.getByRole("link", { name: "navigation.newChat" }));
+  // The new chat stays in the tab's workspace (General here).
+  expect(fixture.push).toHaveBeenCalledWith("/chat?dt_workspace=");
 });
 
 it("resizes with the keyboard, persists across mounts, and resets on double click", () => {
   const first = render(<SidebarShell />);
   const handle = screen.getByRole("separator", { name: "Resize sidebar" });
   fireEvent.keyDown(handle, { key: "ArrowRight" });
-  expect(handle).toHaveAttribute("aria-valuenow", "230");
+  expect(handle).toHaveAttribute("aria-valuenow", "282");
   expect(
     first.container
       .querySelector("aside")!
       .style.getPropertyValue("--sidebar-width"),
-  ).toBe("230px");
+  ).toBe("282px");
   first.unmount();
   render(<SidebarShell />);
   const restored = screen.getByRole("separator", { name: "Resize sidebar" });
-  expect(restored).toHaveAttribute("aria-valuenow", "230");
+  expect(restored).toHaveAttribute("aria-valuenow", "282");
   fireEvent.keyDown(restored, { key: "Home" });
   fireEvent.keyDown(restored, { key: "ArrowLeft" });
   expect(restored).toHaveAttribute("aria-valuenow", "220");
@@ -143,5 +152,5 @@ it("resizes with the keyboard, persists across mounts, and resets on double clic
     restored.getAttribute("aria-valuemax"),
   );
   fireEvent.doubleClick(restored);
-  expect(restored).toHaveAttribute("aria-valuenow", "220");
+  expect(restored).toHaveAttribute("aria-valuenow", "272");
 });

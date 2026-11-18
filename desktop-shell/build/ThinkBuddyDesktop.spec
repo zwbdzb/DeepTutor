@@ -68,6 +68,7 @@ def _collect_ucrt_binaries() -> list[tuple[str, str]]:
 datas = [
     (str(ASSETS / "icon.ico"), "assets"),
     (str(ASSETS / "icon.png"), "assets"),
+    (str(ASSETS / "icon_owl.png"), "assets"),
 ]
 runtime_zip = DIST / "runtime.zip"
 if runtime_zip.exists():

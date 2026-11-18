@@ -401,6 +401,10 @@ class DeepTutorProcess:
             env["PATH"] = str(self.node_dir) + os.pathsep + env.get("PATH", "")
         # DeepTutor respects DEEPTUTOR_HOME too; pass --home explicitly.
         env["DEEPTUTOR_HOME"] = str(self.home)
+        from desktop.auth.config import thinkbuddy_library_url
+        from desktop.runtime import ROOT
+
+        env["THINKBUDDY_LIBRARY_URL"] = thinkbuddy_library_url(ROOT)
         # 子进程 stdio 强制 UTF-8（2026-10-22）：zh-CN Windows 上 Python 子进程
         # stdout 默认 cp936/GBK，thinkbuddy.log 会落成 GBK 字节——VS Code /
         # Win11 记事本等 UTF-8 工具打开全是乱码（用户机实证：banner 十余次
@@ -803,7 +807,7 @@ class DeepTutorProcess:
         # INFO 把"读到一行"这个动作标成了级别，导致 app.log 里 ERROR/WARNING
         # 全部伪装成 INFO（级别语义在转发链路上从未被传递）。子进程输出的
         # 完整原样副本仍在 <home>/logs/thinkbuddy.log；结构化事实源是
-        # 引擎自己的 <home>/data/user/logs/deeptutor.jsonl（error 遥测走
+        # 引擎自己的 <home>/data/user/logs/thinkbuddy.jsonl（error 遥测走
         # EngineLogTail 增量读它，不依赖本行）。
         log.debug("deeptutor: %s", line)
         lowered = line.lower()

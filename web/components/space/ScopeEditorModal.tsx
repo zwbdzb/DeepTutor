@@ -7,6 +7,7 @@ import Modal from "@/components/common/Modal";
 import Button from "@/components/ui/Button";
 import ScopePicker from "@/components/space/ScopePicker";
 import { deleteSession, type SessionSummary } from "@/lib/session-api";
+import { systemConfirm } from "@/lib/system-confirm";
 import { importChatHistory } from "@/lib/imports-api";
 import {
   ensureReadPermission,
@@ -122,7 +123,7 @@ export default function ScopeEditorModal({
         return !keySet.has(sessionUnitKey(agent.source, meta, s.created_at));
       });
       if (orphaned.length > 0) {
-        const ok = window.confirm(
+        const ok = await systemConfirm(
           t(
             "{{count}} conversations are no longer in scope. Permanently delete their imported copies? This cannot be undone.",
             { count: orphaned.length },

@@ -4,6 +4,11 @@ PersonaService
 
 Loads user-authored PERSONA.md files from ``data/user/workspace/personas/``.
 
+Personas belong to the account, not to a content workspace: a response style
+is part of how the learner is talked to, and it is the same in every
+workspace. Personas that were once written inside a workspace are adopted
+into the account on first access.
+
 A persona is a behaviour/voice preset ("teacher", "peer", …) the user picks
 for a conversation. Unlike capability skills (see
 :mod:`deeptutor.services.skill`), a persona must shape the model's voice from
@@ -16,8 +21,10 @@ Each persona lives in its own directory:
     data/user/workspace/personas/<name>/PERSONA.md
 
 The file starts with a YAML frontmatter block holding ``name`` and
-``description``, followed by the Markdown body that becomes the system-prompt
-block when the persona is active.
+``description`` (optionally ``display_name`` and ``category``), followed by
+the Markdown body that becomes the system-prompt block when the persona is
+active. ``category`` is a free-form grouping label the gallery uses for its
+tabs; a persona without one is still valid and shows under "All" only.
 
 Legacy migration: persona-type entries that historically lived in the skills
 workspace (``peer`` / ``teacher`` / ``research-assistant``) are moved into the
@@ -34,7 +41,7 @@ from typing import Any
 
 import yaml
 
-from deeptutor.services.path_service import get_path_service
+from deeptutor.multi_user.paths import get_account_path_service
 
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
@@ -57,11 +64,18 @@ class PersonaInfo:
     name: str
     description: str
     source: str = "user"  # "user" | "admin"
+    display_name: str = ""  # optional user-facing label (may be non-slug, e.g. Chinese)
+    # Optional grouping label used by the persona gallery's tabs
+    # (``education`` / ``work`` / ``code``). Empty means "no grouping": such a
+    # persona only shows under the gallery's "All" tab.
+    category: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
+            "display_name": self.display_name,
             "description": self.description,
+            "category": self.category,
             "source": self.source,
             "read_only": self.source != "user",
         }
@@ -73,11 +87,15 @@ class PersonaDetail:
     description: str
     content: str
     source: str = "user"
+    display_name: str = ""
+    category: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
+            "display_name": self.display_name,
             "description": self.description,
+            "category": self.category,
             "content": self.content,
             "source": self.source,
             "read_only": self.source != "user",
@@ -100,7 +118,7 @@ class PersonaService:
     """CRUD + context rendering for PERSONA.md files under one workspace."""
 
     def __init__(self, root: Path | None = None) -> None:
-        self._root = root or (get_path_service().get_workspace_dir() / "personas")
+        self._root = root or (get_account_path_service().get_workspace_dir() / "personas")
 
     @property
     def root(self) -> Path:
@@ -138,18 +156,55 @@ class PersonaService:
         return data, body
 
     @staticmethod
-    def _render_frontmatter(name: str, description: str) -> str:
-        header = yaml.safe_dump(
-            {"name": name, "description": description.strip()},
-            sort_keys=False,
-            allow_unicode=True,
-        ).strip()
+    def _render_frontmatter(
+        name: str,
+        description: str,
+        display_name: str = "",
+        category: str = "",
+    ) -> str:
+        data: dict[str, Any] = {"name": name, "description": description.strip()}
+        if display_name:
+            data["display_name"] = display_name
+        if category:
+            data["category"] = category
+        header = yaml.safe_dump(data, sort_keys=False, allow_unicode=True).strip()
         return f"---\n{header}\n---"
 
-    def _normalize_content(self, name: str, description: str, content: str) -> str:
-        """Ensure the saved file carries exactly ``name`` + ``description`` frontmatter."""
-        _, body = self._parse_frontmatter(content or "")
-        header = self._render_frontmatter(name, description)
+    @staticmethod
+    def _read_category(meta: dict[str, Any]) -> str:
+        """Normalise the optional ``category`` frontmatter key.
+
+        Personas written before the gallery gained category tabs simply lack
+        the key; an absent category is a valid state (only listed under "All"),
+        never an error.
+        """
+        return str(meta.get("category") or "").strip().lower()
+
+    def _normalize_content(
+        self,
+        name: str,
+        description: str,
+        content: str,
+        category: str = "",
+    ) -> str:
+        """Ensure the saved file carries ``name`` + ``description`` frontmatter.
+
+        An optional ``display_name`` already present in the content's
+        frontmatter is carried over unchanged — it is the user-facing label
+        (e.g. Chinese) that UIs show instead of the ASCII slug. The optional
+        ``category`` is preserved the same way, so editing a persona's body
+        never drops it from an older file; an explicit ``category`` argument
+        wins over the one embedded in ``content``.
+        """
+        meta, body = self._parse_frontmatter(content or "")
+        display_name = str(meta.get("display_name") or "").strip()
+        resolved_category = category.strip().lower() or self._read_category(meta)
+        header = self._render_frontmatter(
+            name,
+            description,
+            display_name,
+            resolved_category,
+        )
         return f"{header}\n\n{body.lstrip()}".rstrip() + "\n"
 
     # ── public read API ─────────────────────────────────────────────────
@@ -173,6 +228,8 @@ class PersonaService:
                 PersonaInfo(
                     name=entry.name,
                     description=str(meta.get("description") or "").strip(),
+                    display_name=str(meta.get("display_name") or "").strip(),
+                    category=self._read_category(meta),
                 )
             )
         return out
@@ -187,6 +244,8 @@ class PersonaService:
             name=self._validate_name(name),
             description=str(meta.get("description") or "").strip(),
             content=text,
+            display_name=str(meta.get("display_name") or "").strip(),
+            category=self._read_category(meta),
         )
 
     def load_for_context(self, name: str) -> str:
@@ -226,10 +285,16 @@ class PersonaService:
         target_dir = self._persona_dir(slug)
         if target_dir.exists():
             raise PersonaExistsError(slug)
-        body = self._normalize_content(slug, description, content)
+        meta, _ = self._parse_frontmatter(content or "")
+        category = self._read_category(meta)
+        body = self._normalize_content(slug, description, content, category=category)
         target_dir.mkdir(parents=True, exist_ok=False)
         self._persona_file(slug).write_text(body, encoding="utf-8")
-        return PersonaInfo(name=slug, description=description.strip())
+        return PersonaInfo(
+            name=slug,
+            description=description.strip(),
+            category=category,
+        )
 
     def update(
         self,
@@ -258,7 +323,13 @@ class PersonaService:
 
         text = self._normalize_content(slug, new_description, new_body_source)
         self._persona_file(slug).write_text(text, encoding="utf-8")
-        return PersonaInfo(name=slug, description=new_description.strip())
+        meta, _ = self._parse_frontmatter(text)
+        return PersonaInfo(
+            name=slug,
+            description=new_description.strip(),
+            display_name=str(meta.get("display_name") or "").strip(),
+            category=self._read_category(meta),
+        )
 
     def delete(self, name: str) -> None:
         slug = self._validate_name(name)
@@ -327,11 +398,25 @@ class PersonaService:
                 continue
             meta, body = self._parse_frontmatter(text)
             description = str(meta.get("description") or "").strip()
+            category = self._read_category(meta)
+            if not category:
+                # Legacy SKILL.md files predate the category concept. If a
+                # bundled preset with the same name has a category, adopt it so
+                # the persona doesn't disappear from its expected gallery tab
+                # after migration (#).
+                preset_file = PRESETS_DIR / name / PERSONA_FILE
+                if preset_file.exists():
+                    try:
+                        preset_text = preset_file.read_text(encoding="utf-8")
+                        preset_meta, _ = self._parse_frontmatter(preset_text)
+                        category = self._read_category(preset_meta)
+                    except OSError:
+                        pass
             self._root.mkdir(parents=True, exist_ok=True)
             target_dir = self._persona_dir(name)
             target_dir.mkdir(parents=True, exist_ok=True)
             self._persona_file(name).write_text(
-                self._normalize_content(name, description, body),
+                self._normalize_content(name, description, body, category=category),
                 encoding="utf-8",
             )
             shutil.rmtree(source_file.parent)
@@ -342,19 +427,48 @@ class PersonaService:
 _instances: dict[str, PersonaService] = {}
 
 
-def get_persona_service() -> PersonaService:
-    """Return the PersonaService for the active user's workspace.
+def _adopt_workspace_personas(root: Path) -> None:
+    """Personas were once stored per workspace; bring them into the account once.
 
-    First access for a workspace also runs the one-shot legacy migration of
-    persona-type skills (idempotent, see
-    :meth:`PersonaService.migrate_legacy_skills`).
+    A name the account already uses keeps the account's persona; the workspace
+    copy is left where it was rather than overwritten or lost.
     """
-    workspace = get_path_service().get_workspace_dir()
+    from deeptutor.services.workspace import get_content_workspace_service
+    from deeptutor.services.workspace.context import workspace_context
+    from deeptutor.services.workspace.models import WorkspaceError
+
+    for row in get_content_workspace_service().list_workspaces():
+        if row["kind"] != "workspace" or row["status"] != "ready":
+            continue
+        try:
+            with workspace_context(row["workspace_id"]):
+                from deeptutor.multi_user.paths import get_current_path_service
+
+                legacy = get_current_path_service().get_workspace_dir() / "personas"
+        except WorkspaceError:
+            continue
+        if legacy.resolve() == root or not legacy.is_dir():
+            continue
+        for directory in legacy.iterdir():
+            if directory.is_dir() and not (root / directory.name).exists():
+                root.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(directory), str(root / directory.name))
+
+
+def get_persona_service() -> PersonaService:
+    """Return the PersonaService for the active account.
+
+    First access for an account also runs the one-shot legacy migrations:
+    persona-type skills (see :meth:`PersonaService.migrate_legacy_skills`) and
+    personas written inside a content workspace. Both are idempotent.
+    """
+    workspace = get_account_path_service().get_workspace_dir()
     root = (workspace / "personas").resolve()
     key = str(root)
     if key not in _instances:
         service = PersonaService(root=root)
         service.migrate_legacy_skills(workspace / "skills")
+        _adopt_workspace_personas(root)
         _instances[key] = service
     return _instances[key]
 
@@ -365,11 +479,10 @@ def load_visible_for_context(
     workspace: PersonaService | None = None,
     admin: PersonaService | None = None,
 ) -> str:
-    """Render a persona from the active workspace, then admin presets.
+    """Render a persona from the account, then admin presets.
 
-    Workspace-local files stay isolated. Admin presets are a read-only overlay
-    visible to every role — including an admin in an explicit workspace whose
-    own ``personas/`` directory is empty.
+    Admin presets are a read-only overlay visible to every role — including an
+    admin whose own ``personas/`` directory is empty.
     """
     if not name:
         return ""

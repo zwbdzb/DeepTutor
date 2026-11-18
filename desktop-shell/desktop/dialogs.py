@@ -72,3 +72,18 @@ def message_box(title: str, text: str, icon: int = 0x40) -> int:
             log.exception("message box failed: %s", exc)
             return 0
     return _mac_message_box(title, text, icon)
+
+
+def confirm(title: str, text: str, warning: bool = False) -> bool:
+    """是/否二选一确认框：返回 True 表示用户点了「确定」。
+
+    页面里的二次确认（删除对话等）走这里，替掉 WebView2 自带的
+    「127.0.0.1:3782 显示」提示框——那是宿主浏览器 chrome，既没品牌也不
+    符合桌面端观感。
+
+    默认**不带图标**（MB_OKCANCEL 纯按钮，观感最轻，删除类确认就是这种）；
+    warning=True 才加 MB_ICONWARNING（黄色三角），留给「退出登录」这类
+    需要更强提示的动作。
+    """
+    icon = 0x01 | (0x30 if warning else 0x00)  # MB_OKCANCEL [| MB_ICONWARNING]
+    return message_box(title, text, icon) == 1

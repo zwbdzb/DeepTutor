@@ -219,8 +219,10 @@ export interface KnowledgeUploadPolicy {
 export interface KnowledgeBaseFile {
   /** Remote document ID; local files omit this field. */
   id?: string;
-  /** POSIX path relative to the KB's raw/ root (may include folders). */
+  /** Local raw/ relative path, or remote document display name. */
   name: string;
+  /** WeKnora folder path, separate from the document's name and ID. */
+  folder_path?: string;
   /** "folder" entries are organizational only; default "file". */
   type?: "file" | "folder";
   size?: number;

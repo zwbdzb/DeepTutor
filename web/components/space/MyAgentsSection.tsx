@@ -28,6 +28,7 @@ import {
   updateSessionTitle,
   type SessionSummary,
 } from "@/lib/session-api";
+import { systemConfirm } from "@/lib/system-confirm";
 import { importChatHistory, listImportedSessions } from "@/lib/imports-api";
 import {
   deleteAgent,
@@ -193,7 +194,7 @@ export default function MyAgentsSection() {
 
   const handleDeleteSession = useCallback(
     async (sessionId: string) => {
-      if (!window.confirm(t("Permanently delete this chat and its tutor threads? This cannot be undone."))) return;
+      if (!(await systemConfirm(t("Permanently delete this chat and its tutor threads? This cannot be undone.")))) return;
       await deleteSession(sessionId);
       if (activeSessionId === sessionId) setActiveSessionId(null);
       setSessions((prev) =>
@@ -258,7 +259,7 @@ export default function MyAgentsSection() {
             { name: agent.name, count: owned.length },
           )
         : t("Delete “{{name}}”?", { name: agent.name });
-      if (!window.confirm(message)) return;
+      if (!(await systemConfirm(message))) return;
       await deleteAgent(agent.id);
       await Promise.allSettled(
         owned.map((s) => deleteSession(s.session_id || s.id)),

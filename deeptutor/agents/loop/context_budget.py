@@ -109,24 +109,20 @@ def resolve_window_info(
 def detect_counter_name() -> str:
     """Name of the tokenizer ``count_tokens`` will actually use in this process.
 
-    ``count_tokens`` swallows a missing or broken tiktoken and silently drops to
-    a chars/4 estimate; probing the same import keeps the reported counter from
-    claiming an accuracy the numbers do not have. When the startup warmup is
-    still in flight (or failed) the turn path is on the heuristic right now,
-    and probing here would block the loop on the cold vocabulary download —
-    report that honestly instead.
+    Both share the offline-safe acquisition in
+    :mod:`deeptutor.services.session.token_encoding`: the name is
+    ``cl100k_base`` only once a verified local encoding has been acquired in
+    the background, and ``heuristic`` whenever the chars/4 estimate is in
+    play — missing tiktoken, cold cache, or acquisition still pending or
+    failed. Probing that way can neither start the no-timeout CDN download
+    nor block the loop (#2522).
     """
-    from deeptutor.services.session.context_builder import token_encoder_state
+    # Imported lazily, like ``_default_counter`` below: the session package
+    # pulls in the agent base classes, so a module-level import would close a
+    # cycle.
+    from deeptutor.services.session.token_encoding import ENCODING_NAME, get_local_encoding
 
-    if token_encoder_state() in {"warming", "failed"}:
-        return "heuristic"
-    try:
-        import tiktoken
-
-        tiktoken.get_encoding("cl100k_base")
-    except Exception:
-        return "heuristic"
-    return "cl100k_base"
+    return ENCODING_NAME if get_local_encoding() is not None else "heuristic"
 
 
 def count_conversation_tokens(

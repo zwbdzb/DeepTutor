@@ -1,0 +1,6 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+<title>ThinkBuddy — Compass / deep navy</title>
+<defs><linearGradient id="bg" x1="0" y1="0" x2="560" y2="1024" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#215AA6"/><stop offset="0.5" stop-color="#143790"/><stop offset="1" stop-color="#0A1F5C"/></linearGradient></defs>
+<path d="M 240 64 H 784 A 176 176 0 0 1 960 240 V 784 A 176 176 0 0 1 784 960 H 240 A 176 176 0 0 1 64 784 V 240 A 176 176 0 0 1 240 64 Z" fill="url(#bg)"/>
+<g fill="none" stroke="#FFFFFF" stroke-width="112" stroke-linecap="round" stroke-linejoin="round"><path d="M 400 410 C 400 348.1 450.1 298 512 298 C 573.9 298 624 348.1 624 410 C 624 462 596 510 546 522 C 526 526 512 546 512 576"/></g><circle cx="512" cy="712" r="56" fill="#FCDC2A"/>
+</svg>

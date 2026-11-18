@@ -20,7 +20,8 @@
 #     3. PyInstaller -> dist/ThinkBuddyDesktop.app；hdiutil -> dist/ThinkBuddyDesktop-mac-<arch>.dmg
 #
 # 触发：
-#   - push 到 main/dev/dev1019 且改动涉及 desktop-shell/**、web/**、deeptutor/** 等打包输入
+#   - push 到 main / 任意 dev 前缀分支（dev**，含 develop/dev1019/dev1110 等）
+#     且改动涉及 desktop-shell/**、web/**、deeptutor/** 等打包输入
 #   - 手动 workflow_dispatch（可勾选 release 额外发布 GitHub Release）
 #
 # 发布模型（各平台独立发布，互不等待）：
@@ -49,7 +50,7 @@ on:
         type: boolean
         default: false
   push:
-    branches: [main, develop, dev1019]
+    branches: [main, "dev**"]
     paths:
       - "desktop-shell/**"
       - "web/**"

@@ -18,6 +18,8 @@ import {
   Trash2,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { normalizeLanguage } from "@/i18n/languages";
+import { formatDate } from "@/lib/datetime";
 
 import BrandIcon, { TrademarkNote } from "@/components/common/BrandIcon";
 import SpaceSectionHeader from "@/components/space/SpaceSectionHeader";
@@ -34,6 +36,7 @@ import {
   setCliAppEnabled,
   uninstallCliApp,
 } from "@/lib/cli-apps-api";
+import { systemConfirm } from "@/lib/system-confirm";
 
 const PAGE_SIZE = 12;
 
@@ -154,7 +157,7 @@ function Installed({
   onChanged: (next: CliAppState) => void;
   onBrowse: () => void;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -246,7 +249,7 @@ function Installed({
                 <p className="mt-1.5 text-[11px] text-[var(--muted-foreground)]/80">
                   {app.installed_at
                     ? t("Installed {{when}}", {
-                        when: formatDay(app.installed_at, zh),
+                        when: formatDay(app.installed_at, i18n.language),
                       })
                     : ""}
                   {app.pin ? ` · ${app.pin.slice(0, 12)}` : ""}
@@ -280,17 +283,18 @@ function Installed({
                       type="button"
                       disabled={busy === app.id}
                       onClick={() => {
-                        if (
-                          typeof window !== "undefined" &&
-                          !window.confirm(
-                            t('Remove "{{name}}" from this deployment?', {
-                              name: app.display_name,
-                            }),
-                          )
-                        ) {
-                          return;
-                        }
-                        void act(app.id, () => uninstallCliApp(app.id));
+                        void (async () => {
+                          if (
+                            !(await systemConfirm(
+                              t('Remove "{{name}}" from this deployment?', {
+                                name: app.display_name,
+                              }),
+                            ))
+                          ) {
+                            return;
+                          }
+                          await act(app.id, () => uninstallCliApp(app.id));
+                        })();
                       }}
                       aria-label={t("Uninstall")}
                       className="rounded-md p-1.5 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--muted)] hover:text-red-500 disabled:opacity-50"
@@ -1014,12 +1018,8 @@ function messageOf(error: unknown): string {
   return "";
 }
 
-function formatDay(iso: string, zh: boolean): string {
+function formatDay(iso: string, language: string): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return iso;
-  return date.toLocaleDateString(zh ? "zh-CN" : "en-US", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
+  return formatDate(date, normalizeLanguage(language));
 }

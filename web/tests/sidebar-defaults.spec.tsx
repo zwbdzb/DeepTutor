@@ -12,7 +12,7 @@ import {
 
 beforeEach(() => localStorage.clear());
 
-it("new profiles see five primary entries and two folded features", () => {
+it("new profiles see seven primary entries and one folded feature", () => {
   expect(readNavLayout()).toBeNull();
   const resolved = resolveNavLayout(
     PRIMARY_NAV_HREFS,
@@ -23,10 +23,12 @@ it("new profiles see five primary entries and two folded features", () => {
     "/chat",
     "/partners",
     "/learning",
+    "/personalization",
     "/space",
+    "/calendar",
     "/kanban",
   ]);
-  expect(resolved.collapsed).toEqual(["/co-writer", "/agents"]);
+  expect(resolved.collapsed).toEqual(["/agents"]);
   expect(resolved.customized).toBe(false);
   expect(SECONDARY_NAV.map(item => item.href)).toEqual(["/settings"]);
 });

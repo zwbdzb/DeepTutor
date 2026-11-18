@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512"><defs>
+<linearGradient id="gBlue" x1="0" y1="0" x2="1" y2="1">
+  <stop offset="0%" stop-color="#061A63"/><stop offset="48%" stop-color="#0C2484"/>
+  <stop offset="100%" stop-color="#006CB4"/></linearGradient>
+<linearGradient id="gWarm" x1="0" y1="1" x2="1" y2="0">
+  <stop offset="0%" stop-color="#E45424"/><stop offset="100%" stop-color="#F0C81F"/></linearGradient>
+</defs><rect width="512" height="512" rx="112" ry="112" fill="#0C2484"/><path d="M 186 116 H 330 A 62 62 0 0 1 392 178 V 286 A 62 62 0 0 1 330 348 H 246 L 138 420 L 166 348 H 186 A 62 62 0 0 1 124 286 V 178 A 62 62 0 0 1 186 116 Z" fill="#FFF"/><path transform="translate(258,226) scale(84)" d="M 0,-1 C 0.12,-0.34 0.34,-0.12 1,0 C 0.34,0.12 0.12,0.34 0,1 C -0.12,0.34 -0.34,0.12 -1,0 C -0.34,-0.12 -0.12,-0.34 0,-1 Z" fill="#0C2484"/></svg>

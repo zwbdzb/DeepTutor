@@ -14,3 +14,55 @@ export function normalizeVersionTag(
   );
   return match ? `v${match[1]}` : null;
 }
+
+/** Client names, matching ``edition()`` in apps/desktop/src/platform.mjs.
+ *
+ * ``full`` (start screen, Settings): ``ThinkBuddy for MacOS with Apple Silicon``.
+ * ``short`` where space is tight: ``MacOS (Apple Silicon)``.
+ */
+export interface ClientEdition {
+  full: string;
+  short: string;
+}
+
+const WEB: ClientEdition = { full: "ThinkBuddy Web", short: "Web" };
+const EDITIONS: Record<string, ClientEdition> = {
+  "macOS; arm64": {
+    full: "ThinkBuddy for MacOS with Apple Silicon",
+    short: "MacOS (Apple Silicon)",
+  },
+  "macOS; x64": {
+    full: "ThinkBuddy for MacOS with Intel Silicon",
+    short: "MacOS (Intel)",
+  },
+  "Windows; x64": { full: "ThinkBuddy for Windows", short: "Windows" },
+  // Shells from 1.7.0 sent no architecture.
+  macOS: { full: "ThinkBuddy for MacOS", short: "MacOS" },
+  Windows: { full: "ThinkBuddy for Windows", short: "Windows" },
+};
+
+/** The desktop shell appends ``OpenDeepTutor/<version> (macOS; arm64)`` to its user agent.
+ *
+ * This marker is a wire contract with the shipped shells (see
+ * ``apps/desktop/src/platform.mjs``) and must keep matching it verbatim — only
+ * the user-visible labels above are rebranded.
+ */
+const DESKTOP_AGENT = /\bOpenDeepTutor\/\S+ \(([^)]+)\)/;
+
+/** The client this page runs in: a desktop edition, or the web UI in a browser. */
+export function clientEdition(userAgent?: string | null): ClientEdition {
+  const agent =
+    userAgent ?? (typeof navigator === "undefined" ? "" : navigator.userAgent);
+  const platform = DESKTOP_AGENT.exec(agent)?.[1];
+  return (platform && EDITIONS[platform]) || WEB;
+}
+
+/** ``ThinkBuddy for MacOS with Apple Silicon v1.7.1`` / ``ThinkBuddy Web v1.7.1``. */
+export function clientEditionLabel(
+  version: string | null | undefined,
+  userAgent?: string | null,
+  form: keyof ClientEdition = "full",
+): string {
+  const tag = normalizeVersionTag(version);
+  return [clientEdition(userAgent)[form], tag].filter(Boolean).join(" ");
+}

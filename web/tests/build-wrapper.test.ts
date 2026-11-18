@@ -30,13 +30,26 @@ test("the build publishes PDF.js decoder assets for standalone deployments", () 
     string,
     string
   >;
-  assert.equal(scripts.predev, "node ./scripts/copy-pdfjs-assets.mjs");
-  assert.equal(scripts["predev:turbo"], "node ./scripts/copy-pdfjs-assets.mjs");
+  // ThinkBuddy keeps the PPTX preview from the fork, so both asset copiers must
+  // run before `next dev`; the upstream assertion only expected the PDF.js one.
+  assert.equal(
+    scripts.predev,
+    "node ./scripts/copy-pdfjs-assets.mjs && node ./scripts/copy-pptx-assets.mjs",
+  );
+  assert.equal(
+    scripts["predev:turbo"],
+    "node ./scripts/copy-pdfjs-assets.mjs && node ./scripts/copy-pptx-assets.mjs",
+  );
 
   const source = read("scripts", "copy-pdfjs-assets.mjs");
-  assert.match(source, /node_modules.*pdfjs-dist.*wasm/);
-  assert.match(source, /public.*pdfjs.*wasm/);
+  assert.match(source, /ASSET_DIRS = \["wasm", "cmaps"\]/);
   assert.match(source, /cpSync\(sourceDir, targetDir, \{ recursive: true \}\)/);
+  // Guard the deviation above: dropping the PPTX copier from the tree would
+  // silently kill the preview feature even though the script string asserted.
+  assert.ok(
+    existsSync(path.join(webRoot, "scripts", "copy-pptx-assets.mjs")),
+    "scripts/copy-pptx-assets.mjs must exist",
+  );
 
   const result = spawnSync(
     process.execPath,
@@ -55,13 +68,28 @@ test("the build publishes PDF.js decoder assets for standalone deployments", () 
       name,
     );
   }
+  // Predefined CMaps back cMapUrl: without them PDF.js drops CID fonts, which
+  // is most CJK documents' text. One Adobe-GB1 file is enough of a smoke test.
+  for (const name of [
+    "Adobe-GB1-UCS2.bcmap",
+    "Adobe-Japan1-UCS2.bcmap",
+    "Adobe-Korea1-UCS2.bcmap",
+  ]) {
+    assert.ok(
+      existsSync(path.join(webRoot, "public", "pdfjs", "cmaps", name)),
+      name,
+    );
+  }
 });
 
-test("the reader gives PDF.js an absolute same-origin decoder URL", () => {
+test("the reader gives PDF.js absolute same-origin decoder and CMap URLs", () => {
   const loader = read("lib", "pdfjs-loader.ts");
   const reader = read("components", "reading", "PdfDocumentView.tsx");
   assert.match(loader, /new URL\(PDFJS_WASM_PATH, window\.location\.origin\)/);
+  assert.match(loader, /new URL\(PDFJS_CMAP_PATH, window\.location\.origin\)/);
   assert.match(reader, /wasmUrl:\s*pdfjsWasmUrl\(\)/);
+  assert.match(reader, /cMapUrl:\s*pdfjsCMapUrl\(\)/);
+  assert.match(reader, /cMapPacked:\s*true/);
 });
 
 test("the reader loads the legacy PDF.js library and polyfilled worker", () => {

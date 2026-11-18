@@ -49,7 +49,7 @@ def run_polls(tail: EngineLogTail, cycles: int = 2) -> None:
 
 
 def test_tail_skips_preexisting_content_and_reports_new_errors(tmp_path: Path) -> None:
-    log_path = tmp_path / "deeptutor.jsonl"
+    log_path = tmp_path / "thinkbuddy.jsonl"
     write_jsonl(
         log_path,
         [
@@ -77,7 +77,7 @@ def test_tail_skips_preexisting_content_and_reports_new_errors(tmp_path: Path) -
 
 
 def test_tail_handles_rotation(tmp_path: Path) -> None:
-    log_path = tmp_path / "deeptutor.jsonl"
+    log_path = tmp_path / "thinkbuddy.jsonl"
     write_jsonl(log_path, [{"level": "ERROR", "logger": "first", "message": "f"}])
     collector = ErrorCollector()
     tail = EngineLogTail(log_path, collector, poll_interval=0.05)
@@ -85,7 +85,7 @@ def test_tail_handles_rotation(tmp_path: Path) -> None:
     try:
         run_polls(tail)
         # 模拟 RotatingFileHandler：rename 旧文件 → 新空文件 → 追加新错误
-        log_path.rename(log_path.parent / "deeptutor.jsonl.1")
+        log_path.rename(log_path.parent / f"{log_path.name}.1")
         log_path.write_bytes(b"")
         write_jsonl(log_path, [{"level": "ERROR", "logger": "second", "message": "s"}])
         run_polls(tail)
@@ -95,7 +95,7 @@ def test_tail_handles_rotation(tmp_path: Path) -> None:
 
 
 def test_tail_buffers_partial_line(tmp_path: Path) -> None:
-    log_path = tmp_path / "deeptutor.jsonl"
+    log_path = tmp_path / "thinkbuddy.jsonl"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     collector = ErrorCollector()
     tail = EngineLogTail(log_path, collector, poll_interval=0.05)
@@ -118,7 +118,7 @@ def test_tail_buffers_partial_line(tmp_path: Path) -> None:
 
 
 def test_tail_skips_non_json_and_survives_callback_errors(tmp_path: Path) -> None:
-    log_path = tmp_path / "deeptutor.jsonl"
+    log_path = tmp_path / "thinkbuddy.jsonl"
     calls = {"n": 0}
 
     def flaky(entry: dict) -> None:

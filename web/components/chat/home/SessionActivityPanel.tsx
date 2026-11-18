@@ -31,6 +31,7 @@ import { docIconFor, formatBytes, isSvgFilename } from "@/lib/doc-attachments";
 import type { MessageAttachment } from "@/features/chat/ChatStateAdapter";
 import { listSessions, type SessionSummary } from "@/lib/session-api";
 import { listNotebooks, type NotebookSummary } from "@/lib/notebook-api";
+import { listPersonas } from "@/lib/personas-api";
 import { bookApi } from "@/lib/book-api";
 import type { Book } from "@/lib/book-types";
 import Tooltip from "@/shared/ui/Tooltip";
@@ -60,6 +61,7 @@ interface ResolvedTitles {
   sessions: Map<string, string>;
   notebooks: Map<string, string>;
   books: Map<string, string>;
+  personas: Map<string, string>;
 }
 
 function useResolvedTitles(
@@ -69,10 +71,12 @@ function useResolvedTitles(
   const [sessions, setSessions] = useState<Map<string, string>>(new Map());
   const [notebooks, setNotebooks] = useState<Map<string, string>>(new Map());
   const [books, setBooks] = useState<Map<string, string>>(new Map());
+  const [personas, setPersonas] = useState<Map<string, string>>(new Map());
 
   const needsSessions = activity.space.historySessionIds.length > 0;
   const needsNotebooks = activity.space.notebookIds.length > 0;
   const needsBooks = activity.space.bookIds.length > 0;
+  const needsPersonas = activity.space.personas.length > 0;
 
   useEffect(() => {
     if (!open || !needsSessions || sessions.size > 0) return;
@@ -123,7 +127,25 @@ function useResolvedTitles(
     };
   }, [open, needsBooks, books.size]);
 
-  return { sessions, notebooks, books };
+  useEffect(() => {
+    if (!open || !needsPersonas || personas.size > 0) return;
+    let cancelled = false;
+    // The activity records the persona's slug; the row names it the way the
+    // picker does (``display_name``), the slug standing in until this lands.
+    listPersonas()
+      .then((rows) => {
+        if (cancelled) return;
+        const map = new Map<string, string>();
+        rows.forEach((r) => map.set(r.name, r.display_name?.trim() || r.name));
+        setPersonas(map);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [open, needsPersonas, personas.size]);
+
+  return { sessions, notebooks, books, personas };
 }
 
 /* ------------------------------------------------------------------ */
@@ -206,7 +228,7 @@ export function ActivityBody({
 }) {
   const { t } = useTranslation();
   const { tools, knowledgeBases, space, attachments, artifacts } = activity;
-  const { sessions, notebooks, books } = useResolvedTitles(activity, open);
+  const { sessions, notebooks, books, personas } = useResolvedTitles(activity, open);
 
   const spaceSubsections: ReactNode[] = [];
   if (space.historySessionIds.length > 0) {
@@ -280,7 +302,7 @@ export function ActivityBody({
         count={space.personas.length}
       >
         {space.personas.map((persona) => (
-          <SpaceItemRow key={persona} title={persona} />
+          <SpaceItemRow key={persona} title={personas.get(persona) ?? persona} />
         ))}
       </SpaceSubsection>,
     );

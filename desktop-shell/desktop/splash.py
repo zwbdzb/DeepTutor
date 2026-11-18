@@ -109,7 +109,7 @@ SPLASH_HTML_TEMPLATE = """<!doctype html>
 <body>
   <div class="wrap">
     <div class="logo"><img alt="ThinkBuddy" src="__LOGO_SRC__"/></div>
-    <h1>ThinkBuddy，懂的那一下，很爽。</h1>
+    <h1>ThinkBuddy, 我懂你</h1>
     <div class="status" id="status"><span class="dot"></span>正在启动本地服务…</div>
     <div class="bar" id="bar"><i></i></div>
     <div class="login" id="login">
@@ -242,8 +242,8 @@ def _asset_path(name: str) -> Path:
 
 
 def _logo_data_uri() -> str:
-    """Read the app icon PNG and return it as a data: URI (best-effort)."""
-    path = _asset_path("icon.png")
+    """Read the frameless owl mark and return it as a data: URI (best-effort)."""
+    path = _asset_path("icon_owl.png")
     try:
         if not path.exists():
             return ""

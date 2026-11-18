@@ -41,7 +41,7 @@ interface KbDocumentListProps {
 
 interface TreeNode {
   name: string; // segment label
-  path: string; // full POSIX path relative to raw/
+  path: string; // folder path, local raw/ file path, or remote document ID
   type: "file" | "folder";
   file?: KnowledgeBaseFile;
   children: TreeNode[];
@@ -90,7 +90,7 @@ function buildTree(entries: KnowledgeBaseFile[], readOnly: boolean): {
       file: entry,
       children: [],
     };
-    const parent = readOnly ? "" : parentOf(entry.name);
+    const parent = readOnly ? entry.folder_path ?? "" : parentOf(entry.name);
     if (parent) ensureFolder(parent).children.push(node);
     else root.push(node);
   }
@@ -143,9 +143,7 @@ export default function KbDocumentList({
         if (generation !== loadGeneration.current) return;
         setFiles(next);
         // Default-expand every folder so files are visible without digging.
-        setExpanded(
-          new Set(next.filter((e) => e.type === "folder").map((e) => e.name)),
-        );
+        setExpanded(new Set(buildTree(next, readOnly).folderPaths));
       } catch (err) {
         if (generation === loadGeneration.current) {
           setError(err instanceof Error ? err.message : String(err));
@@ -287,9 +285,14 @@ export default function KbDocumentList({
       const isDrop = dropTarget === node.path;
       return (
         <li key={`d:${node.path}`}>
-          <div
+          <button
+            type="button"
+            aria-label={node.path}
+            aria-expanded={open}
+            title={node.path}
             onClick={() => toggleFolder(node.path)}
             onDragOver={(e) => {
+              if (readOnly) return;
               e.preventDefault();
               e.stopPropagation();
               setDropTarget(node.path);
@@ -298,13 +301,14 @@ export default function KbDocumentList({
               setDropTarget((cur) => (cur === node.path ? null : cur))
             }
             onDrop={(e) => {
+              if (readOnly) return;
               e.preventDefault();
               e.stopPropagation();
               const src = e.dataTransfer.getData("text/plain");
               if (src) void handleMove(src, node.path);
             }}
             style={indent}
-            className={`flex cursor-pointer items-center gap-1 rounded-md py-1.5 pr-2 text-left transition-colors ${
+            className={`flex w-full cursor-pointer items-center gap-1 rounded-md py-1.5 pr-2 text-left transition-colors ${
               isDrop
                 ? "bg-[var(--primary)]/15 ring-1 ring-[var(--primary)]/40"
                 : "hover:bg-[var(--muted)]/50"
@@ -319,7 +323,7 @@ export default function KbDocumentList({
             <span className="truncate text-[12px] font-medium text-[var(--foreground)]">
               {node.name}
             </span>
-          </div>
+          </button>
           {open && node.children.length > 0 && (
             <ul className="space-y-px">
               {node.children.map((child) => renderNode(child, depth + 1))}

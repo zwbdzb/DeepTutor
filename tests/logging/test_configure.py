@@ -3,12 +3,16 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import stat
 import sys
 
 import pytest
 
-from deeptutor.logging import LoggingConfig, bind_log_context
+from deeptutor.logging import LOG_FILE_NAME, LoggingConfig, bind_log_context
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DESKTOP_SHELL = REPO_ROOT / "desktop-shell"
 
 
 @pytest.fixture(autouse=True)
@@ -58,7 +62,7 @@ def test_configure_logging_writes_jsonl_and_respects_level(monkeypatch, tmp_path
         logger.warning("written")
     _flush_root_handlers()
 
-    lines = (tmp_path / "deeptutor.jsonl").read_text(encoding="utf-8").splitlines()
+    lines = (tmp_path / LOG_FILE_NAME).read_text(encoding="utf-8").splitlines()
     assert len(lines) == 1
     entry = json.loads(lines[0])
     assert entry["level"] == "WARNING"
@@ -88,8 +92,8 @@ def test_configure_logging_uses_rotation_settings(monkeypatch, tmp_path: Path):
         logger.info("rotation line %02d %s", index, "x" * 40)
     _flush_root_handlers()
 
-    assert (tmp_path / "deeptutor.jsonl").exists()
-    assert (tmp_path / "deeptutor.jsonl.1").exists()
+    assert (tmp_path / LOG_FILE_NAME).exists()
+    assert (tmp_path / f"{LOG_FILE_NAME}.1").exists()
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are not authoritative")
@@ -112,4 +116,31 @@ def test_configure_logging_uses_private_directory_and_file_modes(monkeypatch, tm
     configure_module.configure_logging(force=True)
 
     assert stat.S_IMODE(log_dir.stat().st_mode) == 0o700
-    assert stat.S_IMODE((log_dir / "deeptutor.jsonl").stat().st_mode) == 0o600
+    assert stat.S_IMODE((log_dir / LOG_FILE_NAME).stat().st_mode) == 0o600
+
+
+def test_desktop_shell_tails_the_same_log_file_name():
+    """Guard the duplicated literal.
+
+    ``desktop-shell`` must start even when the engine runtime is missing or
+    broken, so it cannot import ``deeptutor.logging`` and instead repeats the
+    file name. This pins the two sides together: renaming one without the other
+    would silently stop shell-side error telemetry.
+    """
+    # Only the shell's own source package: ``runtime-build/`` holds a copy of
+    # the whole interpreter and would both dwarf the scan and match third-party
+    # file names that are none of our business.
+    source_root = DESKTOP_SHELL / "desktop"
+    if not source_root.is_dir():
+        pytest.skip("desktop shell is not checked out")
+
+    offenders: dict[str, list[str]] = {}
+    for source in sorted(source_root.rglob("*.py")):
+        # Bytes, not text: a stray non-UTF-8 source file must not blow up a
+        # naming check, and the pattern is pure ASCII either way.
+        for match in re.finditer(rb"[\w.-]+\.jsonl", source.read_bytes()):
+            name = match.group(0).decode("ascii")
+            if name != LOG_FILE_NAME:
+                offenders.setdefault(source.relative_to(REPO_ROOT).as_posix(), []).append(name)
+
+    assert offenders == {}, f"desktop shell still references a non-branded log file: {offenders}"

@@ -1,0 +1,5 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+<title>ThinkBuddy — transparent gradient mark</title>
+<defs><linearGradient id="g" x1="300" y1="240" x2="720" y2="800" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#036DB7"/><stop offset="0.52" stop-color="#1E86CE"/><stop offset="0.74" stop-color="#FCDC2A"/><stop offset="1" stop-color="#F0722A"/></linearGradient></defs>
+<g fill="none" stroke="url(#g)" stroke-width="112" stroke-linecap="round" stroke-linejoin="round"><path d="M 400 410 C 400 348.1 450.1 298 512 298 C 573.9 298 624 348.1 624 410 C 624 462 596 510 546 522 C 526 526 512 546 512 576"/></g><circle cx="512" cy="712" r="56" fill="url(#g)"/>
+</svg>

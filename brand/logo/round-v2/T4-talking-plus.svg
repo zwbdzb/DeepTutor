@@ -1,0 +1,6 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+<title>ThinkBuddy — Talking plus / corporate blue</title>
+<defs><linearGradient id="bg" x1="0" y1="0" x2="620" y2="1024" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#0A80CC"/><stop offset="0.55" stop-color="#036DB7"/><stop offset="1" stop-color="#073A69"/></linearGradient></defs>
+<path d="M 240 64 H 784 A 176 176 0 0 1 960 240 V 784 A 176 176 0 0 1 784 960 H 240 A 176 176 0 0 1 64 784 V 240 A 176 176 0 0 1 240 64 Z" fill="url(#bg)"/>
+<g stroke="#FFFFFF" stroke-width="112" stroke-linecap="round" fill="none"><path d="M 512 300 V 596"/><path d="M 364 448 H 660"/></g><circle cx="512" cy="742" r="56" fill="#FCDC2A"/><path d="M 452 700 L 512 660 L 572 700 Z" fill="#FFFFFF"/>
+</svg>

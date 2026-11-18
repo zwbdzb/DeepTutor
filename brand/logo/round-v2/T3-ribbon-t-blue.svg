@@ -1,0 +1,17 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+<title>ThinkBuddy — Ribbon t / corporate blue</title>
+<defs><linearGradient id="bg" x1="0" y1="0" x2="620" y2="1024" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#0A80CC"/><stop offset="0.55" stop-color="#036DB7"/><stop offset="1" stop-color="#073A69"/></linearGradient><linearGradient id="glyph" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#FFFFFF"/><stop offset="1" stop-color="#EAF4FB"/></linearGradient></defs><clipPath id="clip"><path d="M 240 64 H 784 A 176 176 0 0 1 960 240 V 784 A 176 176 0 0 1 784 960 H 240 A 176 176 0 0 1 64 784 V 240 A 176 176 0 0 1 240 64 Z"/></clipPath><mask id="m" maskUnits="userSpaceOnUse" x="0" y="0" width="1024" height="1024">
+<rect width="1024" height="1024" fill="#000"/>
+<g fill="#FFFFFF">
+<path d="M 423 171 L 538 171 A 12 12 0 0 1 550 183 L 550 691 L 411 691 L 411 183 A 12 12 0 0 1 423 171 Z"/>
+<path d="M 411 689 L 698 689 A 16 16 0 0 1 714 705 L 714 796 A 26 26 0 0 1 688 822 L 550 822 A 139 133 0 0 1 411 689 Z"/>
+<path d="M 297 305 L 413 305 L 413 444 L 297 444 A 12 12 0 0 1 285 432 L 285 317 A 12 12 0 0 1 297 305 Z"/>
+</g>
+<circle cx="651" cy="403" r="76" fill="#000"/>
+<path d="M 644.3 466.6 L 618 497 L 615.2 456.1 Z" fill="#000"/>
+</mask>
+<path d="M 240 64 H 784 A 176 176 0 0 1 960 240 V 784 A 176 176 0 0 1 784 960 H 240 A 176 176 0 0 1 64 784 V 240 A 176 176 0 0 1 240 64 Z" fill="url(#bg)"/>
+<g clip-path="url(#clip)"><rect width="1024" height="1024" fill="url(#glyph)" mask="url(#m)"/></g>
+<circle cx="651" cy="403" r="76" fill="#FCDC2A"/>
+<path d="M 644.3 466.6 L 618 497 L 615.2 456.1 Z" fill="#FCDC2A"/>
+</svg>

@@ -235,6 +235,55 @@ if sys.platform == "darwin":
             log.info("chip 头行刷新动作：%s", action)
             self._injector._dispatch_menu(action)
 
+        # ---- 标题栏药丸（更新·黄 / 签到·绿）------------------------------ #
+        # 与 Windows AccountChip 的动作名严格一致（见 titlebar_account
+        # .MENU_ACTIONS）：药丸主体 = 执行动作，✕ = 收起。
+        def checkinPillClicked_(self, sender):  # noqa: N802
+            log.info("签到药丸点击：执行签到")
+            self._injector._dispatch_menu("checkin")
+
+        def checkinDismissClicked_(self, sender):  # noqa: N802
+            log.info("签到药丸点击：今天不再提示")
+            self._injector._dispatch_menu("checkin_dismiss")
+
+        def updatePillClicked_(self, sender):  # noqa: N802
+            log.info("更新药丸点击：安装并重启")
+            self._injector._dispatch_menu("update_restart")
+
+        def updateDismissClicked_(self, sender):  # noqa: N802
+            log.info("更新药丸点击：收起角标")
+            self._injector._dispatch_menu("update_dismiss")
+
+
+# --------------------------------------------------------------------------- #
+# 标题栏药丸几何与配色（DIP / 0-255 RGB）------------------------------------- #
+# --------------------------------------------------------------------------- #
+# 与 Windows AccountChip 的 _CHECKIN_* / _UPDATE_* 常量保持同一套比例，
+# 保证两个平台看起来是同一个控件：
+#   [黄·更新] gap [绿·签到] gap [chip]
+_PILL_GAP = 10.0          # 药丸之间 / 药丸与 chip 之间
+_PILL_PAD_L = 10.0        # 药丸内左留白
+_PILL_PAD_R = 6.0         # 药丸内右留白（✕ 之后）
+_PILL_CLOSE_W = 16.0      # ✕ 命中盒边长
+_PILL_CLOSE_GAP = 4.0     # 文案与 ✕ 之间
+_PILL_H = 24.0            # 药丸高度
+_CHIP_H = 28.0            # 标题栏控件高度（历史值）
+_CHIP_PAD_X = 12.0        # chip 文案两侧留白
+_CHIP_MIN_W = 80.0        # chip 最小宽度（避免短用户名太挤）
+
+# (底色, 边框, 文案色, ✕ 色)；色值对齐 Windows 自绘药丸与 Tailwind 调色板
+_PILL_STYLE = {
+    "update": ((0xFE / 255, 0xF3 / 255, 0xC7 / 255), (0xE9 / 255, 0xD9 / 255, 0x9E / 255),
+               (0xB4 / 255, 0x53 / 255, 0x09 / 255), (0xA1 / 255, 0x62 / 255, 0x07 / 255)),
+    "checkin": ((0xDC / 255, 0xFC / 255, 0xE7 / 255), (0xBB / 255, 0xF7 / 255, 0xD0 / 255),
+                (0x15 / 255, 0x80 / 255, 0x3D / 255), (0x16 / 255, 0x65 / 255, 0x34 / 255)),
+}
+# 药丸主体 / ✕ 按钮的 action 选择器（见 _ChipActionTarget）
+_PILL_SELECTORS = {
+    "update": ("updatePillClicked:", "updateDismissClicked:"),
+    "checkin": ("checkinPillClicked:", "checkinDismissClicked:"),
+}
+
 
 class AccountChipInjector:
     """macOS 壳原生标题栏账号 chip（titlebarAccessoryViewController）。
@@ -264,6 +313,9 @@ class AccountChipInjector:
         self._initialized = threading.Event()
         self._target = None     # _ChipActionTarget（chip + 菜单项共享）
         self._chip_button = None  # NSButton（chip 本体）
+        # 标题栏药丸：{"update": (body_btn, close_btn), "checkin": (...)}；
+        # 构建失败时为空表 → 保持历史单按钮 chip 行为（降级）。
+        self._pill_views: dict = {}
 
     # ---- 对外 ---------------------------------------------------------- #
     def set_model(self, model: dict) -> None:
@@ -333,6 +385,16 @@ class AccountChipInjector:
         container.addSubview_(btn)
         self._chip_button = btn
 
+        # ---- 药丸层（黄·更新 / 绿·签到）：chip 按钮左侧 ----
+        # 顺序与 Windows 一致：[黄·更新][绿·签到][chip]；无绿色药丸时
+        # [黄][chip]。构建失败只记日志并降级为单按钮 chip —— 标题栏绝不能
+        # 因为药丸崩掉。
+        try:
+            self._build_pill_views(AppKit, container)
+        except Exception:  # noqa: BLE001
+            log.exception("mac 标题栏药丸构建失败，降级为单按钮 chip")
+            self._pill_views = {}
+
         # ---- 创建 NSViewController ----
         # 必须是 NSTitlebarAccessoryViewController（layoutAttribute 在它身上），
         # 普通 NSViewController 没有 setLayoutAttribute_。
@@ -345,6 +407,164 @@ class AccountChipInjector:
         # Trailing = 标题栏右侧，与 Windows 账号区位置一致。
         vc.setLayoutAttribute_(AppKit.NSLayoutAttributeTrailing)
         ns_window.addTitlebarAccessoryViewController_(vc)
+
+    # ---- 药丸视图（主线程，仅在 _init_chip 内调用） ------------------------ #
+    def _build_pill_views(self, AppKit, container) -> None:
+        """在 chip 按钮左侧创建两枚药丸视图（更新·黄 / 签到·绿）。
+
+        每枚药丸 = 一个无边框 NSButton（主体，wantsLayer 自绘底色/圆角，
+        attributedTitle 上色）+ 一个叠在它右端之上的独立小 NSButton（✕）。
+        后添加的子视图在上层，所以 ✕ 区域的点击优先命中关闭按钮，其余区域
+        命中药丸主体——与 Windows 的矩形命中测试等价。
+
+        初始一律隐藏，实际可见性与宽度由 :meth:`_layout_pills` 按模型决定。
+        """
+        for key, (body_sel, close_sel) in _PILL_SELECTORS.items():
+            bg, border, _fg, close_fg = _PILL_STYLE[key]
+            body = AppKit.NSButton.alloc().initWithFrame_(
+                AppKit.NSMakeRect(0, 0, 0, _PILL_H)
+            )
+            body.setBordered_(False)
+            body.setWantsLayer_(True)
+            body.setFont_(AppKit.NSFont.systemFontOfSize_(12))
+            body.setAlignment_(AppKit.NSTextAlignmentCenter)
+            body.setTarget_(self._target)
+            body.setAction_(AppKit.NSSelectorFromString(body_sel))
+            self._style_pill_layer(AppKit, body, bg, border)
+            body.setHidden_(True)
+            container.addSubview_(body)
+
+            close = AppKit.NSButton.alloc().initWithFrame_(
+                AppKit.NSMakeRect(0, 0, _PILL_CLOSE_W, _PILL_CLOSE_W)
+            )
+            close.setBordered_(False)
+            close.setWantsLayer_(True)
+            close.setFont_(AppKit.NSFont.systemFontOfSize_(12))
+            close.setAlignment_(AppKit.NSTextAlignmentCenter)
+            close.setTarget_(self._target)
+            close.setAction_(AppKit.NSSelectorFromString(close_sel))
+            close.setAttributedTitle_(
+                self._attr_title(AppKit, "✕", close_fg, AppKit.NSFont.systemFontOfSize_(11))
+            )
+            close.setHidden_(True)
+            container.addSubview_(close)
+
+            self._pill_views[key] = (body, close)
+
+    @staticmethod
+    def _style_pill_layer(AppKit, view, bg, border) -> None:
+        """给视图铺药丸底色 + 全圆角 + 1px 同色系边框。"""
+        view.setWantsLayer_(True)
+        layer = view.layer()
+        layer.setBackgroundColor_(
+            AppKit.NSColor.colorWithRed_green_blue_alpha_(
+                bg[0], bg[1], bg[2], 1.0
+            ).CGColor()
+        )
+        layer.setCornerRadius_(_PILL_H / 2.0)
+        layer.setBorderWidth_(1)
+        layer.setBorderColor_(
+            AppKit.NSColor.colorWithRed_green_blue_alpha_(
+                border[0], border[1], border[2], 1.0
+            ).CGColor()
+        )
+
+    @staticmethod
+    def _attr_title(AppKit, text: str, rgb, font):
+        """带前景色的 attributed title（NSButton 没有 setTitleColor_）。"""
+        return AppKit.NSAttributedString.alloc().initWithString_attributes_(
+            text,
+            AppKit.NSDictionary.dictionaryWithObjects_forKeys_(
+                [
+                    AppKit.NSColor.colorWithRed_green_blue_alpha_(
+                        rgb[0], rgb[1], rgb[2], 1.0
+                    ),
+                    font,
+                ],
+                [AppKit.NSForegroundColorAttributeName, AppKit.NSFontAttributeName],
+            ),
+        )
+
+    @staticmethod
+    def _text_width(AppKit, text: str, font) -> float:
+        """按字体实测文本宽度（标题栏不自作换行，宽度必须贴字）。"""
+        attrs = {AppKit.NSFontAttributeName: font}
+        size = (AppKit.NSAttributedString.alloc()
+                .initWithString_attributes_(str(text or ""), attrs).size())
+        try:
+            return float(size.width)
+        except Exception:  # noqa: BLE001  老版本 pyobjc 返回 NSSize 结构
+            return float(size[0])
+
+    def _pill_model(self, key: str) -> dict | None:
+        """取某枚药丸的模型（None = 不显示）。"""
+        model = self._model or {}
+        value = model.get(key)
+        if isinstance(value, dict) and value.get("label"):
+            return value
+        return None
+
+    def _layout_pills(self, container, chip_title: str) -> None:
+        """按当前模型重排 [黄·更新][绿·签到][chip] 并同步容器宽度。
+
+        Trailing 布局下只改宽度即可——右侧贴齐由 AppKit 负责，宽度变小时
+        左缘自动右移。任何异常都吞掉（标题栏宁可少画药丸也不能崩）。
+        """
+        try:
+            import AppKit  # type: ignore
+        except Exception:  # noqa: BLE001
+            return
+        try:
+            if not self._pill_views:
+                return      # 药丸层未建成（降级）：保持历史 160x28 单按钮 chip
+            font = self._chip_button.font() or AppKit.NSFont.systemFontOfSize_(12)
+            x = 0.0
+            for key in ("update", "checkin"):
+                width = self._place_pill(AppKit, key, font, x)
+                if width > 0:
+                    x += width + _PILL_GAP
+            chip_w = max(
+                _CHIP_MIN_W,
+                self._text_width(AppKit, chip_title, font) + 2 * _CHIP_PAD_X,
+            )
+            self._chip_button.setFrame_(
+                AppKit.NSMakeRect(x, 0.0, chip_w, _CHIP_H)
+            )
+            container.setFrameSize_(AppKit.NSMakeSize(x + chip_w, _CHIP_H))
+        except Exception:  # noqa: BLE001
+            log.exception("mac 标题栏药丸布局失败")
+
+    def _place_pill(self, AppKit, key: str, font, x: float) -> float:
+        """摆放一枚药丸（文案 + ✕），返回占用宽度（隐藏时 0）。"""
+        views = self._pill_views.get(key)
+        if views is None:
+            return 0.0
+        body, close = views
+        pill_model = self._pill_model(key)
+        label = str((pill_model or {}).get("label") or "").strip()
+        if not label:
+            body.setHidden_(True)
+            close.setHidden_(True)
+            return 0.0
+        _bg, _border, fg, _close_fg = _PILL_STYLE[key]
+        width = (_PILL_PAD_L + self._text_width(AppKit, label, font)
+                 + _PILL_CLOSE_GAP + _PILL_CLOSE_W + _PILL_PAD_R)
+        top = (_CHIP_H - _PILL_H) / 2.0
+        body.setAttributedTitle_(
+            self._attr_title(AppKit, label, fg, font)
+        )
+        body.setFrame_(AppKit.NSMakeRect(x, top, width, _PILL_H))
+        body.setHidden_(False)
+        # ✕ 叠在药丸右端之上（后添加的子视图在上层 → 命中优先）
+        close.setFrame_(
+            AppKit.NSMakeRect(
+                x + width - _PILL_PAD_R - _PILL_CLOSE_W,
+                top + (_PILL_H - _PILL_CLOSE_W) / 2.0,
+                _PILL_CLOSE_W, _PILL_CLOSE_W,
+            )
+        )
+        close.setHidden_(False)
+        return width
 
     # ---- AppKit 回调（主线程） ------------------------------------------ #
     def handle_chip_click(self) -> None:
@@ -534,7 +754,11 @@ class AccountChipInjector:
             label = str(model.get("label") or "").strip()
             label = label[:20] + ("…" if len(label) > 20 else "")
             caret = " ▾" if ((model.get("menu") or {}).get("items")) else ""
-            self._chip_button.setTitle_(label + caret)
+            title = label + caret
+            self._chip_button.setTitle_(title)
+            # 两枚药丸（黄·更新 / 绿·签到）+ chip 一起重排：宽度按文案实测，
+            # 容器宽度 = 各视图 + 间距之和，右侧贴齐由 Trailing 布局保证。
+            self._layout_pills(container, title)
 
         AppHelper.callAfter(_do_update)
 

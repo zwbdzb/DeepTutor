@@ -2,14 +2,42 @@
 @tailwind components;
 @tailwind utilities;
 
+/* The wordmark face. Space Grotesk is a geometric grotesque whose angled
+   terminals and open apertures read as a designed mark rather than UI text,
+   which is what the header "ThinkBuddy" wordmark needs next to the line-art
+   owl. Self-hosted (public/fonts) so the desktop build never reaches out to
+   Google at runtime, and Latin-only — the wordmark is always Latin. */
+@font-face {
+  font-family: "Space Grotesk";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/space-grotesk-600.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Space Grotesk";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/space-grotesk-700.woff2") format("woff2");
+}
+
 /* Feature-page standards. Queries measure usable content after the sidebar
    and gutters, so the same cards behave consistently in both route groups. */
 .dt-page-container {
   container: feature-page / inline-size;
 }
 
+.dt-page-icon {
+  /* Revealed per UI layout; see features/ui-layout/modern/modern.css. */
+  display: none;
+}
+
 .dt-page-title {
   font-size: 27px;
+  /* A UI layout token: see features/ui-layout/{classic,modern}. */
+  font-family: var(--dt-page-title-font, theme("fontFamily.sans"));
 }
 
 .dt-page-action,
@@ -436,6 +464,118 @@
   @apply font-serif text-[16px];
 }
 
+/* ─── Prose: language-aware CJK stacks ───
+   The shared serif/sans stacks in tailwind.config.js intentionally lead with
+   Simplified Chinese faces so `zh` replies never hit an arbitrary browser
+   default. That same ordering serves every other CJK language badly: a
+   Japanese reply on Windows renders in SimSun (Simplified glyph forms, kana
+   from a Chinese face) because SimSun answers before any Japanese font is
+   reached. Assistant messages set `lang` from the reply language (see
+   `lib/content-lang.ts` + `AssistantResponse`), and these rules list the
+   region-correct faces FIRST while keeping the Simplified Chinese ones as
+   trailing fallbacks for machines without the regional fonts. `zh` and `en`
+   match no rule here and keep the default stacks — do not reorder the shared
+   stacks to fix this, Chinese text would pick up Japanese glyph forms. */
+.prose:lang(ja),
+.font-serif:lang(ja) {
+  font-family:
+    var(--font-serif),
+    'Hiragino Mincho ProN',
+    'Yu Mincho',
+    'Noto Serif JP',
+    'MS Mincho',
+    'Songti SC',
+    'STSong',
+    'Noto Serif SC',
+    'Source Han Serif SC',
+    'SimSun',
+    Georgia,
+    serif;
+}
+
+.prose:lang(ja) :is(h1, h2, h3, h4, h5, h6),
+.font-sans:lang(ja) {
+  font-family:
+    var(--font-sans),
+    'Hiragino Sans',
+    'Yu Gothic',
+    'Noto Sans JP',
+    'Meiryo',
+    'PingFang SC',
+    'Hiragino Sans GB',
+    'Microsoft YaHei',
+    'Noto Sans SC',
+    system-ui,
+    sans-serif;
+}
+
+.prose:lang(ko),
+.font-serif:lang(ko) {
+  font-family:
+    var(--font-serif),
+    'Nanum Myeongjo',
+    'Batang',
+    'Noto Serif KR',
+    'Songti SC',
+    'STSong',
+    'Noto Serif SC',
+    'Source Han Serif SC',
+    'SimSun',
+    Georgia,
+    serif;
+}
+
+.prose:lang(ko) :is(h1, h2, h3, h4, h5, h6),
+.font-sans:lang(ko) {
+  font-family:
+    var(--font-sans),
+    'Nanum Gothic',
+    'Malgun Gothic',
+    'Apple SD Gothic Neo',
+    'Noto Sans KR',
+    'PingFang SC',
+    'Hiragino Sans GB',
+    'Microsoft YaHei',
+    'Noto Sans SC',
+    system-ui,
+    sans-serif;
+}
+
+.prose:lang(zh-Hant),
+.prose:lang(zh-TW),
+.font-serif:lang(zh-Hant),
+.font-serif:lang(zh-TW) {
+  font-family:
+    var(--font-serif),
+    'Songti TC',
+    'Noto Serif TC',
+    'PMingLiU',
+    'Songti SC',
+    'STSong',
+    'Noto Serif SC',
+    'Source Han Serif SC',
+    'SimSun',
+    Georgia,
+    serif;
+}
+
+.prose:lang(zh-Hant) :is(h1, h2, h3, h4, h5, h6),
+.prose:lang(zh-TW) :is(h1, h2, h3, h4, h5, h6),
+.font-sans:lang(zh-Hant),
+.font-sans:lang(zh-TW) {
+  font-family:
+    var(--font-sans),
+    'PingFang TC',
+    'Microsoft JhengHei',
+    'Noto Sans TC',
+    'PingFang SC',
+    'Hiragino Sans GB',
+    'Microsoft YaHei',
+    'Noto Sans SC',
+    system-ui,
+    sans-serif;
+}
+
 .prose pre {
   @apply rounded-lg p-4 overflow-x-auto my-4;
   background: #292524;
@@ -775,6 +915,34 @@
   animation: fade-in 0.35s ease-out forwards;
 }
 
+/* ─── The greeting mascot ────────────────────────────────────────────────
+   The owl rests perfectly still and only bobs once the pointer is over it.
+   Idle motion competes with the greeting text for attention, and a mascot
+   that never stops moving reads as a loading spinner; hover-triggered motion
+   reads as the bird reacting to you instead.
+
+   The bob is 4px over 1.4s with ease-in-out at both ends, so the bird eases
+   into the turn rather than bouncing off a hard stop. `translateY` only — no
+   scale — so the ink stays crisp and nothing reflows. */
+@keyframes dt-owl-bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-4px);
+  }
+}
+
+/* The hover target is the static wrapper, not the owl: the owl translates up
+   while bobbing, so if it carried the hover itself a pointer resting on its
+   bottom edge would be left behind on each rise, dropping the hover and
+   restarting the animation — a visible flicker. The wrapper never moves, so
+   the hit area stays put for the whole cycle. */
+.dt-owl-hover:hover .dt-owl-bob {
+  animation: dt-owl-bob 1.4s ease-in-out infinite;
+}
+
 /* Picker chrome: a soft scrim fade + a small spring-in for the card, so
    modal pickers feel placed rather than popped. */
 @keyframes dt-overlay-in {
@@ -817,6 +985,51 @@
 
 .dt-breathing-text {
   animation: dt-breathing 1.8s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* Whoever a turn was handed to, in the orb's place. A partner's face or an
+   agent's mark on a soft tile; while they work a hairline ring breathes out
+   from it — the orb's "still going" in their shape. */
+.dt-answerer-mark {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+}
+.dt-answerer-mark[data-kind="subagent"] { border-radius: 6px; }
+.dt-answerer-tile {
+  display: inline-flex;
+  width: 100%;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  border-radius: inherit;
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--foreground) 7%, transparent);
+}
+.dt-answerer-mark.is-working::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: inherit;
+  border: 1.5px solid color-mix(in srgb, var(--primary) 55%, transparent);
+  animation: dt-answerer-ring 1.8s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  pointer-events: none;
+}
+.dt-answerer-mark[data-kind="subagent"].is-working::after { border-radius: 8px; }
+@keyframes dt-answerer-ring {
+  0%, 100% { opacity: 0.25; transform: scale(0.94); }
+  50% { opacity: 1; transform: scale(1.04); }
+}
+.dt-answerer-name {
+  margin-right: -4px;
+  color: var(--foreground);
+  font-weight: 600;
+}
+@media (prefers-reduced-motion: reduce) {
+  .dt-answerer-mark.is-working::after { animation: none; opacity: 0.7; }
 }
 
 /* Trace detail, opening.
@@ -1316,6 +1529,7 @@ a[href^="#dt-locator-"]:hover {
   .dt-detail-in,
   .dt-dot-live,
   .dt-breathing-text,
+  .dt-owl-bob,
   .animate-spin {
     animation: none !important;
   }
@@ -1453,4 +1667,46 @@ a[href^="#dt-locator-"]:hover {
 .watching-surface[data-browsing] .watching-mobile-tabs {
   visibility: hidden;
   pointer-events: none;
+}
+
+/* Learning typography is opt-in. Absolute baseline sizes avoid compounded scaling
+   in nested content. No preferences are attached to the document font size. */
+.learning-text {
+  font-size: calc(var(--learning-text-base, 16px) * var(--learning-font-scale, 1)) !important;
+  line-height: var(--learning-line-height, 1.75) !important;
+}
+.learning-text p,
+.learning-text li,
+.learning-text blockquote,
+.learning-text table {
+  line-height: var(--learning-line-height, 1.75);
+}
+.learning-text table {
+  font-size: calc(14px * var(--learning-font-scale, 1));
+}
+.learning-text h1 {
+  font-size: calc(24px * var(--learning-font-scale, 1));
+  line-height: calc(32px * var(--learning-font-scale, 1) * var(--learning-line-height, 1.75) / 1.75);
+}
+.learning-text h2 {
+  font-size: calc(20px * var(--learning-font-scale, 1));
+  line-height: calc(28px * var(--learning-font-scale, 1) * var(--learning-line-height, 1.75) / 1.75);
+}
+.learning-text h3 {
+  font-size: calc(18px * var(--learning-font-scale, 1));
+  line-height: calc(28px * var(--learning-font-scale, 1) * var(--learning-line-height, 1.75) / 1.75);
+}
+.learning-text h4 {
+  font-size: calc(16px * var(--learning-font-scale, 1));
+  line-height: calc(24px * var(--learning-font-scale, 1) * var(--learning-line-height, 1.75) / 1.75);
+}
+.learning-text h5,
+.learning-text h6 {
+  font-size: calc(14px * var(--learning-font-scale, 1));
+  line-height: calc(20px * var(--learning-font-scale, 1) * var(--learning-line-height, 1.75) / 1.75);
+}
+.learning-text .md-code-block,
+.learning-text .learning-text-excluded {
+  font-size: 16px;
+  line-height: 1.5;
 }

@@ -34,8 +34,10 @@ vi.mock("@/context/ReadingContext", () => ({
   }),
 }));
 
-vi.mock("@/components/reading/workspace/YouTubeReadingPlayer", () => ({
-  YouTubeReadingPlayer(props: {
+// vi.mock("@/components/reading/workspace/YouTubeReadingPlayer", () => ({
+//   YouTubeReadingPlayer(props: {
+vi.mock("@/components/reading/workspace/BilibiliReadingPlayer", () => ({
+  BilibiliReadingPlayer(props: {
     onController(controller: unknown): void;
     onTime(seconds: number, duration: number): void;
   }) {
@@ -62,14 +64,29 @@ vi.mock("@/components/reading/workspace/YouTubeReadingPlayer", () => ({
   },
 }));
 
+vi.mock("@/lib/reading-video-sources", () => ({
+  parseBilibiliSource: () => ({
+    bvid: "BV1xx411c7mD",
+    aid: 1,
+    page: 1,
+    startSeconds: 0,
+  }),
+  bilibiliOfficialUrl: () => "https://www.bilibili.com/video/BV1xx411c7mD",
+  youtubeEntryTime: () => 0,
+}));
+
 const material: ReadingLibraryMaterial = {
   material_id: "media-1",
   content_id: "content-1",
   filename: "lecture.mp4",
   title: "Lecture",
-  source_kind: "youtube",
-  source_url: "https://www.youtube.com/watch?v=abc123xyz00",
-  mime: "video/youtube",
+
+  // source_kind: "youtube",
+  // source_url: "https://www.youtube.com/watch?v=abc123xyz00",
+  // mime: "video/youtube",
+  source_kind: "bilibili",
+  source_url: "https://www.bilibili.com/video/BV1xx411c7mD",
+  mime: "video/bilibili",
   render_mode: "video",
   cover_url: "",
   duration_seconds: 180,
@@ -265,6 +282,31 @@ describe("MediaReadingStage", () => {
     mock.saveMark.mockResolvedValue(true);
     fireEvent.click(screen.getByTestId("media-note-save"));
     await waitFor(() => expect(screen.queryByTestId("media-note-input")).toBeNull());
+  });
+
+  it("hides YouTube playback behind an unavailable card", () => {
+    render(
+      <MediaReadingStage
+        material={{
+          ...material,
+          source_kind: "youtube",
+          source_url: "https://www.youtube.com/watch?v=abc123xyz00",
+          mime: "video/youtube",
+        }}
+        title="Lecture"
+        refs={refs}
+        transcript={transcript}
+        transcriptUnavailable={false}
+        chaptersOnly={false}
+        activeLocator={1}
+        onLocatorChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("Video playback is unavailable.")).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: "emit playback" }),
+    ).toBeNull();
   });
 
   it("edits and deletes segment notes", async () => {

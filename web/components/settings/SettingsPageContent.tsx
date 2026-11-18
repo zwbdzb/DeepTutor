@@ -70,6 +70,10 @@ const Guardian = dynamic(
     loading,
   },
 );
+const LearningProgress = dynamic(
+  () => import("@/features/settings/sections/LearningProgressSettingsSection"),
+  { loading },
+);
 const Connections = dynamic(
   () =>
     import("@/features/settings/sections/models/ConnectionsSettingsSection"),
@@ -119,10 +123,11 @@ const Video = dynamic(
     loading,
   },
 );
-const VideoLearning = dynamic(
-  () => import("@/features/settings/sections/VideoLearningSettingsSection"),
-  { loading },
-);
+
+// const VideoLearning = dynamic(
+//   () => import("@/features/settings/sections/VideoLearningSettingsSection"),
+//   { loading },
+// );
 const Tools = dynamic(
   () => import("@/features/settings/sections/ToolsSettingsSection"),
   {
@@ -181,6 +186,7 @@ const PAGES: Record<string, React.ComponentType> = {
   workspace: Workspace,
   knowledge: Knowledge,
   memory: Memory,
+  progress: LearningProgress,
   about: About,
   "learner-profile": Learner,
   guardian: Guardian,
@@ -193,7 +199,7 @@ const PAGES: Record<string, React.ComponentType> = {
   stt: Stt,
   imagegen: Image,
   videogen: Video,
-  "video-learning": VideoLearning,
+  // "video-learning": VideoLearning,
   tools: Tools,
   capabilities: Capabilities,
   starters: Starters,
@@ -214,7 +220,7 @@ const AGENTS = {
 } as const;
 
 export default function SettingsPageContent({ section }: { section: string }) {
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
   const router = useRouter();
   const access = useSettingsAccess();
   const { settingsLoading, saving, applying } = useSettings();
@@ -224,7 +230,6 @@ export default function SettingsPageContent({ section }: { section: string }) {
   const family = settingsPageFamily(key).flatMap((member) =>
     pages.filter((item) => item.key === member),
   );
-  const zh = i18n.language?.toLowerCase().startsWith("zh");
   useEffect(() => {
     if (key !== section)
       router.replace(settingsAnchorHref(key) + window.location.search, {
@@ -261,7 +266,7 @@ export default function SettingsPageContent({ section }: { section: string }) {
               aria-current={item.key === key ? "page" : undefined}
               className={`rounded-lg px-3 py-2 text-[13px] outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] ${item.key === key ? "bg-[var(--accent)] font-medium" : "text-[var(--muted-foreground)] hover:bg-[var(--accent)]/50"}`}
             >
-              {zh ? item.label.zh : item.label.en}
+              {t(item.label)}
             </Link>
           ))}
         </nav>

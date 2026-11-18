@@ -31,6 +31,7 @@ PROD_OAUTH_BASE = "https://tokengine.hanyoai.com"
 # THINKBUDDY_UPDATE_URL / TELEMETRY_URL 已退出覆盖链，这里一并清掉以证明
 # 即使宿主机残留也不会影响派生结果。
 _ENDPOINT_ENV_VARS = (
+    "THINKBUDDY_LIBRARY_URL",
     "THINKBUDDY_API_BASE",
     "TOKENGINE_OAUTH_BASE",
     "TOKENGINE_AUTHORIZE_URL",
@@ -52,6 +53,16 @@ def _clean_endpoint_env(monkeypatch: MonkeyPatch) -> None:
 def write_endpoints(root: Path, **values: str) -> None:
     root.mkdir(parents=True, exist_ok=True)
     (root / "endpoints.json").write_text(json.dumps(values), encoding="utf-8")
+
+
+def test_library_endpoint_defaults_file_and_environment(tmp_path, monkeypatch):
+    assert config.thinkbuddy_library_url(tmp_path) == PROD_API_BASE + "/api/v1/library"
+    write_endpoints(tmp_path, api_base="http://site.test")
+    assert config.thinkbuddy_library_url(tmp_path) == "http://site.test/api/v1/library"
+    write_endpoints(tmp_path, library_url="http://geekai.test/api/v1/library/")
+    assert config.thinkbuddy_library_url(tmp_path) == "http://geekai.test/api/v1/library"
+    monkeypatch.setenv("THINKBUDDY_LIBRARY_URL", "http://local.test/api/v1/library/")
+    assert config.thinkbuddy_library_url(tmp_path) == "http://local.test/api/v1/library"
 
 
 # --------------------------------------------------------------------------- #

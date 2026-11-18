@@ -6,6 +6,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
+from deeptutor.core.reasoning_efforts import VALID_REASONING_EFFORTS, normalize_reasoning_effort
 from deeptutor.services.provider_registry import find_by_name
 
 # Typed Tokengine models are chat models only when model_type is 1.
@@ -21,25 +22,6 @@ def is_chat_model(model_id: str, model_type: Any = None) -> bool:
     if isinstance(model_type, int) and not isinstance(model_type, bool):
         return model_type == _CHAT_MODEL_TYPE
     return True
-
-
-# What a conversation-level override (#641) is allowed to ask for. This is a
-# request-validation vocabulary, deliberately the union of every level any
-# provider understands — `services/llm/reasoning_params.py` is what maps a
-# level onto a given provider's actual knob, and the per-backend `efforts`
-# lists in `services/subagent/models.py` describe what each subagent CLI
-# accepts. Neither of those is interchangeable with this one. Not every
-# provider/model supports every value, so callers that can offer a narrower,
-# model-specific list should filter before submitting a selection.
-VALID_REASONING_EFFORTS: tuple[str, ...] = (
-    "none",
-    "minimal",
-    "low",
-    "medium",
-    "high",
-    "xhigh",
-    "max",
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,7 +58,9 @@ class LLMSelection:
         if not profile_id or not model_id:
             raise ValueError("Invalid LLM selection: profile_id and model_id are required.")
 
-        reasoning_effort = str(value.get("reasoning_effort") or "").strip().lower() or None
+        # ``or ""`` keeps the historical behavior of treating a falsy
+        # non-string value as "no override".
+        reasoning_effort = normalize_reasoning_effort(value.get("reasoning_effort") or "")
         if reasoning_effort is not None and reasoning_effort not in VALID_REASONING_EFFORTS:
             raise ValueError(
                 "Invalid LLM selection: unsupported reasoning_effort "
@@ -114,6 +98,9 @@ def list_llm_options(catalog: dict[str, Any]) -> dict[str, Any]:
     active_model_id = str(service.get("active_model_id") or "")
 
     options: list[dict[str, Any]] = []
+    # Local import: the llm package imports back into this module at load time.
+    from deeptutor.services.llm.capabilities import supports_vision_declared
+
     for profile in service.get("profiles", []) or []:
         if not isinstance(profile, dict):
             continue
@@ -178,6 +165,14 @@ def list_llm_options(catalog: dict[str, Any]) -> dict[str, Any]:
             for capability in ("reasoning", "vision"):
                 if type(declared.get(capability)) is bool:
                     option[f"declared_{capability}"] = declared[capability]
+            # The settings UI filters vision models on this field. A model's own
+            # declaration wins over the process-global override table, which
+            # only refreshes on the next runtime resolution -- otherwise a
+            # freshly declared model stays hidden until something else resolves
+            # (#2037). Same rule as `lightrag/roles.py` and the save-time gate.
+            option["supports_vision"] = supports_vision_declared(
+                declared.get("vision"), model_provider, model_value
+            )
             options.append(option)
 
     # The configured default may itself be a now-hidden non-chat model; never

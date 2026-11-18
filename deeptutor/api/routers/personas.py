@@ -26,7 +26,9 @@ from deeptutor.services.persona import (
     PersonaExistsError,
     PersonaNotFoundError,
     PersonaService,
+    bump_persona_usage,
     get_persona_service,
+    load_persona_usage,
 )
 
 router = APIRouter()
@@ -68,10 +70,11 @@ def _persona_presets(service: PersonaService) -> PersonaService | None:
 @router.get("/personas")
 async def list_personas() -> dict[str, list[dict[str, object]]]:
     service = get_persona_service()
+    usage = load_persona_usage()
     own = [info.to_dict() for info in service.list_personas()]
     presets = _persona_presets(service)
     if presets is None:
-        return {"personas": own}
+        return {"personas": [_with_usage(entry, usage) for entry in own]}
     own_names = {item["name"] for item in own}
     merged = list(own)
     for preset in presets.list_personas():
@@ -80,7 +83,37 @@ async def list_personas() -> dict[str, list[dict[str, object]]]:
         entry = preset.to_dict()
         entry.update({"source": "admin", "read_only": True})
         merged.append(entry)
-    return {"personas": merged}
+    return {"personas": [_with_usage(entry, usage) for entry in merged]}
+
+
+def _with_usage(
+    entry: dict[str, object], usage: dict[str, int]
+) -> dict[str, object]:
+    result = dict(entry)
+    result["usage_count"] = usage.get(str(result.get("name", "")), 0)
+    return result
+
+
+@router.post("/personas/{name}/touch")
+async def touch_persona(name: str) -> dict[str, object]:
+    """Record that the account picked this persona; bump its usage count."""
+    service = get_persona_service()
+    try:
+        exists = service.get_detail(name) is not None
+    except (PersonaNotFoundError, InvalidPersonaNameError):
+        exists = False
+    if not exists:
+        presets = _persona_presets(service)
+        if presets is not None:
+            try:
+                presets.get_detail(name)
+                exists = True
+            except (PersonaNotFoundError, InvalidPersonaNameError):
+                exists = False
+    if not exists:
+        raise HTTPException(status_code=404, detail=t("api.persona_not_found", name=name))
+    count = bump_persona_usage(name)
+    return {"name": name, "usage_count": count}
 
 
 @router.get("/personas/{name}")

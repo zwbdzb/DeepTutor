@@ -3,6 +3,7 @@
 import Tooltip from "@/shared/ui/Tooltip";
 import { navigateTask } from "@/lib/workspace-scope";
 import { sessionWorkspaceId } from "@/lib/session-api";
+import { systemConfirm } from "@/lib/system-confirm";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2, RefreshCw, Search, Trash2 } from "lucide-react";
@@ -122,6 +123,41 @@ export default function ArchivedChatsSettingsSection() {
     if (activeSessionId === sessionId) setActiveSessionId(null);
   };
 
+  const removeAll = async () => {
+    if (
+      !(await systemConfirm(
+        t(
+          "Permanently delete all {{count}} archived chats and their tutor threads? This cannot be undone.",
+          { count },
+        ),
+      ))
+    )
+      return;
+    const ids = Object.values(buckets)
+      .flat()
+      .map(({ session }) => session.session_id);
+    void mutate("all", async () => {
+      let failed = false;
+      for (let start = 0; start < ids.length; start += 4) {
+        const results = await Promise.allSettled(
+          ids.slice(start, start + 4).map(remove),
+        );
+        failed ||= results.some((result) => result.status === "rejected");
+      }
+      if (failed) throw new Error("Partial deletion");
+    });
+  };
+
+  const removeOne = async (id: string) => {
+    if (
+      !(await systemConfirm(
+        t("Permanently delete this chat and its tutor threads? This cannot be undone."),
+      ))
+    )
+      return;
+    void mutate(`delete:${id}`, () => remove(id));
+  };
+
   return (
     <div>
       <div className="flex flex-wrap items-start justify-between gap-x-4">
@@ -129,32 +165,7 @@ export default function ArchivedChatsSettingsSection() {
         <button
           type="button"
           disabled={loading || !!busy || !count}
-          onClick={() => {
-            if (
-              !window.confirm(
-                t(
-                  "Permanently delete all {{count}} archived chats and their tutor threads? This cannot be undone.",
-                  { count },
-                ),
-              )
-            )
-              return;
-            const ids = Object.values(buckets)
-              .flat()
-              .map(({ session }) => session.session_id);
-            void mutate("all", async () => {
-              let failed = false;
-              for (let start = 0; start < ids.length; start += 4) {
-                const results = await Promise.allSettled(
-                  ids.slice(start, start + 4).map(remove),
-                );
-                failed ||= results.some(
-                  (result) => result.status === "rejected",
-                );
-              }
-              if (failed) throw new Error("Partial deletion");
-            });
-          }}
+          onClick={() => void removeAll()}
           className="mb-6 inline-flex items-center gap-2 rounded-lg bg-red-500/10 px-3 py-2 text-[13px] font-medium text-red-600 hover:bg-red-500/15 disabled:opacity-40 dark:text-red-400"
         >
           {busy === "all" ? (
@@ -239,17 +250,7 @@ export default function ArchivedChatsSettingsSection() {
               await updateSessionOrganization(id, { archived: false }, sessionWorkspaceId(sessions.find(item => item.session_id === id)));
             })
           }
-          onDelete={(id) => {
-            if (
-              !window.confirm(
-                t(
-                  "Permanently delete this chat and its tutor threads? This cannot be undone.",
-                ),
-              )
-            )
-              return;
-            void mutate(`delete:${id}`, () => remove(id));
-          }}
+          onDelete={(id) => void removeOne(id)}
         />
       ) : null}
     </div>

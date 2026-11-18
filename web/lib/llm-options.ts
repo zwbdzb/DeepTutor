@@ -18,6 +18,8 @@ export interface LLMOption extends LLMSelection {
   context_window?: number;
   reasoning_effort?: string;
   supported_reasoning_efforts?: string[];
+  /** The model's own Settings declaration of reasoning support, when present. */
+  declared_reasoning?: boolean;
   supports_vision?: boolean;
   is_active_default: boolean;
 }
@@ -51,6 +53,18 @@ export function sameLLMSelection(
   b: LLMSelection | null | undefined,
 ) {
   return llmSelectionKey(a) === llmSelectionKey(b);
+}
+
+/** The most recent option list any `listLLMOptions` call fetched — no TTL.
+ *
+ *  Synchronous, so a send path can validate its `llm_selection` against the
+ *  catalog without awaiting (or firing) a request (#641): empty until the
+ *  first successful load, which callers treat as "option unresolved".
+ */
+let lastKnownOptions: LLMOption[] = [];
+
+export function readLastKnownLLMOptions(): LLMOption[] {
+  return lastKnownOptions;
 }
 
 /** List the configured model profiles.
@@ -93,6 +107,9 @@ export async function listLLMOptions(options?: {
           data.active && offered.has(llmSelectionKey(data.active))
             ? data.active
             : null;
+        // Publish the *filtered* list: the synchronous #641 validation path
+        // must not accept a model the picker refuses to offer.
+        lastKnownOptions = options;
         return { active, options };
       } finally {
         clearTimeout(timeout);

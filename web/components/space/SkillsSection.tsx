@@ -22,7 +22,7 @@ import {
   X,
 } from "lucide-react";
 import SpaceSectionHeader from "@/components/space/SpaceSectionHeader";
-import EduHubImportModal from "@/components/space/EduHubImportModal";
+import SkillHubImportModal from "@/components/space/SkillHubImportModal";
 import { isValidSkillName, slugifySkillName } from "@/lib/skill-slug";
 import {
   createSkill,
@@ -36,6 +36,7 @@ import {
   updateSkill,
   type SkillInfo,
 } from "@/lib/skills-api";
+import { systemConfirm } from "@/lib/system-confirm";
 
 interface SkillEditorState {
   mode: "create" | "edit";
@@ -286,7 +287,7 @@ export default function SkillsSection() {
         const scope = new URLSearchParams(window.location.search).get("skill_workspace") ?? "";
         const workspaces = await resourceUsage("skills", name, scope);
         const impact = workspaces.length ? "\n\n" + t("Used by workspaces: {{names}}", { names: workspaces.join(", ") }) : "";
-        if (!window.confirm(t('Delete skill "{{name}}"?', { name }) + impact)) return;
+        if (!(await systemConfirm(t('Delete skill "{{name}}"?', { name }) + impact))) return;
         await deleteSkill(name);
         await load();
       } catch (err) {
@@ -372,7 +373,7 @@ export default function SkillsSection() {
 
   const handleDeleteTag = useCallback(
     async (tag: string) => {
-      if (!window.confirm(t('Delete tag "{{name}}"?', { name: tag }))) return;
+      if (!(await systemConfirm(t('Delete tag "{{name}}"?', { name: tag })))) return;
       try {
         await deleteSkillTag(tag);
         if (filterTag === tag) setFilterTag("all");
@@ -416,7 +417,7 @@ export default function SkillsSection() {
               className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--card)] px-3.5 py-1.5 text-[12.5px] font-medium text-[var(--foreground)] shadow-sm transition-colors hover:bg-[var(--muted)]/50"
             >
               <Store size={13} strokeWidth={1.9} />
-              {t("Import from EduHub")}
+              {t("Import from SkillHub")}
             </button>
             <button
               onClick={openCreate}
@@ -989,7 +990,7 @@ export default function SkillsSection() {
       )}
 
       {importOpen && (
-        <EduHubImportModal
+        <SkillHubImportModal
           onClose={() => setImportOpen(false)}
           onInstalled={() => void load()}
           installedNames={new Set(skills.map((s) => s.name))}
