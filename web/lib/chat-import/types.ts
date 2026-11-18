@@ -6,8 +6,10 @@
  * {@link NormalizedSession} shape that mirrors the backend Pydantic models.
  */
 
-/** Provider whose local folder or exported chat history we know how to read. */
-export type ImportSource = "claude_code" | "codex" | "chatgpt";
+/** Provider whose local folder or exported chat history we know how to read.
+ *  ``workbuddy`` is served by the local backend scan (``/api/imports/local-*``)
+ *  rather than a browser folder picker. */
+export type ImportSource = "claude_code" | "codex" | "chatgpt" | "workbuddy";
 
 /**
  * A conversation discovered during the scan pass — enough metadata to list and
@@ -62,6 +64,31 @@ export interface ScanResult {
   /** The picked directory handle — persisted so the agent can be re-synced. */
   handle: FileSystemDirectoryHandle;
   projects: ProjectGroup[];
+}
+
+/**
+ * One session row the picker UI shows — the minimum contract that both the
+ * browser adapters (FileSystem-handle based) and the local backend scan agree
+ * on. Keeping it deliberate means the same project/dates picker can serve both.
+ */
+export interface PickableSession {
+  externalId: string;
+  provisionalTitle: string;
+  lastModified: number;
+}
+
+/** A session discovered by the local backend scan (server-side WorkBuddy
+ *  parse). Field names mirror the backend ``/api/imports/local-sources``. */
+export interface LocalSessionInfo {
+  external_id: string;
+  title: string;
+  cwd: string;
+  date: string;
+  last_modified: number;
+  size_bytes: number;
+  created_at?: number;
+  updated_at?: number;
+  model?: string;
 }
 
 /** One message in the normalized upload payload (mirrors the backend model). */

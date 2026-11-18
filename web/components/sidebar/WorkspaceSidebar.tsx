@@ -14,9 +14,11 @@ import { ProfileLink } from "@/components/auth/ProfileLink";
 import { useChatStateAdapter } from "@/features/chat/ChatStateAdapter";
 import {
   deleteSession,
+  getSession,
   listAllSessions,
   updateSessionOrganization,
   updateSessionTitle,
+  type SessionDetail,
   type SessionOrganizationPatch,
   type SessionSummary,
 } from "@/lib/session-api";
@@ -33,6 +35,52 @@ import { readingCollectionRoute } from "@/lib/learning-routes";
 import { subscribeSessionChanges } from "@/lib/session-events";
 import { systemConfirm } from "@/lib/system-confirm";
 
+/** Imported conversations the reader has opened, kept in the sidebar list. */
+const OPENED_IMPORTS_STORAGE_KEY = "deeptutor.sidebar.openedImports";
+const MAX_OPENED_IMPORTS = 20;
+
+function readOpenedImportIds(): string[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const parsed: unknown = JSON.parse(
+      window.localStorage.getItem(OPENED_IMPORTS_STORAGE_KEY) || "[]",
+    );
+    return Array.isArray(parsed)
+      ? parsed
+          .filter((value): value is string => typeof value === "string")
+          .slice(0, MAX_OPENED_IMPORTS)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeOpenedImportIds(ids: readonly string[]) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(
+      OPENED_IMPORTS_STORAGE_KEY,
+      JSON.stringify(ids.slice(0, MAX_OPENED_IMPORTS)),
+    );
+  } catch {
+    // Storage may be unavailable (private mode); the list still works in memory.
+  }
+}
+
+function toSessionSummary(detail: SessionDetail): SessionSummary {
+  return {
+    id: detail.id,
+    session_id: detail.session_id,
+    title: detail.title,
+    created_at: detail.created_at,
+    updated_at: detail.updated_at,
+    message_count: detail.messages.length,
+    last_message: "",
+    status: detail.status,
+    preferences: detail.preferences,
+  };
+}
+
 export default function WorkspaceSidebar() {
   const { t } = useTranslation();
   const router = useRouter();
@@ -45,6 +93,8 @@ export default function WorkspaceSidebar() {
     sidebarRefreshToken,
   } = useChatStateAdapter();
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  /** Imported conversations opened this session, mirrored into the list below. */
+  const [mirroredImports, setMirroredImports] = useState<SessionSummary[]>([]);
   const [masteryTopics, setMasteryTopics] = useState<MasteryTopicLabel[]>([]);
   const [readingCollections, setReadingCollections] = useState<
     ReadingCollectionLabel[]
@@ -94,6 +144,70 @@ export default function WorkspaceSidebar() {
     [refreshSessions],
   );
 
+  // Imported conversations (ids carry the ``imported_`` prefix) are kept out of
+  // the native history index on purpose — they live under Space › My Agents.
+  // Whatever the reader opens is mirrored into the list and stays there, even
+  // after moving to another conversation or reloading; untouched imports stay
+  // in My Agents.
+  useEffect(() => {
+    const ids = readOpenedImportIds();
+    if (ids.length === 0) return;
+    let alive = true;
+    void Promise.all(
+      ids.map((sessionId) => getSession(sessionId).catch(() => null)),
+    ).then((details) => {
+      if (!alive) return;
+      const rows = details
+        .filter((detail): detail is SessionDetail => detail !== null)
+        .map(toSessionSummary);
+      if (rows.length === 0) return;
+      setMirroredImports((prev) => {
+        const seen = new Set(prev.map((session) => session.session_id));
+        return [...prev, ...rows.filter((row) => !seen.has(row.session_id))];
+      });
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const sessionId = selectedSessionId || "";
+    if (!sessionId.startsWith("imported_")) return;
+    if (sessions.some((session) => session.session_id === sessionId)) return;
+    if (mirroredImports.some((session) => session.session_id === sessionId)) return;
+    let alive = true;
+    void getSession(sessionId)
+      .then((detail) => {
+        if (!alive) return;
+        const mirrored = toSessionSummary(detail);
+        setMirroredImports((prev) =>
+          prev.some((session) => session.session_id === mirrored.session_id)
+            ? prev
+            : [...prev, mirrored],
+        );
+      })
+      .catch(() => {
+        // The chat surface reports its own load failure; the list stays as is.
+      });
+    return () => {
+      alive = false;
+    };
+  }, [sessions, selectedSessionId, mirroredImports]);
+
+  useEffect(() => {
+    if (mirroredImports.length === 0) return;
+    writeOpenedImportIds(mirroredImports.map((session) => session.session_id));
+  }, [mirroredImports]);
+
+  const listedSessions = useMemo(() => {
+    const mirrored = mirroredImports.filter(
+      (row) =>
+        !sessions.some((session) => session.session_id === row.session_id),
+    );
+    return mirrored.length ? [...mirrored, ...sessions] : sessions;
+  }, [mirroredImports, sessions]);
+
   // What the runtime knows about turns in flight, folded onto the server's
   // list so a row's avatar spins for the turn it is actually running.
   //
@@ -104,7 +218,7 @@ export default function WorkspaceSidebar() {
   // ordering by it would nail a long-dead conversation to the top.
   const liveSessions = useMemo(
     () =>
-      sessions.map((session) => {
+      listedSessions.map((session) => {
         const runtime = sessionStatuses[session.session_id];
         return runtime
           ? {
@@ -114,7 +228,7 @@ export default function WorkspaceSidebar() {
             }
           : session;
       }),
-    [sessionStatuses, sessions],
+    [sessionStatuses, listedSessions],
   );
   const liveSessionIds = useMemo(
     () => new Set(Object.keys(sessionStatuses)),
@@ -153,15 +267,15 @@ export default function WorkspaceSidebar() {
   // it was held in, and /chat would drop all three.
   const handleSelectSession = useCallback(
     async (sessionId: string) => {
-      const session = sessions.find((item) => item.session_id === sessionId);
+      const session = listedSessions.find((item) => item.session_id === sessionId);
       navigateTask(session ? sessionRoute(session) : `/chat/${sessionId}`, router.push);
     },
-    [router, sessions],
+    [router, listedSessions],
   );
 
   const handleRenameSession = useCallback(
     async (sessionId: string, title: string) => {
-      const updated = await updateSessionTitle(sessionId, title, sessionWorkspaceId(sessions.find(item => item.session_id === sessionId)));
+      const updated = await updateSessionTitle(sessionId, title, sessionWorkspaceId(listedSessions.find(item => item.session_id === sessionId)));
       setSessions((prev) =>
         prev.map((session) =>
           session.session_id === sessionId
@@ -173,17 +287,30 @@ export default function WorkspaceSidebar() {
             : session,
         ),
       );
+      setMirroredImports((prev) =>
+        prev.map((session) =>
+          session.session_id === sessionId
+            ? { ...session, title: updated.title, updated_at: updated.updated_at }
+            : session,
+        ),
+      );
     },
-    [sessions],
+    [listedSessions],
   );
 
   const handleDeleteSession = useCallback(
     async (sessionId: string) => {
       if (!(await systemConfirm(t("Permanently delete this chat and its tutor threads? This cannot be undone.")))) return;
-      const deleted = sessions.find(item => item.session_id === sessionId);
+      const deleted = listedSessions.find(item => item.session_id === sessionId);
       await deleteSession(sessionId, sessionWorkspaceId(deleted));
       setSessions((prev) =>
         prev.filter((session) => session.session_id !== sessionId),
+      );
+      setMirroredImports((prev) =>
+        prev.filter((session) => session.session_id !== sessionId),
+      );
+      writeOpenedImportIds(
+        readOpenedImportIds().filter((id) => id !== sessionId),
       );
       if (selectedSessionId === sessionId) {
         cancelStreamingTurn();
@@ -199,16 +326,16 @@ export default function WorkspaceSidebar() {
         );
       }
     },
-    [cancelStreamingTurn, newSession, router, selectedSessionId, t, sessions],
+    [cancelStreamingTurn, listedSessions, newSession, router, selectedSessionId, t],
   );
 
   const handleOrganizeSession = useCallback(
     async (sessionId: string, patch: SessionOrganizationPatch) => {
-      const updated = await updateSessionOrganization(sessionId, patch, sessionWorkspaceId(sessions.find(item => item.session_id === sessionId)));
+      const updated = await updateSessionOrganization(sessionId, patch, sessionWorkspaceId(listedSessions.find(item => item.session_id === sessionId)));
       if ("workspace_id" in patch) {
         configureSession({ workspaceId: updated.preferences?.workspace_id ?? null }, sessionId);
         if (selectedSessionId === sessionId) {
-          navigateTask(sessionRoute({ ...sessions.find(row => row.session_id === sessionId)!,
+          navigateTask(sessionRoute({ ...listedSessions.find(row => row.session_id === sessionId)!,
             preferences: updated.preferences, content_workspace_id: updated.preferences?.workspace_id || "" }), router.push);
         }
       }
@@ -225,7 +352,7 @@ export default function WorkspaceSidebar() {
             ),
       );
     },
-    [configureSession, sessions, selectedSessionId, router],
+    [configureSession, listedSessions, selectedSessionId, router],
   );
 
   return (

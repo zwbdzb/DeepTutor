@@ -2,17 +2,18 @@
 
 import {
   useCallback,
+  useEffect,
   useMemo,
-  useRef,
+  // useRef,
   useState,
-  type ChangeEvent,
+  // type ChangeEvent,
   type ReactNode,
 } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
-  Eye,
-  FileJson,
+  // Eye,
+  // FileJson,
   FolderInput,
   FolderOpen,
   Loader2,
@@ -22,26 +23,39 @@ import Modal from "@/components/common/Modal";
 import Button from "@/components/ui/Button";
 import ScopePicker from "@/components/space/ScopePicker";
 import {
+  fetchLocalImportSources,
   importChatHistory,
-  importChatHistoryInBatches,
+  // importChatHistoryInBatches,
+  importLocalSessions,
+  type LocalImportSource,
 } from "@/lib/imports-api";
 import { newAgentId, saveAgent } from "@/lib/chat-import/agent-store";
 import {
   buildSelectGroups,
-  ImportScanError,
-  isFileSystemAccessSupported,
-  parseChatGptExportFile,
+  // ImportScanError,
+  // isFileSystemAccessSupported,
+  // parseChatGptExportFile,
   parseSessions,
-  pickAndScan,
+  // pickAndScan,
+  projectLabel,
   selectionUnit,
   SOURCE_LABEL,
   type AgentScope,
   type ImportScanErrorCode,
   type ImportSource,
+  type PickableSession,
   type ScanResult,
   type SelectGroup,
   type SelectionUnit,
 } from "@/lib/chat-import";
+
+/** Selection-row shape produced by the local backend scan (no FS handle). */
+export interface PickerGroup {
+  key: string;
+  label: string;
+  sublabel?: string;
+  sessions: PickableSession[];
+}
 
 type Phase = "intro" | "scanning" | "select" | "importing" | "done" | "error";
 
@@ -61,9 +75,11 @@ export default function ImportWizard({
   onImported,
 }: ImportWizardProps) {
   const { t, i18n } = useTranslation();
-  const chatGptFileRef = useRef<HTMLInputElement>(null);
+  // 原代码：const chatGptFileRef = useRef<HTMLInputElement>(null);
   const [phase, setPhase] = useState<Phase>("intro");
-  const [scan, setScan] = useState<ScanResult | null>(null);
+  // 第三方（Claude/Codex/ChatGPT 文件夹与导出）导入已隐藏，runScan/setScan 一并退休；
+  // 恢复时改回 const [scan, setScan] = useState<ScanResult | null>(null);
+  const [scan] = useState<ScanResult | null>(null);
   const [name, setName] = useState("");
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
   const [errorCode, setErrorCode] = useState<ImportScanErrorCode | "generic">(
@@ -79,18 +95,56 @@ export default function ImportWizard({
     skipped: 0,
   });
 
-  const groups = useMemo<SelectGroup[]>(
-    () => (scan ? buildSelectGroups(scan) : []),
-    [scan],
-  );
-  const unit = scan ? selectionUnit(scan.source) : "projects";
-  const selectedRefs = useMemo(
-    () =>
-      groups.filter((g) => selectedKeys.has(g.key)).flatMap((g) => g.sessions),
-    [groups, selectedKeys],
-  );
+  // Local (desktop) source flow: the backend scans ~/.workbuddy for us, so no
+  // File System handle is involved — selection and import go through the API.
+  const [localSources, setLocalSources] = useState<LocalImportSource[]>([]);
+  const [localSource, setLocalSource] = useState<LocalImportSource | null>(null);
+  const [localGroups, setLocalGroups] = useState<PickerGroup[]>([]);
+  const [isLocal, setIsLocal] = useState(false);
 
+  useEffect(() => {
+    let alive = true;
+    void fetchLocalImportSources()
+      .then((sources) => {
+        if (alive) setLocalSources(sources);
+      })
+      .catch(() => {
+        // discovery is best-effort; absent capability just hides the button
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const groups = useMemo<SelectGroup[] | PickerGroup[]>(
+    () =>
+      isLocal ? localGroups : scan ? buildSelectGroups(scan) : [],
+    [scan, isLocal, localGroups],
+  );
+  const unit: SelectionUnit = scan ? selectionUnit(scan.source) : "projects";
+  // Browser path: fully-parsable refs (with a real file handle).
+  const selectedRefs = useMemo<ScanResult["projects"][number]["sessions"]>(
+    () =>
+      isLocal
+        ? []
+        : (groups as SelectGroup[])
+            .filter((g) => selectedKeys.has(g.key))
+            .flatMap((g) => g.sessions),
+    [groups, selectedKeys, isLocal],
+  );
+  // Local path: only the external ids are needed; the server does the parsing.
+  const selectedIds = useMemo(() => {
+    if (!isLocal) return [];
+    return (groups as PickerGroup[])
+      .filter((g) => selectedKeys.has(g.key))
+      .flatMap((g) => g.sessions.map((s) => s.externalId));
+  }, [groups, selectedKeys, isLocal]);
+  const selectedCount = isLocal ? selectedIds.length : selectedRefs.length;
+
+  /* 原代码（第三方文件夹导入，已隐藏）：
   const runScan = useCallback(async () => {
+    setIsLocal(false);
+    setLocalSource(null);
     setPhase("scanning");
     try {
       const next = await pickAndScan();
@@ -110,7 +164,29 @@ export default function ImportWizard({
       setPhase("error");
     }
   }, []);
+  */
 
+  /** Start the local backend-scanned flow (e.g. WorkBuddy on this machine). */
+  const runLocalStart = useCallback((source: LocalImportSource) => {
+    const nextGroups: PickerGroup[] = source.projects.map((p) => ({
+      key: p.cwd,
+      label: p.label || projectLabel(p.cwd),
+      sublabel: p.cwd,
+      sessions: p.sessions.map((s) => ({
+        externalId: s.external_id,
+        provisionalTitle: s.title || "",
+        lastModified: s.last_modified,
+      })),
+    }));
+    setLocalSource(source);
+    setLocalGroups(nextGroups);
+    setIsLocal(true);
+    setSelectedKeys(new Set(nextGroups.map((g) => g.key)));
+    setName(source.label || "WorkBuddy");
+    setPhase("select");
+  }, []);
+
+  /* 原代码（ChatGPT 导出导入，已隐藏）：
   const runChatGptImport = useCallback(async (file: File) => {
     setPhase("importing");
     setProgress({ stage: "parsing", done: 0, total: 0 });
@@ -141,6 +217,7 @@ export default function ImportWizard({
     },
     [runChatGptImport],
   );
+  */
 
   const toggleKey = useCallback((key: string) => {
     setSelectedKeys((prev) => {
@@ -158,6 +235,24 @@ export default function ImportWizard({
   const clearAll = useCallback(() => setSelectedKeys(new Set()), []);
 
   const runImport = useCallback(async () => {
+    if (isLocal) {
+      if (!localSource || selectedIds.length === 0) return;
+      setPhase("importing");
+      setProgress({ stage: "saving", done: 0, total: selectedIds.length });
+      try {
+        const res = await importLocalSessions(
+          localSource.source,
+          selectedIds,
+          name.trim() || localSource.label || "WorkBuddy",
+        );
+        setResult({ imported: res.imported, skipped: res.skipped });
+        setPhase("done");
+      } catch {
+        setErrorCode("generic");
+        setPhase("error");
+      }
+      return;
+    }
     if (!scan || selectedRefs.length === 0) return;
     setPhase("importing");
     setProgress({ stage: "parsing", done: 0, total: selectedRefs.length });
@@ -197,7 +292,7 @@ export default function ImportWizard({
       setErrorCode("generic");
       setPhase("error");
     }
-  }, [scan, selectedRefs, selectedKeys, unit, name]);
+  }, [scan, selectedRefs, selectedKeys, unit, name, isLocal, localSource, selectedIds]);
 
   const titleIcon = <FolderInput className="h-[18px] w-[18px]" />;
 
@@ -214,12 +309,12 @@ export default function ImportWizard({
       footer={
         <WizardFooter
           phase={phase}
-          source={scan?.source ?? null}
-          selectedCount={selectedRefs.length}
-          canImport={selectedRefs.length > 0}
+          source={scan?.source ?? (localSource ? localSource.source : null)}
+          selectedCount={selectedCount}
+          canImport={selectedCount > 0}
           onCancel={onClose}
-          onPick={runScan}
-          onPickChatGpt={() => chatGptFileRef.current?.click()}
+          // 原代码：onPick={runScan}
+          // 原代码：onPickChatGpt={() => chatGptFileRef.current?.click()}
           onImport={runImport}
           onDone={onImported}
           onRetry={() => setPhase("intro")}
@@ -227,6 +322,7 @@ export default function ImportWizard({
       }
     >
       <div className="px-5 py-5">
+        {/* 原代码（ChatGPT 导出文件选择，已隐藏）：
         <input
           ref={chatGptFileRef}
           type="file"
@@ -234,7 +330,17 @@ export default function ImportWizard({
           className="hidden"
           onChange={handleChatGptFile}
         />
-        {phase === "intro" && <IntroView />}
+        */}
+        {phase === "intro" && (
+          <IntroView
+            localSources={localSources}
+            onPickLocal={
+              localSources.length
+                ? () => runLocalStart(localSources[0])
+                : undefined
+            }
+          />
+        )}
         {phase === "scanning" && (
           <CenteredStatus
             icon={<Loader2 className="h-5 w-5 animate-spin" />}
@@ -243,7 +349,7 @@ export default function ImportWizard({
           />
         )}
         {phase === "select" &&
-          scan &&
+          (scan || isLocal) &&
           (groups.length === 0 ? (
             <CenteredStatus
               icon={<FolderOpen className="h-5 w-5" />}
@@ -265,7 +371,7 @@ export default function ImportWizard({
                   id="agent-name"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  placeholder={SOURCE_LABEL[scan.source]}
+                  placeholder={SOURCE_LABEL[scan?.source ?? "workbuddy"]}
                   className="w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-[13px] text-[var(--foreground)] outline-none transition focus:border-[var(--primary)]/50 focus:ring-2 focus:ring-[var(--primary)]/15"
                 />
                 <p className="mt-1.5 text-[11px] leading-relaxed text-[var(--muted-foreground)]">
@@ -299,29 +405,63 @@ export default function ImportWizard({
 
 /* ----------------------------- sub-views ----------------------------- */
 
-function IntroView() {
+function IntroView({
+  localSources,
+  onPickLocal,
+}: {
+  localSources: LocalImportSource[];
+  onPickLocal?: () => void;
+}) {
   const { t } = useTranslation();
-  const supported = isFileSystemAccessSupported();
+  // 原代码：const supported = isFileSystemAccessSupported();
+  const localCount = localSources.reduce(
+    (n, source) =>
+      n + source.projects.reduce((m, p) => m + p.sessions.length, 0),
+    0,
+  );
   return (
     <div className="space-y-5">
-      <div className="flex items-start gap-3.5">
-        <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-[var(--border)]/60 bg-[var(--card)] text-[var(--foreground)] shadow-sm">
+      <div className="flex items-center gap-3.5">
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-[var(--border)]/60 bg-[var(--card)] text-[var(--foreground)] shadow-sm">
           <FolderInput size={16} strokeWidth={1.6} />
         </span>
         <div className="min-w-0 space-y-1">
           <p className="text-[13px] leading-relaxed text-[var(--foreground)]">
+            {/* 原代码（第三方导入说明，已隐藏）：
+            {t("Import a local Claude Code or Codex folder, or choose the conversations.json file from an official ChatGPT data export. DeepTutor parses it in your browser before saving the conversations you import.")}
+            {t("Folder imports remain refreshable agents. ChatGPT exports are one-time snapshots that can be imported again safely without duplicating conversations.")}
+            */}
             {t(
-              "Import a local Claude Code or Codex folder, or choose the conversations.json file from an official ChatGPT data export. DeepTutor parses it in your browser before saving the conversations you import.",
-            )}
-          </p>
-          <p className="text-[12px] leading-relaxed text-[var(--muted-foreground)]">
-            {t(
-              "Folder imports remain refreshable agents. ChatGPT exports are one-time snapshots that can be imported again safely without duplicating conversations.",
+              "Import WorkBuddy conversations saved on this computer, then open any conversation to continue it in DeepTutor.",
             )}
           </p>
         </div>
       </div>
 
+      {localSources.length > 0 && onPickLocal ? (
+        <div className="flex items-center justify-between gap-3 rounded-xl border border-[var(--primary)]/25 bg-[var(--primary)]/[0.05] px-3.5 py-3">
+          <div className="min-w-0 space-y-0.5">
+            <p className="text-[13px] font-medium text-[var(--foreground)]">
+              {t("WorkBuddy history found on this computer")}
+            </p>
+            <p className="text-[12px] text-[var(--muted-foreground)]">
+              {t("Found {{count}} WorkBuddy conversations — import them here, no folder picking needed.", {
+                count: localCount,
+              })}
+            </p>
+          </div>
+          <Button
+            variant="secondary"
+            size="sm"
+            icon={<FolderOpen className="h-4 w-4" />}
+            onClick={onPickLocal}
+          >
+            {t("Import WorkBuddy from this computer")}
+          </Button>
+        </div>
+      ) : null}
+
+      {/* 原代码（浏览器文件夹/隐藏文件夹提示，第三方导入已隐藏）：
       {!supported ? (
         <div className="flex items-start gap-2.5 rounded-xl border border-amber-200 bg-amber-50/70 px-3.5 py-3 text-[12px] leading-relaxed text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-300">
           <AlertTriangle className="mt-px h-4 w-4 shrink-0" />
@@ -341,6 +481,7 @@ function IntroView() {
           </span>
         </div>
       )}
+      */}
     </div>
   );
 }
@@ -469,8 +610,8 @@ function WizardFooter({
   selectedCount,
   canImport,
   onCancel,
-  onPick,
-  onPickChatGpt,
+  // 原代码：onPick,
+  // 原代码：onPickChatGpt,
   onImport,
   onDone,
   onRetry,
@@ -480,8 +621,8 @@ function WizardFooter({
   selectedCount: number;
   canImport: boolean;
   onCancel: () => void;
-  onPick: () => void;
-  onPickChatGpt: () => void;
+  // 原代码：onPick: () => void;
+  // 原代码：onPickChatGpt: () => void;
   onImport: () => void;
   onDone: () => void;
   onRetry: () => void;
@@ -494,6 +635,7 @@ function WizardFooter({
         <Button variant="ghost" size="sm" onClick={onCancel}>
           {t("Cancel")}
         </Button>
+        {/* 原代码（第三方导入按钮，已隐藏）：
         <Button
           variant="primary"
           size="sm"
@@ -511,6 +653,7 @@ function WizardFooter({
         >
           {t("Select ChatGPT export")}
         </Button>
+        */}
       </div>
     );
   }

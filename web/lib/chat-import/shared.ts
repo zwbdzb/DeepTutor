@@ -7,6 +7,7 @@ export const SOURCE_LABEL: Record<ImportSource, string> = {
   claude_code: "Claude Code",
   codex: "Codex",
   chatgpt: "ChatGPT",
+  workbuddy: "WorkBuddy",
 };
 
 // Harness-injected context the user never typed — stripped so imported
