@@ -71,11 +71,26 @@ class LLMCallResult:
     content_chars: int = 0
     tool_call_chars: int = 0
     finish_reason: str = ""
+    #: The provider stopped sending chunks mid-round. Not a provider finish
+    #: reason, so it cannot live in ``finish_reason`` without pretending to be
+    #: one — but it truncates the round exactly like ``length`` does.
+    stream_stalled: bool = False
     # Completion metadata describes the round; it never revokes public text.
     # Deferred metadata is reserved for unpublished structured protocol output.
     completion_metadata: dict[str, Any] | None = None
     deferred_chunk_metadata: dict[str, Any] | None = None
     deferred_completion_metadata: dict[str, Any] | None = None
+
+    @property
+    def truncated(self) -> bool:
+        """Whether the round stopped before the provider finished it.
+
+        ``True`` for a provider that hit an output cap and for one that went
+        silent mid-answer: both leave an incomplete round, and every decision
+        downstream — continue instead of finishing, do not trust the tool calls
+        — is the same one.
+        """
+        return self.stream_stalled or _finish_was_truncated(self.finish_reason)
 
 
 @dataclass(slots=True)

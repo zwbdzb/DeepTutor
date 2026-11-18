@@ -316,10 +316,19 @@ class AgenticLoopPipeline:
         if max_tokens is not None:
             self._respond_max_tokens = max(256, int(max_tokens))
 
+        from .budget_escalation import ReasoningBudgetEscalation
         from .reasoning_recovery import ReasoningBudgetRecovery
 
         self.reasoning_budget_recovery = ReasoningBudgetRecovery.from_config(
             chat_cfg.get("reasoning_budget_recovery"), base_max_tokens=self.loop_max_tokens
+        )
+        # The automatic half of the same decision: a round cut off by a budget
+        # its own reasoning consumed may ask for one larger one. Read here, once
+        # per turn, from the same agents.yaml section that owns every other LLM
+        # budget — so it applies even while ``reasoning_budget_recovery`` keeps
+        # its default ``prompt`` strategy.
+        self.reasoning_budget_escalation = ReasoningBudgetEscalation.from_config(
+            chat_cfg.get("reasoning_budget_escalation"), base_max_tokens=self.loop_max_tokens
         )
 
         self._prompts: dict[str, Any] = self._load_prompt_pack()

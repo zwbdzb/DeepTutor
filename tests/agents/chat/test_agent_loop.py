@@ -3034,7 +3034,12 @@ async def test_cold_start_stalled_provider_settles_with_bounded_retries(monkeypa
                 pipeline.run(UnifiedContext(session_id="cold", user_message="Hello"), bus), 1
             )
         assert failure.value.retryable
-        assert len(attempts) == (1 if phase == "partial_stream" else 3)
+        # A stall *after* output settles the round and continues the turn once
+        # (that is the fix: the reader keeps what already streamed), so it takes
+        # a second round — and a second stall — to reach the terminal error. A
+        # stall before any output is still replayed inline, three attempts and
+        # no more.
+        assert len(attempts) == (2 if phase == "partial_stream" else 3)
         assert failure.value.partial_response is (phase == "partial_stream")
         if phase != "connect":
             assert len(stopped) == len(attempts)

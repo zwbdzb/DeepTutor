@@ -41,6 +41,11 @@ from deeptutor.runtime.agentic import (
     dispatch_tool_calls,
 )
 from deeptutor.runtime.agentic.messages import assistant_message, assistant_message_with_tool_calls
+from deeptutor.runtime.agentic.stream_bounds import (
+    bounded_stream_chunks,
+    configured_stream_idle_timeout_seconds,
+    connect_timeout_seconds,
+)
 from deeptutor.runtime.agentic.tool_call_stream import ToolCallAccumulator
 from deeptutor.runtime.registry.tool_registry import get_tool_registry
 from deeptutor.runtime.stream_bus import StreamBus
@@ -48,7 +53,6 @@ from deeptutor.services.config.loader import get_capability_params
 from deeptutor.services.llm import clean_thinking_tags, get_llm_config, get_token_limit_kwargs
 from deeptutor.services.llm import stream as llm_stream
 from deeptutor.services.llm.capabilities import threads_session_id
-from deeptutor.services.llm.exceptions import LLMProviderTransportError
 from deeptutor.services.session.provider_response_state import normalize_provider_response_state
 
 logger = logging.getLogger(__name__)
@@ -102,24 +106,23 @@ _KIND_BY_PREFIX: dict[str, tuple[str, str]] = {
 }
 
 # A connected provider that never yields another chunk must settle (#2539).
-# The answer loop already bounds its stream reads
-# (``agent_loop._bounded_stream_chunks``); this pre-pass runs *before* that
-# loop, as a ``pre_loop`` hook, so without its own bound a stalled CLI parks
-# the whole turn in ``running`` — the lease keeps renewing, recovery sees a
-# live owner, and only an explicit cancel frees it.
-_STREAM_IDLE_TIMEOUT_SECONDS = 90.0
+# This pre-pass runs *before* the answer loop, as a ``pre_loop`` hook, so
+# without a bound a stalled CLI parks the whole turn in ``running`` — the lease
+# keeps renewing, recovery sees a live owner, and only an explicit cancel frees
+# it. The bound itself is *not* this module's own: it lives in
+# ``deeptutor.runtime.agentic.stream_bounds``, together with the answer loop's,
+# so the deployment tunes one value in main.yaml and both readers honour it.
+# ``_STREAM_IDLE_TIMEOUT_SECONDS`` stays as a test seam, exactly like the answer
+# loop's.
+_STREAM_IDLE_TIMEOUT_SECONDS: float | None = None
 
 
-async def _bounded_stream_chunks(stream: Any):
-    """Yield stream chunks, raising once the provider goes idle for too long."""
-    iterator = stream.__aiter__()
-    while True:
-        try:
-            yield await asyncio.wait_for(iterator.__anext__(), _STREAM_IDLE_TIMEOUT_SECONDS)
-        except StopAsyncIteration:
-            return
-        except TimeoutError:
-            raise LLMProviderTransportError("The model provider stream timed out.") from None
+def _stream_idle_timeout_seconds() -> float:
+    """This pre-pass's inter-chunk idle bound, in seconds."""
+    override = _STREAM_IDLE_TIMEOUT_SECONDS
+    if override:
+        return float(override)
+    return configured_stream_idle_timeout_seconds()
 
 
 @dataclass(slots=True)
@@ -424,12 +427,15 @@ class ContextExplorer:
         # Bound connection setup as well as the idle reads below, the same way
         # the answer loop does: a provider that hangs while opening the stream
         # parks the turn just as effectively as one that stalls mid-stream.
+        idle_timeout = _stream_idle_timeout_seconds()
         response_stream = await asyncio.wait_for(
             client.chat.completions.create(**kwargs),
-            _STREAM_IDLE_TIMEOUT_SECONDS,
+            connect_timeout_seconds(idle_timeout),
         )
         try:
-            async for chunk in _bounded_stream_chunks(response_stream):
+            async for chunk in bounded_stream_chunks(
+                response_stream, timeout_seconds=idle_timeout
+            ):
                 choices = getattr(chunk, "choices", None) or []
                 if not choices:
                     continue

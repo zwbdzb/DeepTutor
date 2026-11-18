@@ -45,6 +45,10 @@ from deeptutor.runtime.agentic.labels import (
     classify_label,
     strip_label_probe_prefix,
 )
+from deeptutor.runtime.agentic.stream_bounds import (
+    configured_stream_idle_timeout_seconds,
+    connect_timeout_seconds,
+)
 from deeptutor.runtime.agentic.think_stream import InlineThinkFilter
 from deeptutor.runtime.agentic.tool_call_stream import ToolCallAccumulator
 from deeptutor.runtime.agentic.usage import (
@@ -53,7 +57,11 @@ from deeptutor.runtime.agentic.usage import (
     record_streamed_usage,
 )
 from deeptutor.runtime.stream_bus import StreamBus
-from deeptutor.services.llm import LLMProviderTransportError, clean_thinking_tags
+from deeptutor.services.llm import (
+    LLMProviderTransportError,
+    LLMStreamIdleTimeout,
+    clean_thinking_tags,
+)
 from deeptutor.services.llm.multimodal import should_degrade_to_text, strip_image_parts_inplace
 from deeptutor.services.llm.request_compat import (
     is_image_input_unsupported,
@@ -84,8 +92,16 @@ _THINK_CLOSE_RE = re.compile(
 # We keep at most this many trailing chars of the prelude unsent so a close
 # tag that arrives split across chunks is still detectable.
 _THINK_CLOSE_TAIL_GUARD = 24
-# Match the chat loop's idle watchdog before a complete answer is available.
-_STREAM_IDLE_TIMEOUT_S = 90.0
+# Idle watchdog before a complete answer is available. The value is not this
+# module's own any more: it comes from ``stream_bounds`` (main.yaml's
+# ``capabilities.chat.streaming.idle_timeout_seconds``, default 300s), the same
+# source the chat loop's answer round and the context pre-pass read. Keeping a
+# second literal here is how this path stayed at 90s while the chat loop moved
+# on — and this path is what ``deep_question`` runs, with the same symptom for
+# the same reason.
+# ``None`` means "resolve the configured value"; it stays assignable as a test
+# seam, exactly like the answer loop's.
+_STREAM_IDLE_TIMEOUT_S: float | None = None
 # Once a provider has explicitly sent ``finish_reason`` the text generation is
 # done. Some OpenAI-compatible gateways keep the SSE connection open while
 # waiting for an optional usage trailer; wait briefly for that frame, then
@@ -94,6 +110,14 @@ _USAGE_TRAILER_GRACE_TIMEOUT_S = 1.0
 # Defensive fallback for gateways that never emit ``finish_reason`` but have
 # already sent a final-label answer and then leave the stream idle.
 _FINAL_LABEL_IDLE_TIMEOUT_S = 8.0
+
+
+def _stream_idle_timeout_s() -> float:
+    """This step's inter-chunk idle bound, in seconds."""
+    override = _STREAM_IDLE_TIMEOUT_S
+    if override:
+        return float(override)
+    return configured_stream_idle_timeout_seconds()
 
 
 @dataclass(frozen=True)
@@ -497,16 +521,17 @@ async def run_labeled_step(
                 return await client.chat.completions.create(**kwargs)
             raise
 
+    idle_timeout = _stream_idle_timeout_s()
     try:
         response_stream = await asyncio.wait_for(
-            _create_response_stream(), timeout=_STREAM_IDLE_TIMEOUT_S
+            _create_response_stream(), timeout=connect_timeout_seconds(idle_timeout)
         )
     except asyncio.TimeoutError:
         raise LLMProviderTransportError("The model provider connection timed out.") from None
     try:
         stream_iter = response_stream.__aiter__()
         while True:
-            timeout = _STREAM_IDLE_TIMEOUT_S
+            timeout = idle_timeout
             if finish_reason_seen:
                 if usage is not None and usage_seen is None and not usage_trailer_waited:
                     timeout = _USAGE_TRAILER_GRACE_TIMEOUT_S
@@ -527,7 +552,7 @@ async def run_labeled_step(
                     if not finish_reason_seen:
                         stream_idle_timeout = True
                     break
-                raise LLMProviderTransportError("The model provider stream timed out.") from None
+                raise LLMStreamIdleTimeout(idle_timeout) from None
             if getattr(chunk, "usage", None):
                 usage_seen = chunk.usage
             choices = getattr(chunk, "choices", None) or []

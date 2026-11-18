@@ -63,6 +63,25 @@ class LLMProviderTransportError(LLMProviderError):
         self.partial_response = partial_response
 
 
+class LLMStreamIdleTimeout(LLMProviderTransportError):
+    """A connected provider stopped sending chunks past the idle bound.
+
+    Still a transport error — every existing retry path applies — but its own
+    type, because it says something a dropped connection does not: the
+    provider was connected and may already have streamed part of an answer.
+    A caller holding that partial output can settle the round with what
+    arrived instead of reporting the whole turn as lost.
+    """
+
+    error_code = "provider_stream_idle"
+
+    def __init__(self, idle_seconds: float = 0.0):
+        super().__init__(
+            f"The model provider stream timed out after {float(idle_seconds):.0f}s of silence."
+        )
+        self.idle_seconds = float(idle_seconds)
+
+
 class LLMCircuitBreakerError(LLMError):
     """Raised when circuit breaker blocks LLM execution."""
 

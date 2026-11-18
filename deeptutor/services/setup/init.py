@@ -59,6 +59,14 @@ DEFAULT_MAIN_SETTINGS = {
         },
     },
     "capabilities": {
+        # Runtime behaviour for the chat loop: how long a provider response
+        # stream may stay silent before the round is considered stalled. A
+        # budget belongs in agents.yaml; a timeout belongs here.
+        "chat": {
+            "streaming": {
+                "idle_timeout_seconds": 300,
+            },
+        },
         "solve": {
             "max_rounds": 12,
             "max_replans": 2,

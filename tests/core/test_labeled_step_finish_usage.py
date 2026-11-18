@@ -257,17 +257,30 @@ async def test_stalled_connection_raises_transport_error(
 async def test_incomplete_stream_resets_idle_timeout_for_each_chunk(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(labeled_step_module, "_STREAM_IDLE_TIMEOUT_S", 0.03)
+    # The property under test is that the idle bound is measured from the
+    # *last* chunk, not from the start of the stream: five chunks that each
+    # arrive well inside the bound add up to more than the bound, so a stream
+    # that accumulated the budget would time out here. The numbers are sized
+    # for the coarsest clock this suite runs on — Windows' event loop timer
+    # granularity is ~15.6ms, so a 0.01s sleep beside a 0.03s bound made the
+    # margin narrower than one tick and the test failed deterministically on
+    # Windows (verified against the pre-change 90s-literal version too, i.e.
+    # not a regression from the configurable bound). 0.08s/0.2s/0.4s keeps the
+    # same discrimination with ~5x headroom per chunk.
+    per_chunk_s, idle_s = 0.08, 0.2
+    monkeypatch.setattr(labeled_step_module, "_STREAM_IDLE_TIMEOUT_S", idle_s)
 
     class SlowStream(_Stream):
         async def __anext__(self) -> SimpleNamespace:
-            await asyncio.sleep(0.01)
+            await asyncio.sleep(per_chunk_s)
             return await super().__anext__()
 
     stream = SlowStream([_chunk(text) for text in ["``THINK``\n", "a", "b", "c", "d"]])
+    # Five chunks * 0.08s > 0.2s: only a per-chunk reset can finish in time.
+    assert 5 * per_chunk_s > idle_s
 
     result = await asyncio.wait_for(
-        _run_step(_Client([stream]), UsageTracker(model="gpt-test")), timeout=0.5
+        _run_step(_Client([stream]), UsageTracker(model="gpt-test")), timeout=2.0
     )
 
     assert result.label == "THINK"

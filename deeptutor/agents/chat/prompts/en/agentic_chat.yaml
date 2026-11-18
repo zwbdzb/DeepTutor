@@ -139,6 +139,16 @@ loop:
   continue_truncated: |-
     Your previous response stopped at the token limit. Continue from where it ended
     without repeating it, and complete the user-facing answer.
+  continue_truncated_tool_call: |-
+    Your previous round was cut off by the output limit while it was writing a
+    tool call, so that call was incomplete and was NOT executed — do not assume
+    any result from it. {names} must be issued again now, in full, with every
+    required argument. Keep this round's reasoning short: the arguments are what
+    has to fit.
+  continue_stalled: |-
+    Your previous reply stopped mid-stream because the model provider stopped
+    sending data. Continue from exactly where it stopped, without repeating what
+    is already written, and finish the user-facing answer.
   continue_truncated_reasoning: |-
     Your previous round spent its entire output budget on internal reasoning and
     hit the token limit before writing anything — so there is nothing to continue
@@ -191,6 +201,8 @@ notices:
   reasoning_budget_exhausted: "The model exhausted its output budget on internal reasoning without producing an answer or tool action. Please retry, lower reasoning effort, or split the task into smaller steps."
   reasoning_budget_recovery: "Internal reasoning used the output budget; requesting one retry with the same {next_max_tokens}-token output limit."
   reasoning_budget_increased: "Internal reasoning used the output budget; requesting one retry with up to {next_max_tokens} output tokens (previously {previous_max_tokens}). This may increase latency and cost."
+  reasoning_budget_escalated: "Internal reasoning took most of this round's output budget; retrying once with a raised limit of {next_max_tokens} tokens (previously {previous_max_tokens}). This may increase latency and cost."
+  stream_stalled: "The model provider stopped sending output mid-answer; asking it to continue from where it stopped."
 
 empty:
   empty_reply: "(empty reply)"

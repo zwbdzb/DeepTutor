@@ -13,10 +13,11 @@ from deeptutor.runtime.agentic.messages import (
     extend_transient_model_messages,
 )
 from deeptutor.runtime.agentic.tool_dispatch import DispatchOutcome
-from deeptutor.services.llm import LLMReasoningBudgetExhausted, finish_was_truncated
+from deeptutor.services.llm import LLMReasoningBudgetExhausted
 from deeptutor.services.llm.types import CONTEXT_LENGTH_EXCEEDED_FINISH
 
 from . import loop_state as values
+from .budget_escalation import reasoning_dominated_output
 
 if TYPE_CHECKING:
     from .agent_loop import AgentLoop
@@ -48,6 +49,14 @@ class AgentLoopHost:
         self.recovery_schemas: list[dict[str, Any]] | None = None
         self.round_max_tokens = self.pipeline.loop_max_tokens
         self.next_round_max_tokens: int | None = None
+        # Tool calls from the last round that were dropped because the round
+        # was truncated before they were finished (see ``call_round``).
+        self.discarded_tool_calls: list[dict[str, Any]] = []
+        # One budget escalation per turn. The scheduler already allows a single
+        # reasoning-budget recovery; this latch keeps the automatic escalation
+        # bounded independently of that counter, including on the settlement
+        # path where the counter does not move.
+        self.budget_escalated = False
 
     async def invoke(self, operation: str, args: dict[str, Any], state: dict[str, Any]) -> Any:
         operations = {
@@ -152,6 +161,7 @@ class AgentLoopHost:
         await self.read_inbox()
         self.round_max_tokens = self.next_round_max_tokens or self.pipeline.loop_max_tokens
         self.next_round_max_tokens = None
+        self.discarded_tool_calls = []
         self.result = await self.loop._call_llm(
             messages=self.messages,
             label=self.pipeline._t("labels.final_response", default="Final response")
@@ -176,6 +186,22 @@ class AgentLoopHost:
                     "off. Start a new chat or shorten the history and try again."
                 ),
             )
+        # Whether the round spent its whole budget on reasoning is a fact about
+        # *this* round, so it is read before the truncated-call cleanup below can
+        # change what the round appears to contain: a round that did try to act
+        # has not run out of budget without acting.
+        reasoning_budget_exhausted = values._reasoning_budget_exhausted(
+            self.result, self.round_max_tokens
+        )
+        if self.result.truncated and self.result.tool_calls:
+            # A tool call cut off by an output cap (or by a stalled stream) is
+            # not a call: its arguments are whatever happened to arrive before
+            # the cut. Dispatching it spends the round on a rejection the model
+            # never sees the reason for, and executing it — were the arguments
+            # to happen to validate — would run a tool with silently wrong
+            # input. Drop it here, then let the truncated path ask for it again.
+            self.discarded_tool_calls = list(self.result.tool_calls)
+            self.result.tool_calls = []
         rejected = self.recovery_tools is not None and any(
             str(call.get("name") or "").strip() not in self.recovery_tools
             for call in self.result.tool_calls
@@ -188,10 +214,8 @@ class AgentLoopHost:
             "recoveryRejected": rejected,
             "hasTools": bool(self.result.tool_calls),
             "hasText": bool(self.loop._clean(self.result.text)),
-            "truncated": finish_was_truncated(self.result.finish_reason),
-            "reasoningBudgetExhausted": values._reasoning_budget_exhausted(
-                self.result, self.round_max_tokens
-            ),
+            "truncated": self.result.truncated,
+            "reasoningBudgetExhausted": reasoning_budget_exhausted,
         }
 
     async def raise_reasoning_budget(self) -> None:
@@ -217,52 +241,178 @@ class AgentLoopHost:
             },
         )
 
+    def _next_round_budget(self, *, reasoning_budget_exhausted: bool) -> tuple[int, str]:
+        """The continuation round's output budget, and why it changed.
+
+        Args:
+            reasoning_budget_exhausted: Whether this round spent the whole cap
+                on reasoning without acting on it.
+
+        Returns:
+            ``(budget, reason)``, ``reason`` being ``"configured"`` when the
+            explicit recovery policy named the budget, ``"automatic"`` when the
+            reasoning-aware escalation fired, or ``""`` when the budget is
+            unchanged.
+        """
+        policy = self.pipeline.reasoning_budget_recovery
+        if reasoning_budget_exhausted and policy.strategy == "increase_output_budget":
+            # An operator who named a number gets that number, and it counts as
+            # this turn's single escalation.
+            self.budget_escalated = True
+            return policy.max_tokens, "configured"
+        escalated = self._automatic_escalation(
+            reasoning_budget_exhausted=reasoning_budget_exhausted
+        )
+        if escalated is not None:
+            return escalated, "automatic"
+        return self.pipeline.loop_max_tokens, ""
+
+    def _automatic_escalation(self, *, reasoning_budget_exhausted: bool) -> int | None:
+        """One bounded budget increase for a round that reasoning starved.
+
+        Fires when this round was cut off *and* reasoning is what took the
+        room — either it consumed the whole cap (``reasoning_budget_exhausted``)
+        or it took a dominant share of it, which is the same defect one step
+        earlier. The decision does not depend on
+        ``reasoning_budget_recovery.strategy``: leaving the default ``prompt``
+        policy in place is how the retry repeated the exact budget that had
+        just failed.
+
+        Returns:
+            The escalated budget, or ``None`` when this round does not justify
+            one: escalation is off, already used this turn, the round was not
+            truncated, or the budget is already at the ceiling.
+        """
+        escalation = self.pipeline.reasoning_budget_escalation
+        result = self.result
+        if self.budget_escalated or not escalation.enabled or result is None:
+            return None
+        if not result.truncated:
+            return None
+        dominated = reasoning_dominated_output(
+            max_tokens=self.round_max_tokens,
+            reasoning_tokens=result.usage.get("reasoning_tokens"),
+            completion_tokens=result.usage.get("completion_tokens"),
+            reasoning_chars=result.reasoning_chars,
+            content_chars=result.content_chars,
+            tool_call_truncated=bool(self.discarded_tool_calls),
+        )
+        if not (reasoning_budget_exhausted or dominated):
+            return None
+        candidate = escalation.next_budget(self.round_max_tokens)
+        if candidate <= self.round_max_tokens:
+            return None
+        self.budget_escalated = True
+        return candidate
+
+    async def _announce_budget_change(self, *, budget: int, reason: str) -> None:
+        """Tell the reader the retry costs more, without leaking reasoning text."""
+        policy = self.pipeline.reasoning_budget_recovery
+        key = (
+            "notices.reasoning_budget_escalated"
+            if reason == "automatic"
+            else "notices.reasoning_budget_increased"
+            if policy.strategy == "increase_output_budget"
+            else "notices.reasoning_budget_recovery"
+        )
+        await self.stream.progress(
+            self.pipeline._t(
+                key,
+                previous_max_tokens=self.round_max_tokens,
+                next_max_tokens=budget,
+                default="Internal reasoning used the output budget; applying the configured recovery policy.",
+            ),
+            source=self.loop.source,
+            stage=self.loop.stage,
+            metadata={
+                "trace_kind": "warning",
+                "recovery_kind": "reasoning_budget",
+                "recovery_strategy": policy.strategy,
+                "escalation": reason,
+                "previous_max_tokens": self.round_max_tokens,
+                "next_max_tokens": budget,
+                "reasoning_effort": self.pipeline.reasoning_effort,
+                "recovery_attempt": self.state.reasoning_budget_recoveries,
+                "usage": self.pipeline.usage.summary(),
+            },
+        )
+
     async def continue_truncated(self) -> None:
         result = self.result
         assert result is not None
-        if values._reasoning_budget_exhausted(result, self.round_max_tokens):
-            policy = self.pipeline.reasoning_budget_recovery
-            if policy.strategy == "stop":
-                await self.raise_reasoning_budget()
-            next_budget = (
-                policy.max_tokens
-                if policy.strategy == "increase_output_budget"
-                else self.pipeline.loop_max_tokens
-            )
-            self.next_round_max_tokens = next_budget
-            await self.stream.progress(
-                self.pipeline._t(
-                    "notices.reasoning_budget_increased"
-                    if policy.strategy == "increase_output_budget"
-                    else "notices.reasoning_budget_recovery",
-                    previous_max_tokens=self.round_max_tokens,
-                    next_max_tokens=next_budget,
-                    default="Internal reasoning used the output budget; applying the configured recovery policy.",
+        policy = self.pipeline.reasoning_budget_recovery
+        reasoning_budget_exhausted = values._reasoning_budget_exhausted(
+            result, self.round_max_tokens
+        )
+        if reasoning_budget_exhausted and policy.strategy == "stop":
+            await self.raise_reasoning_budget()
+        next_budget, changed = self._next_round_budget(
+            reasoning_budget_exhausted=reasoning_budget_exhausted
+        )
+        self.next_round_max_tokens = next_budget
+        # What happened to the round and what the retry costs are two different
+        # facts, and the reader needs both: a budget notice must never be the
+        # only trace row of a round whose tool call was discarded.
+        if self.discarded_tool_calls:
+            await self.warning(
+                "notices.tool_call_truncated",
+                (
+                    "The model reached its output token limit while writing a tool call, so the call "
+                    "was incomplete and nothing was executed. Asking it to issue the call again."
                 ),
-                source=self.loop.source,
-                stage=self.loop.stage,
-                metadata={
-                    "trace_kind": "warning",
-                    "recovery_kind": "reasoning_budget",
-                    "recovery_strategy": policy.strategy,
-                    "previous_max_tokens": self.round_max_tokens,
-                    "next_max_tokens": next_budget,
-                    "reasoning_effort": self.pipeline.reasoning_effort,
-                    "recovery_attempt": self.state.reasoning_budget_recoveries,
-                    "usage": self.pipeline.usage.summary(),
-                },
             )
-        else:
+        elif result.stream_stalled:
+            await self.warning(
+                "notices.stream_stalled",
+                (
+                    "The model provider stopped sending output mid-answer; asking it to continue "
+                    "from where it stopped."
+                ),
+            )
+        elif not changed:
             await self.warning(
                 "notices.output_truncated",
                 "The model output reached its token limit; asked it to continue.",
             )
+        if changed:
+            await self._announce_budget_change(budget=next_budget, reason=changed)
         await self.loop._release_deferred_output(result)
         if result.visible_text:
             self.continued.append(result.visible_text)
         if values._has_replayable_assistant_state(result):
             self.messages.append(values._assistant_round_message(result))
-        if result.visible_text:
+        if self.discarded_tool_calls:
+            # Naming the calls is what makes the retry cheap: the model re-issues
+            # exactly what it meant to run instead of re-planning the round.
+            names = ", ".join(
+                sorted(
+                    {
+                        str(call.get("name") or "").strip()
+                        for call in self.discarded_tool_calls
+                        if str(call.get("name") or "").strip()
+                    }
+                )
+            )
+            instruction = self.pipeline._t(
+                "loop.continue_truncated_tool_call",
+                names=names or "the tool",
+                default=(
+                    "Your previous round was cut off by the output limit while writing a tool "
+                    "call, so it was incomplete and was NOT executed — do not assume its result. "
+                    "Issue that call again now, in full. Keep any reasoning brief: the arguments "
+                    "are what must fit."
+                ),
+            )
+        elif result.stream_stalled:
+            instruction = self.pipeline._t(
+                "loop.continue_stalled",
+                default=(
+                    "Your previous reply stopped mid-stream because the provider stopped sending "
+                    "data. Continue from where it stopped without repeating what is already "
+                    "written, and finish the user-facing answer."
+                ),
+            )
+        elif result.visible_text:
             instruction = self.pipeline._t(
                 "loop.continue_truncated",
                 default=(
@@ -375,7 +525,10 @@ class AgentLoopHost:
     async def dispatch_tools(self) -> dict[str, bool]:
         result = self.result
         assert result is not None
-        if finish_was_truncated(result.finish_reason):
+        if result.truncated:
+            # Only reachable for a round whose calls survived the truncation
+            # check in ``call_round`` — kept as a guard, and as the notice the
+            # reader needs if a provider ever reports the cut too late.
             await self.warning(
                 "notices.tool_call_truncated",
                 (

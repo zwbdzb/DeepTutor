@@ -58,6 +58,11 @@ from deeptutor.runtime.agentic.messages import (
     image_content_hashes,
     with_transient_model_messages,
 )
+from deeptutor.runtime.agentic.stream_bounds import (
+    bounded_stream_chunks,
+    configured_stream_idle_timeout_seconds,
+    connect_timeout_seconds,
+)
 from deeptutor.runtime.agentic.think_stream import InlineThinkFilter
 from deeptutor.runtime.agentic.tool_call_stream import ToolCallAccumulator
 from deeptutor.runtime.agentic.tool_dispatch import DispatchOutcome
@@ -66,6 +71,7 @@ from deeptutor.runtime.stream_bus import StreamBus
 from deeptutor.services.llm import (
     LLMProviderTransportError,
     LLMReasoningBudgetExhausted,
+    LLMStreamIdleTimeout,
     clean_thinking_tags,
     supports_streaming,
 )
@@ -112,19 +118,25 @@ MAX_REASONING_ONLY_RECOVERIES = 2
 # user-visible output. Once output is visible, replay is unsafe because it can
 # duplicate prose or tool calls.
 _PROVIDER_RETRY_DELAYS = (0.5, 1.5)
-_STREAM_IDLE_TIMEOUT_SECONDS = 90.0
+# A provider that goes silent mid-answer used to fail the whole turn. The text
+# already on screen is real output, and re-requesting it would duplicate that
+# prose (and could resubmit a half-written tool call), so the round is settled
+# and continued instead — once. A second stall in the same turn is a real
+# provider failure and keeps the old terminal behaviour: repeating it would
+# leave the reader waiting through bound after bound for nothing.
+MAX_STREAM_STALL_RECOVERIES = 1
+# Test seam: the resolved idle bound comes from
+# ``deeptutor.runtime.agentic.stream_bounds`` (main.yaml); a test that needs a
+# millisecond bound sets this instead of editing settings files.
+_STREAM_IDLE_TIMEOUT_SECONDS: float | None = None
 
 
-async def _bounded_stream_chunks(stream: Any):
-    """#1421: a connected provider that never produces a chunk must settle."""
-    iterator = stream.__aiter__()
-    while True:
-        try:
-            yield await asyncio.wait_for(iterator.__anext__(), _STREAM_IDLE_TIMEOUT_SECONDS)
-        except StopAsyncIteration:
-            return
-        except TimeoutError:
-            raise LLMProviderTransportError("The model provider stream timed out.") from None
+def _stream_idle_timeout_seconds() -> float:
+    """This round's inter-chunk idle bound, in seconds."""
+    override = _STREAM_IDLE_TIMEOUT_SECONDS
+    if override:
+        return float(override)
+    return configured_stream_idle_timeout_seconds()
 
 
 def _append_directive_to_parts(parts: list[Any], instruction: str) -> list[Any]:
@@ -198,6 +210,9 @@ class AgentLoop:
         # #1611: retrieved pixels belong to this turn's requests, never to
         # durable history. Both loop engines share the same ordering/budget.
         self._transient_model_messages: list[dict[str, Any]] = []
+        # One stall settlement per turn: a provider that keeps going silent
+        # must fail the turn rather than walk through bound after bound.
+        self._stall_recoveries = 0
         context.extension("source_visual_evidence")["image_hashes"] = []
         self._request_fingerprint = (context.runtime.previous_model_turn or {}).get(
             "request_fingerprint"
@@ -758,6 +773,9 @@ class AgentLoop:
         self._apply_prompt_caching(kwargs)
 
         chunk_meta = merge_trace_metadata(trace_meta, {"trace_kind": "llm_chunk"})
+        # Set when a stalled provider left a round that can be settled with
+        # what already streamed, instead of failing the turn.
+        stream_stalled = False
 
         for attempt in range(len(_PROVIDER_RETRY_DELAYS) + 1):
             # Providers (esp. Gemini OpenAI-compat) may attach ``usage`` to
@@ -882,10 +900,14 @@ class AgentLoop:
                 sent_content = [message.get("content") for message in kwargs["messages"]]
                 sent_had_images = has_image_parts(kwargs["messages"])
                 # The loop owns retries. Bound both connection setup and idle
-                # reads so cold-start failures cannot park a durable turn.
+                # reads so cold-start failures cannot park a durable turn. The
+                # header wait is the smaller of the two bounds: raising the
+                # idle bound for a slow answer must not make a dead endpoint
+                # wait minutes before the first retry.
+                idle_timeout = _stream_idle_timeout_seconds()
                 response_stream = await asyncio.wait_for(
                     self._create_response_stream(kwargs, trace_meta, stage),
-                    _STREAM_IDLE_TIMEOUT_SECONDS,
+                    connect_timeout_seconds(idle_timeout),
                 )
                 # A declared vision capability is not evidence of delivered
                 # pixels when the provider actually falls back to text.
@@ -906,7 +928,9 @@ class AgentLoop:
                     ):
                         if "content" in accepted and accepted["content"] is not sent:
                             original["content"] = accepted["content"]
-                async for chunk in _bounded_stream_chunks(response_stream):
+                async for chunk in bounded_stream_chunks(
+                    response_stream, timeout_seconds=idle_timeout
+                ):
                     usage = getattr(chunk, "usage", None)
                     if usage is not None:
                         usage_seen = usage
@@ -1083,6 +1107,30 @@ class AgentLoop:
                     await asyncio.sleep(_PROVIDER_RETRY_DELAYS[attempt])
                     continue
 
+                if isinstance(exc, LLMStreamIdleTimeout) and output_emitted:
+                    if finish_reason:
+                        # The provider had already declared this round finished;
+                        # only its trailing frame went missing. Keep the round.
+                        logger.warning(
+                            "provider stream stalled after finish_reason=%s; settling the round",
+                            finish_reason,
+                        )
+                        break
+                    if self._stall_recoveries < MAX_STREAM_STALL_RECOVERIES:
+                        # Silence mid-answer on a connected stream. Everything
+                        # streamed so far is real output the reader already has,
+                        # so re-requesting it would duplicate prose (and could
+                        # resubmit a half-written tool call). Settle the round as
+                        # truncated and let the loop continue from it instead of
+                        # ending the turn on an error.
+                        self._stall_recoveries += 1
+                        stream_stalled = True
+                        logger.warning(
+                            "provider stream stalled mid-round (idle %.1fs); continuing the turn",
+                            getattr(exc, "idle_seconds", idle_timeout),
+                        )
+                        break
+
                 partial_response = output_emitted
                 if text_parts or reasoning_parts:
                     messages.append(
@@ -1156,7 +1204,7 @@ class AgentLoop:
             output_chars=output_chars,
         )
 
-        tool_calls = tool_acc.collected()
+        tool_calls = [] if stream_stalled else tool_acc.collected()
         if ask_user_drafts is not None:
             # Give the previewed card its finished text before the dispatch
             # that replaces it (or, for a call that is never dispatched,
@@ -1170,7 +1218,10 @@ class AgentLoop:
         # when both representations are present to avoid double dispatch.
         dsml_calls, cleaned_text = extract_dsml_tool_calls(text, self._tool_schema_catalog)
         if dsml_calls:
-            if not tool_calls:
+            # A stalled stream can end inside the markup, so a DSML call parsed
+            # from it is exactly as untrustworthy as a native partial one: the
+            # markup is still stripped from the text, the call is not taken.
+            if not tool_calls and not stream_stalled:
                 tool_calls = dsml_calls
             text = cleaned_text
 
@@ -1219,8 +1270,18 @@ class AgentLoop:
                 ),
             )
 
-        truncated_round = call_kind == "agent_loop_round" and _finish_was_truncated(finish_reason)
+        # A stalled round is incomplete in the same way a truncated one is: the
+        # provider stopped before it had finished the answer. The consequences
+        # are the same too — its text is narration rather than a finish, and a
+        # tool call it never finished is not a call — so it takes the same path.
+        truncated_round = call_kind == "agent_loop_round" and (
+            _finish_was_truncated(finish_reason) or stream_stalled
+        )
+        reported_finish_reason = "stream_stalled" if stream_stalled else (finish_reason or "stop")
         visible_text = "".join(visible_text_parts)
+        # ``reasoning_budget_exhausted`` keeps its narrow, cap-specific meaning
+        # below: a stall is not evidence that reasoning ate the budget.
+        budget_truncated = call_kind == "agent_loop_round" and _finish_was_truncated(finish_reason)
         reasoning_budget_exhausted = bool(
             call_kind == "agent_loop_round"
             and not tool_calls
@@ -1235,7 +1296,7 @@ class AgentLoop:
             )
             and str(finish_reason or "").strip().lower() != "content_filter"
             and (
-                truncated_round
+                budget_truncated
                 or (usage_details.get("completion_tokens", 0) >= max(1, int(max_tokens)))
             )
         )
@@ -1252,7 +1313,7 @@ class AgentLoop:
             # is told while the work happens, not an internal preamble to hide,
             # and a capability finish check must never retract it.
             "answer_visible": True,
-            "finish_reason": finish_reason or "stop",
+            "finish_reason": reported_finish_reason,
             "requested_max_tokens": int(max_tokens),
             "usage_reported": bool(usage_details),
             "output_chars": output_chars,
@@ -1261,6 +1322,10 @@ class AgentLoop:
             "tool_call_chars": tool_call_chars,
             "tool_call_count": len(tool_calls),
         }
+        if stream_stalled:
+            # The round is settled, not finished, and the reader's UI should be
+            # able to say why the answer is being continued.
+            completion_metadata["stream_stalled"] = True
         for key in ("prompt_tokens", "completion_tokens", "total_tokens", "reasoning_tokens"):
             completion_metadata[key] = usage_details.get(key, "unavailable")
         if reasoning_budget_exhausted:
@@ -1274,7 +1339,7 @@ class AgentLoop:
         log_args = (
             self.pipeline.model,
             call_id,
-            finish_reason or "stop",
+            reported_finish_reason,
             int(max_tokens),
             bool(usage_details),
             usage_details.get("prompt_tokens", "unavailable"),
@@ -1316,6 +1381,7 @@ class AgentLoop:
             content_chars=content_chars,
             tool_call_chars=tool_call_chars,
             finish_reason=finish_reason,
+            stream_stalled=stream_stalled,
             completion_metadata=completion_event_metadata,
             deferred_chunk_metadata=chunk_meta if defer_visible_output else None,
             deferred_completion_metadata=(

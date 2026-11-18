@@ -293,6 +293,20 @@ DEFAULT_CHAT_PARAMS: dict[str, Any] = {
     "exploring": {"max_tokens": 1600},
     "responding": {"max_tokens": 8000},
     "reasoning_budget_recovery": {"strategy": "prompt", "max_tokens": 0},
+    # A reasoning model pays for its hidden chain of thought out of
+    # ``responding.max_tokens``. When that is what truncated the round, the
+    # loop may raise the *next* round's budget once, automatically — on by
+    # default, because the alternative (the same cap that just failed) spends
+    # a round to prove the same point and then ends the turn. See
+    # ``deeptutor/agents/loop/budget_escalation.py`` for the cost bound: one
+    # round, ``multiplier`` times the budget, never above ``ceiling``.
+    # ``enabled: false`` restores the old "retry at the same cap" behaviour;
+    # ``reasoning_budget_recovery.strategy`` still wins where it is explicit.
+    "reasoning_budget_escalation": {
+        "enabled": True,
+        "multiplier": 2.0,
+        "ceiling": 32768,
+    },
 }
 
 # A capability that makes several different LLM calls cannot be described by

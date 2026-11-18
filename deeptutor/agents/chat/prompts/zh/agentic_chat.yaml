@@ -101,6 +101,13 @@ loop:
     [用户在你工作时发来了下面这条消息。从这里起把它考虑进去：回应它，或者调整你正在做的事。]
   continue_truncated: |-
     你上一条回复因 token 上限而中断。请从中断处继续，不要重复已有内容，并完成面向用户的回答。
+  continue_truncated_tool_call: |-
+    你上一轮在写工具调用时被输出上限截断，那个调用并不完整，因此**没有执行**——
+    不要假设它的任何结果。现在请重新完整地发起 {names}，带上全部必需参数。
+    这一轮的推理请写短一些：要放下的是参数。
+  continue_stalled: |-
+    你上一条回复因模型服务中途停止发送数据而中断。请从确切的中断处继续，
+    不要重复已经写出的内容，并完成面向用户的回答。
   continue_truncated_reasoning: |-
     你上一轮把全部输出预算都花在内部推理上，在写出任何内容之前就到了 token 上限——
     所以没有「中断处」可以续，再想一遍也会同样收场。现在直接行动：该调工具就调，
@@ -147,6 +154,8 @@ notices:
   reasoning_budget_exhausted: "模型将输出预算耗尽在内部推理中，未生成回答或执行工具。请重试、降低推理强度，或将任务拆分成更小的步骤。"
   reasoning_budget_recovery: "内部推理已用完本轮输出预算，申请按相同的 {next_max_tokens} token 输出上限重试一次。"
   reasoning_budget_increased: "内部推理已用完本轮输出预算，申请将输出上限从 {previous_max_tokens} 提高到 {next_max_tokens} token 后重试一次，可能增加耗时和费用。"
+  reasoning_budget_escalated: "内部推理占用了本轮大部分输出预算，已临时将输出上限从 {previous_max_tokens} 提高到 {next_max_tokens} token 重试一次，可能增加耗时和费用。"
+  stream_stalled: "模型服务在回答中途停止发送输出，已要求其从中断处继续。"
 
 empty:
   empty_reply: "（空回复）"
