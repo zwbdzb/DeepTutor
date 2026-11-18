@@ -47,6 +47,24 @@ class SandboxBackend:
         return True, ""
 
 
+def _python_bin_dir(prefix: Path) -> Path | None:
+    """Return the directory PATH needs to reach *prefix*'s interpreter.
+
+    Venvs and Conda keep ``python``/``pip`` in ``Scripts`` (Windows) or
+    ``bin``.  The bundled Windows desktop runtime is an embedded distribution
+    that ships ``python.exe`` directly in the prefix with no ``Scripts``
+    directory, so the prefix itself is the directory to prepend.
+    """
+    for name in ("Scripts", "bin"):
+        candidate = prefix / name
+        if candidate.is_dir():
+            return candidate
+    interpreters = ("python.exe",) if sys.platform == "win32" else ("python3", "python")
+    if any((prefix / name).is_file() for name in interpreters):
+        return prefix
+    return None
+
+
 def _active_python_prefix(*, inherit: bool) -> tuple[Path | None, bool]:
     """Return DeepTutor's Python prefix, including a base Conda environment.
 
@@ -67,8 +85,8 @@ def _active_python_prefix(*, inherit: bool) -> tuple[Path | None, bool]:
             executable.relative_to(prefix)
         except ValueError:
             return None, False
-    bin_dir = prefix / ("Scripts" if sys.platform == "win32" else "bin")
-    return (prefix, uses_external_runtime) if bin_dir.is_dir() else (None, False)
+    bin_dir = _python_bin_dir(prefix)
+    return (prefix, uses_external_runtime) if bin_dir is not None else (None, False)
 
 
 class RunnerSidecarBackend(SandboxBackend):
@@ -324,7 +342,10 @@ class RestrictedSubprocessBackend(SandboxBackend):
             return env
 
         venv = str(self._venv_path)
-        venv_bin = str(self._venv_path / ("Scripts" if sys.platform == "win32" else "bin"))
+        bin_dir = _python_bin_dir(self._venv_path)
+        if bin_dir is None:
+            return env
+        venv_bin = str(bin_dir)
         base_path = env.get("PATH") or ""
         normalized_venv_bin = os.path.normcase(os.path.normpath(venv_bin))
         path_entries = [
