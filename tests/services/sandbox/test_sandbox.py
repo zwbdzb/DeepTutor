@@ -194,6 +194,7 @@ def test_restricted_subprocess_prefers_configured_virtualenv(
     venv = tmp_path / "deeptutor-venv"
     bin_dir = venv / ("Scripts" if os.name == "nt" else "bin")
     bin_dir.mkdir(parents=True)
+    (bin_dir / ("python.exe" if os.name == "nt" else "python")).touch()
     monkeypatch.setenv("PATH", os.pathsep.join(["foreign-python", "system-tools"]))
 
     backend = RestrictedSubprocessBackend(venv_path=venv)
@@ -210,12 +211,41 @@ def test_restricted_subprocess_request_path_keeps_virtualenv_first(
     venv = tmp_path / "deeptutor-venv"
     bin_dir = venv / ("Scripts" if os.name == "nt" else "bin")
     bin_dir.mkdir(parents=True)
+    (bin_dir / ("python.exe" if os.name == "nt" else "python")).touch()
     monkeypatch.setenv("PATH", "host-tools")
 
     backend = RestrictedSubprocessBackend(venv_path=venv)
     env = backend._build_env({"PATH": os.pathsep.join(["turn-tools", str(bin_dir)])})
 
     assert env["PATH"].split(os.pathsep) == [str(bin_dir.resolve()), "turn-tools"]
+
+
+def test_restricted_subprocess_finds_a_standalone_interpreter(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A desktop runtime is a standalone Python: no ``Scripts``, no venv.
+
+    Its libraries (python-docx & co.) are only reachable through the very
+    interpreter that launched DeepTutor, so that directory must lead PATH even
+    though the prefix is not a venv — otherwise a bare ``python`` falls through
+    to the host, where the Windows Install Manager alias downloads a fresh
+    interpreter on first use.
+    """
+    prefix = tmp_path / "runtime" / "python"
+    prefix.mkdir(parents=True)
+    executable = prefix / ("python.exe" if sys.platform == "win32" else "python")
+    executable.touch()
+    monkeypatch.setattr(sys, "prefix", str(prefix))
+    monkeypatch.setattr(sys, "base_prefix", str(prefix))
+    monkeypatch.setattr(sys, "executable", str(executable))
+    monkeypatch.setenv(
+        "PATH", os.pathsep.join(["python-install-manager-alias", "system-tools"])
+    )
+
+    env = RestrictedSubprocessBackend()._build_env({})
+
+    assert env["PATH"].split(os.pathsep)[0] == str(prefix.resolve())
+    assert "VIRTUAL_ENV" not in env
 
 
 def test_restricted_subprocess_passes_the_windows_home_and_temp(

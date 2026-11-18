@@ -47,6 +47,37 @@ class SandboxBackend:
         return True, ""
 
 
+def _python_dir_in(prefix: Path) -> Path | None:
+    """Return the directory inside *prefix* that actually holds the interpreter.
+
+    Prepending a directory to ``PATH`` only redirects a bare ``python`` when
+    that directory contains a ``python`` executable — and the three layouts
+    disagree about where it lives:
+
+    * POSIX venv/conda — ``<prefix>/bin/python``
+    * Windows venv — ``<prefix>/Scripts/python.exe``
+    * Windows standalone/embeddable — ``<prefix>/python.exe`` (no ``Scripts``
+      directory at all, which is how the desktop runtime ships)
+
+    Guessing one of these by name is what broke document generation: the
+    desktop bundle has no ``Scripts``, so the prefix was rejected, ``PATH``
+    stayed untouched, and a bare ``python`` fell through to whatever the host
+    had first — on Windows that is often the Python Install Manager alias,
+    which *downloads and installs a fresh interpreter* on first use. The model
+    then saw an empty 3.1x environment without the vendored libraries and
+    concluded the runtime was missing them.
+    """
+    names = ("python.exe", "python3.exe") if sys.platform == "win32" else ("python3", "python")
+    subdirs = ("Scripts", "bin", "") if sys.platform == "win32" else ("bin", "")
+    for relative in subdirs:
+        directory = prefix / relative if relative else prefix
+        if not directory.is_dir():
+            continue
+        if any((directory / name).exists() for name in names):
+            return directory
+    return None
+
+
 def _active_python_prefix(*, inherit: bool) -> tuple[Path | None, bool]:
     """Return DeepTutor's Python prefix, including a base Conda environment.
 
@@ -316,24 +347,58 @@ class RestrictedSubprocessBackend(SandboxBackend):
         else:
             candidate = None
         self._venv_path = candidate if candidate is not None and candidate.is_dir() else None
+        # The directory that must lead PATH is wherever the interpreter that
+        # launched DeepTutor physically lives. Deriving it from the prefix
+        # layout alone is not enough: the desktop runtime is a standalone
+        # Windows Python (``runtime/python/python.exe``, no ``Scripts`` and no
+        # ``VIRTUAL_ENV``), so ``_active_python_prefix`` legitimately returns
+        # nothing for it while its libraries are still the ones model-authored
+        # code must see.
+        self._python_dir: Path | None = None
+        if inherit_virtualenv or venv_path is not None:
+            resolved_python_dir = (
+                _python_dir_in(self._venv_path) if self._venv_path is not None else None
+            )
+            self._python_dir = (
+                resolved_python_dir
+                or _python_dir_in(Path(sys.prefix).resolve())
+                or Path(sys.executable).resolve().parent
+            )
 
     def _build_env(self, request_env: dict[str, str]) -> dict[str, str]:
         env = {key: os.environ[key] for key in self._SAFE_ENV_KEYS if key in os.environ}
         env.update(request_env)
-        if self._venv_path is None:
+
+        # ``python``/``pip`` in model-authored code must resolve to the very
+        # interpreter running DeepTutor. Anything else runs against a foreign
+        # site-packages: on Windows a bare ``python`` often hits the Python
+        # Install Manager alias first, which silently installs a brand-new
+        # interpreter the first time a document task calls it.
+        prepend: list[str] = []
+        if self._python_dir is not None:
+            prepend.append(str(self._python_dir))
+        if self._venv_path is not None:
+            venv = str(self._venv_path)
+            env["VIRTUAL_ENV"] = venv
+            entry_points = self._venv_path / ("Scripts" if sys.platform == "win32" else "bin")
+            if entry_points.is_dir() and (
+                self._python_dir is None
+                or entry_points.resolve() != Path(self._python_dir).resolve()
+            ):
+                # Console scripts (pip, deeptutor) can live beside — or one
+                # level below — the interpreter; keep both reachable.
+                prepend.append(str(entry_points))
+        if not prepend:
             return env
 
-        venv = str(self._venv_path)
-        venv_bin = str(self._venv_path / ("Scripts" if sys.platform == "win32" else "bin"))
+        excluded = {os.path.normcase(os.path.normpath(path)) for path in prepend}
         base_path = env.get("PATH") or ""
-        normalized_venv_bin = os.path.normcase(os.path.normpath(venv_bin))
         path_entries = [
             entry
             for entry in base_path.split(os.pathsep)
-            if entry and os.path.normcase(os.path.normpath(entry)) != normalized_venv_bin
+            if entry and os.path.normcase(os.path.normpath(entry)) not in excluded
         ]
-        env["PATH"] = os.pathsep.join([venv_bin, *path_entries])
-        env["VIRTUAL_ENV"] = venv
+        env["PATH"] = os.pathsep.join([*prepend, *path_entries])
         return env
 
     @staticmethod
