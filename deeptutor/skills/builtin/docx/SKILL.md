@@ -28,6 +28,15 @@ turn's **User workspace** instructions for locating inputs, output boundaries,
 and presenting the finished file. When editing, write a new output unless the
 user explicitly requested an authorized replacement.
 
+The `exec` Python is the interpreter that launched the app, and it ships the
+libraries above. Sanity-check it before the first document call:
+`import sys, docx; print(sys.version)` must show the bundled runtime version
+(not a freshly installed interpreter) and import cleanly. A different version,
+an `ImportError`, or a first-run "downloading/installing Python" timeout means
+the exec layer resolved the wrong interpreter — **report an incomplete
+deployment and stop.** Do not work around it by re-implementing the document
+with the standard library, and never install dependencies yourself.
+
 ## Read / extract
 
 ```python
