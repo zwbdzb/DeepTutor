@@ -25,6 +25,16 @@ from deeptutor.tools.builtin import (
 )
 
 
+def _windows_python_exe() -> str:
+    """The interpreter path exec embeds in Windows python commands.
+
+    Windows exec no longer issues a bare ``python`` (that resolves to the
+    Python Install Manager alias, which installs a fresh interpreter on
+    first use); it invokes ``sys.executable`` by absolute path instead.
+    """
+    return ExecTool._powershell_path(str(Path(sys.executable).resolve()))
+
+
 def _install_module(
     monkeypatch: pytest.MonkeyPatch, fullname: str, **attrs: Any
 ) -> types.ModuleType:
@@ -169,8 +179,12 @@ async def test_exec_tool_runs_python_source_by_default(
 
     assert result.success is True
     assert result.metadata["language"] == "python"
-    assert captured["request"].command.startswith("python3 .deeptutor/exec_calls/python_")
-    assert captured["request"].command.endswith("/main.py")
+    command = captured["request"].command
+    if sys.platform == "win32":
+        assert command.startswith(f"& {_windows_python_exe()} .deeptutor\\exec_calls\\python_")
+    else:
+        assert command.startswith("python3 .deeptutor/exec_calls/python_")
+    assert command.replace("\\", "/").endswith("/main.py")
     assert captured["request"].env["PIP_TARGET"] == "/shared/python-packages"
 
 
@@ -464,7 +478,12 @@ async def test_exec_tool_runs_python_via_sandbox(tmp_path, monkeypatch: pytest.M
     class FakeSandboxService:
         async def run(self, request, *, user_id: str):
             assert user_id == "user-1"
-            assert request.command.startswith("python3 .deeptutor/exec_calls/python_")
+            if sys.platform == "win32":
+                assert request.command.startswith(
+                    f"& {_windows_python_exe()} .deeptutor\\exec_calls\\python_"
+                )
+            else:
+                assert request.command.startswith("python3 .deeptutor/exec_calls/python_")
             run_dir = Path(request.workdir)
             assert run_dir == workdir
             source = next(run_dir.glob(".deeptutor/exec_calls/python_*/main.py"))
@@ -488,7 +507,12 @@ async def test_exec_tool_runs_python_via_sandbox(tmp_path, monkeypatch: pytest.M
     assert result.success is True
     assert "4" in result.content
     assert result.metadata["language"] == "python"
-    assert result.metadata["command"].startswith("python3 .deeptutor/exec_calls/python_")
+    if sys.platform == "win32":
+        assert result.metadata["command"].startswith(
+            f"& {_windows_python_exe()} .deeptutor\\exec_calls\\python_"
+        )
+    else:
+        assert result.metadata["command"].startswith("python3 .deeptutor/exec_calls/python_")
     # The program-generated file surfaces; the source file we wrote is filtered.
     artifact_names = [row["filename"] for row in result.metadata["artifacts"]]
     assert "result.txt" in artifact_names
@@ -554,16 +578,21 @@ async def test_exec_tool_compiles_cpp(tmp_path, monkeypatch: pytest.MonkeyPatch)
     )
 
     assert result.success is True
-    assert captured["command"].startswith("c++ -std=c++17 .deeptutor/exec_calls/cpp_")
-    assert " -O2 -o .deeptutor/exec_calls/cpp_" in captured["command"]
+    if sys.platform == "win32":
+        assert captured["command"].startswith("g++ -std=c++17 -O2 .deeptutor\\exec_calls\\cpp_")
+        assert " -o .deeptutor\\exec_calls\\cpp_" in captured["command"]
+    else:
+        assert captured["command"].startswith("c++ -std=c++17 .deeptutor/exec_calls/cpp_")
+        assert " -O2 -o .deeptutor/exec_calls/cpp_" in captured["command"]
 
 
 def test_exec_tool_uses_windows_shell_syntax(monkeypatch: pytest.MonkeyPatch) -> None:
     import deeptutor.tools.exec_tool as exec_module
 
     monkeypatch.setattr(exec_module.sys, "platform", "win32")
+    python_exe = _windows_python_exe()
 
-    assert ExecTool._command_for_platform("python", has_stdin=False) == "python main.py"
+    assert ExecTool._command_for_platform("python", has_stdin=False) == f"& {python_exe} main.py"
     assert (
         ExecTool._command_for_platform("cpp", has_stdin=True)
         == "$stdinText = Get-Content -Raw stdin.txt; g++ -std=c++17 -O2 main.cpp -o prog.exe; if ($LASTEXITCODE -eq 0) { $stdinText | & .\\prog.exe }"
@@ -575,7 +604,7 @@ def test_exec_tool_uses_windows_shell_syntax(monkeypatch: pytest.MonkeyPatch) ->
     )
     assert command == (
         "Get-Content 'C:\\Deep Tutor\\runtime\\exec_calls\\python_1\\stdin.txt' | "
-        "python 'C:\\Deep Tutor\\runtime\\exec_calls\\python_1\\main.py'"
+        f"& {python_exe} 'C:\\Deep Tutor\\runtime\\exec_calls\\python_1\\main.py'"
     )
 
 

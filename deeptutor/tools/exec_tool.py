@@ -140,9 +140,16 @@ class ExecTool(BaseTool):
         stdin_arg = cls._powershell_path(stdin_path)
         program_arg = cls._powershell_path(program)
         executable_arg = cls._powershell_path(executable)
+        # Model-authored Python must run on the interpreter that launched
+        # DeepTutor, never on whatever a bare ``python`` resolves to: on
+        # Windows the PATH often leads with the Python Install Manager alias,
+        # which silently downloads and installs a fresh interpreter on first
+        # use — an empty environment without the vendored libraries. The
+        # absolute path keeps exec on the runtime that ships python-docx & co.
+        python_exe = cls._powershell_path(str(Path(sys.executable).resolve()))
         compiler, flags = ("gcc", "-O2") if language == "c" else ("g++", "-std=c++17 -O2")
         command = (
-            f"python {source_arg}"
+            f"& {python_exe} {source_arg}"
             if language == "python"
             else (
                 f"{compiler} {flags} {source_arg} -o {program_arg}; "
@@ -152,7 +159,7 @@ class ExecTool(BaseTool):
         if not has_stdin:
             return command
         if language == "python":
-            return f"Get-Content {stdin_arg} | python {source_arg}"
+            return f"Get-Content {stdin_arg} | & {python_exe} {source_arg}"
         return (
             f"$stdinText = Get-Content -Raw {stdin_arg}; "
             f"{compiler} {flags} {source_arg} -o {program_arg}; "
