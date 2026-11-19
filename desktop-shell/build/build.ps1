@@ -218,9 +218,14 @@ try {
         }
 
         if ($needPack) {
-            $tarExe = (Get-Command tar.exe -ErrorAction SilentlyContinue).Source
-            if (-not $tarExe) { $tarExe = Join-Path $env:SystemRoot "System32\tar.exe" }
-            if (-not (Test-Path -LiteralPath $tarExe)) { throw "tar.exe not found (need Windows 10 1803+ to build this package)" }
+            # 必须用系统 bsdtar（System32\tar.exe，与 installer 解包端
+            # {sys}\tar.exe 同实现）。PATH 解析可能命中 Git 的 GNU tar，
+            # 它把 "-cf D:\..." 的盘符当远程主机名（"Cannot connect to D:"）。
+            $tarExe = Join-Path $env:SystemRoot "System32\tar.exe"
+            if (-not (Test-Path -LiteralPath $tarExe)) {
+                $tarExe = (Get-Command tar.exe -ErrorAction SilentlyContinue).Source
+            }
+            if (-not $tarExe -or -not (Test-Path -LiteralPath $tarExe)) { throw "tar.exe not found (need Windows 10 1803+ to build this package)" }
 
             # 多线程 xz 优先（1.2GB 约 72s）；找不到就用 bsdtar 内置 liblzma 单线程
             # 回退（慢数倍但不依赖外部工具）。CI 上 Git for Windows 的 xz 不在 PATH。
