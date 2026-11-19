@@ -22,6 +22,13 @@ build/build_last.log
 build/runtime.tar
 build/runtime.tar.xz
 
+# pip 构建隔离临时目录（build isolation 的 site/ 与 tracker 哈希）。
+# 曾在 "合并mackpage" 提交里被误纳入版本库，纯噪声，永不入库。
+pip-build-*/
+
+# PyInstaller / ISCC 历史调试日志
+build/*.log
+
 # mac 图标：由 tools 打包流程从 assets/icon.png 现生成（CI 同样现生成），
 # 派生资产不入库（见根 .gitignore "dependency-generated assets" 约定）
 assets/icon.icns
