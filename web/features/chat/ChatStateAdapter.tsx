@@ -2956,31 +2956,37 @@ export function ChatStateAdapterProvider({
         ),
       });
       const activeTurnId = activeTurn?.turn_id || activeTurn?.id || "";
-      if (activeTurnId && loadedStatus === "running") {
-        // Reached on a revalidate too, when the turn is live on the server but
-        // not in this tab (started in another tab, or our socket dropped) —
-        // that is exactly the case that still needs a subscribe. A turn we
-        // just judged stale is not one of them: subscribing would open a
-        // socket for a turn that will never speak again.
-        sendThroughRunner(key, {
-          type: "subscribe_turn",
-          turn_id: activeTurnId,
-          after_seq: 0,
-        });
-      } else if (activeTurnId && String(session.status || "") === "waiting_input") {
-        // A parked turn still owns the conversation's lease, and its ask_user
-        // card only lives in the live event stream: nothing about the pause is
-        // persisted as a message until the turn settles. Without a
-        // resubscribe, a reload loses the card while the turn keeps waiting —
-        // the user can neither answer nor send, and only a backend restart
-        // recovers the conversation. Send through the client's durable queue
-        // rather than ``sendThroughRunner``: its retry gate drops a command
-        // for a session that is not streaming, and a parked turn is exactly
-        // that. Once per turn per tab is enough; the reducer de-duplicates a
-        // replayed stream anyway.
+      if (activeTurnId) {
+        // Subscribe whenever the SERVER still owns a live turn row, whether
+        // or not the local recency heuristic above believes it. A long
+        // generation (a Word report, a research tool call) runs for minutes
+        // without touching `updated_at` — streamed content is buffered and
+        // persisted only when the turn settles — so the recency check
+        // demoted exactly those turns to "idle": after a page switch the
+        // transcript came back blank with no socket at all, and every send
+        // was refused with "Session already has an active or recovering
+        // turn" while the turn quietly kept working. Trusting the server
+        // here costs at worst a replay: re-subscription is idempotent (the
+        // reducer de-duplicates by seq) and a zombie row is terminated by
+        // the backend's recovery pass, which publishes a terminal event the
+        // subscription delivers. One subscription per turn per tab keeps a
+        // background revalidate from re-subscribing on every pass; a full
+        // reload resets the set and re-subscribes, which is intended.
+        const turnRowStatus = String(activeTurn?.status || "");
+        const serverOwnsTurn =
+          loadedStatus === "running" ||
+          turnRowStatus === "queued" ||
+          turnRowStatus === "running" ||
+          turnRowStatus === "waiting_input";
         const resumeKey = `${key}:${activeTurnId}`;
-        if (!resumedParkedTurnsRef.current.has(resumeKey)) {
+        if (serverOwnsTurn && !resumedParkedTurnsRef.current.has(resumeKey)) {
           resumedParkedTurnsRef.current.add(resumeKey);
+          // Send through the client's durable queue rather than
+          // ``sendThroughRunner``: its retry gate drops commands for a
+          // session that is not streaming, and a freshly-loaded session is
+          // exactly that — the transport buffers the command until its
+          // socket opens, and opening the socket is also what creates the
+          // runner in the first place.
           ensureRunner(key).client.send({
             type: "subscribe_turn",
             turn_id: activeTurnId,
@@ -2990,7 +2996,7 @@ export function ChatStateAdapterProvider({
       }
       return messages;
     },
-    [ensureRunner, hydrateMessages, sendThroughRunner],
+    [ensureRunner, hydrateMessages],
   );
 
   useLayoutEffect(() => {

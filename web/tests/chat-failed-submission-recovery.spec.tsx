@@ -1892,3 +1892,43 @@ it("keeps the original settings when an unsent message is edited", async () => {
     language: "en",
   });
 });
+
+it("resubscribes to a server-owned live turn even when the session row looks stale", async () => {
+  // A long generation buffers its streamed content and persists nothing
+  // until the turn settles, so `updated_at` goes stale while the turn is
+  // alive. After a page switch the reload must still re-subscribe: the
+  // alternative was a blank transcript plus "Session already has an active
+  // or recovering turn" on every send (ThinkBuddy #2026-11-18/19).
+  const now = Date.now() / 1000;
+  fixture.session = {
+    ...completedServerSession(),
+    // The desktop (sqlite) session payload carries no status at all; the
+    // active turn row is the server's only live-ness signal.
+    status: undefined,
+    updated_at: now - 3600,
+    messages: [
+      {
+        id: 1, session_id: "s1", role: "user", content: "make a word doc",
+        events: [], attachments: [], created_at: 1, parent_message_id: null,
+      },
+    ],
+    active_turns: [{
+      id: "turn-live", turn_id: "turn-live", session_id: "s1",
+      capability: "chat", status: "running", error: "",
+      created_at: now - 600, updated_at: now - 600,
+      finished_at: null, last_seq: 5,
+    }],
+  };
+  render(<ChatStateAdapterProvider><Harness /></ChatStateAdapterProvider>);
+  await act(async () => { fireEvent.click(screen.getByText("Load")); });
+  expect(fixture.sent).toEqual([
+    { type: "subscribe_turn", turn_id: "turn-live", after_seq: 0 },
+  ]);
+});
+
+it("does not subscribe when the server reports no active turn", async () => {
+  fixture.session = { ...completedServerSession(), active_turns: [] };
+  render(<ChatStateAdapterProvider><Harness /></ChatStateAdapterProvider>);
+  await act(async () => { fireEvent.click(screen.getByText("Load")); });
+  expect(fixture.sent).toEqual([]);
+});
