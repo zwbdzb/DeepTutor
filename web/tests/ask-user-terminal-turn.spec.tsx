@@ -33,6 +33,8 @@ const transport = vi.hoisted(() => {
 
     setResumeState(): void {}
 
+    rewindTo(): void {}
+
     disconnect(): void {
       this.connected = false;
       this.onClose?.();

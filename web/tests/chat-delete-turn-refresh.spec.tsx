@@ -30,6 +30,7 @@ vi.mock("@/features/chat/transport/UnifiedTurnClient", () => ({
     connect() {}
     disconnect() {}
     setResumeState() {}
+    rewindTo() {}
     send() {}
   },
 }));

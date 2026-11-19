@@ -212,6 +212,30 @@ export class TurnRuntimeClient {
     }
   }
 
+  /**
+   * Put the cursor back at the start of ``turnId`` so the next replay is
+   * delivered whole, even to a transport that already consumed part of it.
+   *
+   * ``setResumeCursor`` refuses to rewind because React state can trail the
+   * socket — but a caller that just replaced the whole transcript (a session
+   * load) dropped every event it had, so the socket must drop its high-water
+   * mark with it. ``afterSeq`` names the frames the caller already holds,
+   * and it must become the cursor too, not just the request: a replay that
+   * starts above ``lastSeq`` looks like a gap here and would be buffered
+   * behind a predecessor that is never sent.
+   */
+  rewindCursor(turnId: string, afterSeq = 0): void {
+    const nextTurnId = turnId.trim();
+    if (!nextTurnId) return;
+    this.clearReplayProbe();
+    this.turnId = nextTurnId;
+    this.lastSeq = Number.isFinite(afterSeq) && afterSeq > 0
+      ? Math.trunc(afterSeq)
+      : 0;
+    this.buffered.clear();
+    this.terminalObserved = false;
+  }
+
   setPageVisible(visible: boolean): void {
     this.pageVisible = visible;
     if (visible && !this.stopped && !this.socket) this.manualRetry();

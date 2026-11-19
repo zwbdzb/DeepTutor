@@ -25,6 +25,7 @@ vi.mock("@/features/chat/transport/UnifiedTurnClient", () => ({
     send() {}
     cancelCurrentTurn() { return Promise.resolve(true); }
     setResumeState() {}
+    rewindTo() {}
   },
 }));
 function Harness() {

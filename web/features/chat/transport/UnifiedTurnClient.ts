@@ -121,6 +121,11 @@ export class UnifiedTurnClient {
     this.runtime.setResumeCursor(turnId, seq);
   }
 
+  /** Forget the frames already consumed for ``turnId``; see ``rewindCursor``. */
+  rewindTo(turnId: string, afterSeq = 0): void {
+    this.runtime.rewindCursor(turnId, afterSeq);
+  }
+
   connect(): void {
     this.runtime.connect();
   }

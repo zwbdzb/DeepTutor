@@ -73,3 +73,30 @@ export function resolveLoadedRunStatus<T extends string>(
   if (now - lastActivityAt <= idleTimeoutMs) return status;
   return "idle";
 }
+
+/** Statuses a `turns` row carries while the server still owns the turn. */
+const LIVE_TURN_STATUSES = new Set(["queued", "running", "waiting_input"]);
+
+/**
+ * Whether an `active_turns[0]` row still describes a turn the server owns.
+ * The store lists nonterminal rows only, so a present row is live by
+ * construction. An absent status comes from older payloads we cannot read —
+ * not a finished turn.
+ */
+export function isLiveTurnRowStatus(status: string | null | undefined): boolean {
+  const value = String(status ?? "").trim().toLowerCase();
+  return value === "" || LIVE_TURN_STATUSES.has(value);
+}
+
+/**
+ * Whether that live row is producing output — the states where the
+ * conversation must read as busy (Stop instead of Send). `waiting_input` is
+ * excluded on purpose: a parked turn is answered through its card, and
+ * advertising it as busy would let a cancel kill a turn waiting for a person.
+ */
+export function turnRowHoldsConversation(
+  status: string | null | undefined,
+): boolean {
+  const value = String(status ?? "").trim().toLowerCase();
+  return value === "queued" || value === "running";
+}

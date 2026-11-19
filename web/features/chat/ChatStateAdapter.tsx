@@ -104,7 +104,9 @@ import {
 } from "@/lib/reading-turn-state";
 import {
   decideIdleTurnRecovery,
+  isLiveTurnRowStatus,
   resolveLoadedRunStatus,
+  turnRowHoldsConversation,
 } from "@/lib/chat-idle-recovery";
 import i18n from "i18next";
 import {
@@ -1755,6 +1757,11 @@ const POST_DONE_DISCONNECT_DELAY_MS = 15_000;
  */
 const POST_DONE_TITLE_REFRESH_MS = 5_000;
 
+// Bounded re-subscribe retry: replay is idempotent, so a load whose
+// subscription never landed retries on the next pass instead of
+// staying blank for the lifetime of the mount.
+const LIVE_TURN_RESUME_RETRY_MS = 10_000;
+
 interface ChatContextValue {
   state: ChatState;
   setTools: (tools: string[]) => void;
@@ -2130,12 +2137,11 @@ export function ChatStateAdapterProvider({
     Map<string, { storageKey: string; sourceStorageKey?: string; submissionId: string; visibleSubmissionIds: string[] }>
   >(new Map());
   const resolvingResendRef = useRef<Set<string>>(new Set());
-  // Parked (``waiting_input``) turns already resubscribed to on load, keyed
-  // ``<sessionKey>:<turnId>``. A parked turn keeps the conversation's lease
-  // while it waits, and its ask_user card exists only in the live event
-  // stream (no assistant row is persisted until the turn settles), so opening
-  // the conversation must replay that stream or the card is unreachable.
-  const resumedParkedTurnsRef = useRef<Set<string>>(new Set());
+  // Live turns this tab has asked the server to replay, keyed
+  // ``<sessionKey>:<turnId>``, valued with the attempt timestamp. A live
+  // turn's streamed content exists only in the event log until its assistant
+  // row is written, so opening the conversation must replay that stream.
+  const resumedLiveTurnsRef = useRef<Map<string, number>>(new Map());
   const traceCacheRef = useRef<TraceCache>(new TraceCache());
   const traceRequestsRef = useRef<Map<string, AbortController>>(new Map());
   // Forward-declared so ``handleRunnerEvent`` (created above
@@ -2167,7 +2173,7 @@ export function ChatStateAdapterProvider({
         pendingRegenerateRef.current.clear();
         pendingResendRef.current.clear();
         resolvingResendRef.current.clear();
-        resumedParkedTurnsRef.current.clear();
+        resumedLiveTurnsRef.current.clear();
         stateRef.current = initialState;
         dispatch({ type: "RESET_ACCOUNT" });
         writeStoredActiveSessionId(null);
@@ -2807,11 +2813,9 @@ export function ChatStateAdapterProvider({
         ? session.active_turns[0]
         : undefined;
       if (options?.revalidate) {
-        // Background refresh of a session already on screen. Drop the whole
-        // snapshot — data *and* the re-subscribe below — once a turn is live
-        // locally: this tab is already receiving that turn's events, so
-        // re-subscribing from ``after_seq: 0`` would replay them on top of
-        // what we have, and the snapshot predates the turn anyway.
+        // A live local turn is already streaming in this tab; letting the
+        // stale snapshot through, or re-subscribing from ``after_seq: 0``,
+        // would replay it on top of what we have.
         const local = stateRef.current.sessions[key];
         if (!local || local.isStreaming || local.status === "running") return;
       }
@@ -2839,18 +2843,51 @@ export function ChatStateAdapterProvider({
       )
         ? session.preferences.reply_language_override
         : null;
-      // A stored `running` is only believable while it is recent — see
-      // `resolveLoadedRunStatus`. A turn the backend never got to close out
-      // (crash, restart) would otherwise open the conversation into a
-      // permanent "answering" state: Stop instead of Send, with no stream to
-      // stop and no way back except starting a new conversation.
-      const loadedStatus = resolveLoadedRunStatus(
-        (session.status as SessionRuntimeStatus | undefined) ||
-          (activeTurn ? "running" : "idle"),
-        Number(session.updated_at) > 0 ? Number(session.updated_at) * 1000 : 0,
-        Date.now(),
-        readStoredChatResponseTimeout() * 1000,
+      // Recency demotes a stale `running` (a zombie row left by a crash);
+      // a row the store still lists as live outranks it, because
+      // `session.updated_at` only moves when a message is persisted — a
+      // long-running turn looks stale from the second it starts.
+      const turnRowStatus = String(activeTurn?.status || "");
+      const activeTurnId = activeTurn?.turn_id || activeTurn?.id || "";
+      // A load can land after the backend wrote this turn's assistant row but
+      // before it settled the turn row. The snapshot then already holds the
+      // finished answer, and since trace previews keep no `content` frames,
+      // a replay could not be deduped by seq — it would append the body a
+      // second time. Treat such a snapshot as settled and skip the replay.
+      const persistedTurnEvents = activeTurnId
+        ? messages
+            .filter((message) => message.role === "assistant")
+            .flatMap((message) => message.events ?? [])
+            .filter((event) => (event.turn_id || "") === activeTurnId)
+        : [];
+      const turnSettledInSnapshot = persistedTurnEvents.some(
+        (event) =>
+          event.type === "done" ||
+          (event.type === "error" &&
+            (event.metadata as { turn_terminal?: boolean } | undefined)
+              ?.turn_terminal === true),
       );
+      const storedStatus: SessionRuntimeStatus | "idle" =
+        (session.status as SessionRuntimeStatus | undefined) ||
+        (activeTurn ? "running" : "idle");
+      // A settled snapshot outranks the row: the answer is already in the
+      // transcript, so nothing is streaming no matter how fresh the row is.
+      const settledStatus: SessionRuntimeStatus | "idle" =
+        turnSettledInSnapshot && storedStatus === "running"
+          ? "idle"
+          : storedStatus;
+      const loadedStatus: SessionRuntimeStatus | "idle" = turnRowHoldsConversation(
+        turnRowStatus,
+      ) && !turnSettledInSnapshot
+        ? "running"
+        : resolveLoadedRunStatus(
+            settledStatus,
+            Number(session.updated_at) > 0
+              ? Number(session.updated_at) * 1000
+              : 0,
+            Date.now(),
+            readStoredChatResponseTimeout() * 1000,
+          );
       // Restore every pending submission. A matching client_submission_id on
       // a persisted user row is the only evidence that this particular send
       // was accepted; equal text from another tab is not enough.
@@ -2955,42 +2992,42 @@ export function ChatStateAdapterProvider({
           session.preferences?.selected_branches,
         ),
       });
-      const activeTurnId = activeTurn?.turn_id || activeTurn?.id || "";
-      if (activeTurnId && loadedStatus === "running") {
-        // Reached on a revalidate too, when the turn is live on the server but
-        // not in this tab (started in another tab, or our socket dropped) —
-        // that is exactly the case that still needs a subscribe. A turn we
-        // just judged stale is not one of them: subscribing would open a
-        // socket for a turn that will never speak again.
-        sendThroughRunner(key, {
-          type: "subscribe_turn",
-          turn_id: activeTurnId,
-          after_seq: 0,
-        });
-      } else if (activeTurnId && String(session.status || "") === "waiting_input") {
-        // A parked turn still owns the conversation's lease, and its ask_user
-        // card only lives in the live event stream: nothing about the pause is
-        // persisted as a message until the turn settles. Without a
-        // resubscribe, a reload loses the card while the turn keeps waiting —
-        // the user can neither answer nor send, and only a backend restart
-        // recovers the conversation. Send through the client's durable queue
-        // rather than ``sendThroughRunner``: its retry gate drops a command
-        // for a session that is not streaming, and a parked turn is exactly
-        // that. Once per turn per tab is enough; the reducer de-duplicates a
-        // replayed stream anyway.
+      if (activeTurnId && isLiveTurnRowStatus(turnRowStatus)) {
+        // The turn streams into the event log with no assistant row yet, so
+        // this replay is what puts the answer back after a page switch. Sent
+        // through the durable queue, not ``sendThroughRunner``: its retry
+        // gate drops commands for a non-streaming session.
         const resumeKey = `${key}:${activeTurnId}`;
-        if (!resumedParkedTurnsRef.current.has(resumeKey)) {
-          resumedParkedTurnsRef.current.add(resumeKey);
-          ensureRunner(key).client.send({
+        const attemptedAt = resumedLiveTurnsRef.current.get(resumeKey) ?? 0;
+        if (
+          !turnSettledInSnapshot &&
+          Date.now() - attemptedAt >= LIVE_TURN_RESUME_RETRY_MS
+        ) {
+          resumedLiveTurnsRef.current.set(resumeKey, Date.now());
+          const runner = ensureRunner(key);
+          // Resume where the transcript ends: the larger of the turn row's
+          // high-water mark and the persisted preview's newest seq. A turn
+          // with no persisted row starts at 0.
+          const resumeAfterSeq = persistedTurnEvents.length
+            ? Math.max(
+                Number(activeTurn?.last_seq || 0),
+                ...persistedTurnEvents.map((event) => Number(event.seq || 0)),
+              )
+            : 0;
+          // The dispatch above reset the reducer's cursor; the socket's own
+          // high-water mark must follow, or the replay is dropped as
+          // duplicate frames.
+          runner.client.rewindTo(activeTurnId, resumeAfterSeq);
+          runner.client.send({
             type: "subscribe_turn",
             turn_id: activeTurnId,
-            after_seq: 0,
+            after_seq: resumeAfterSeq,
           });
         }
       }
       return messages;
     },
-    [ensureRunner, hydrateMessages, sendThroughRunner],
+    [ensureRunner, hydrateMessages],
   );
 
   useLayoutEffect(() => {

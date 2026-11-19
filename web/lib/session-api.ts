@@ -188,7 +188,11 @@ export interface ActiveTurnSummary {
   turn_id: string;
   session_id: string;
   capability: string;
-  status: "running" | "completed" | "failed" | "cancelled" | "rejected";
+  // The store lists nonterminal rows only: queued/running/waiting_input.
+  // The completed/failed/cancelled members below exist because older
+  // payloads were persisted with terminal rows in this field; treat any
+  // unknown value as not-live.
+  status: "queued" | "running" | "waiting_input" | "completed" | "failed" | "cancelled" | "rejected";
   error: string;
   created_at: number;
   updated_at: number;

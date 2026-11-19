@@ -16,6 +16,7 @@ vi.mock("@/features/chat/transport/UnifiedTurnClient", () => ({
     disconnect() {}
     send() {}
     setResumeState() {}
+    rewindTo() {}
   },
 }));
 const summary = "Derivatives measure change; integrals measure accumulation.";

@@ -33,6 +33,17 @@ const GIVE_UP_MS =
 const fixture = vi.hoisted(() => ({
   connected: false,
   sent: [] as Array<Record<string, unknown>>,
+  // Cursor rewinds are transport plumbing, not commands: they are recorded
+  // beside `sent` (never inside it) so the tests that assert the exact
+  // outbound command list stay meaningful.
+  rewinds: [] as string[],
+  // Interleaved order of transport calls, for the one assertion that cares
+  // that the rewind happens *before* the subscribe it enables.
+  order: [] as string[],
+  // The server's event log for the live turn. `subscribe_turn` replays
+  // `seq > after_seq` from here, exactly as the real router does: the replay
+  // window is the server's decision, never the test's.
+  turnLog: [] as Array<Record<string, unknown>>,
   deleted: [] as number[],
   emit: undefined as undefined | ((event: Record<string, unknown>) => void),
   close: undefined as undefined | (() => void),
@@ -44,31 +55,48 @@ const fixture = vi.hoisted(() => ({
   replacementPending: null as Promise<void> | null,
 }));
 
-vi.mock("@/features/chat/transport/UnifiedTurnClient", () => ({
-  UnifiedTurnClient: class {
-    constructor(
-      emit: (event: Record<string, unknown>) => void,
-      close: () => void,
-    ) {
-      fixture.emit = emit;
-      fixture.close = close;
+vi.mock("@/features/chat/transport/UnifiedTurnClient", () => {
+  /** The router's replay contract: only `seq > after_seq` is ever delivered. */
+  const replayTurnLog = (message: Record<string, unknown>) => {
+    const afterSeq = Number(message.after_seq ?? 0);
+    for (const frame of fixture.turnLog) {
+      if (Number(frame.seq ?? 0) > afterSeq) fixture.emit?.(frame);
     }
-    get connected() {
-      return fixture.connected;
-    }
-    connect() {}
-    disconnect() {}
-    send(message: Record<string, unknown>) {
-      fixture.sent.push(message);
-    }
-    sendAwaitingAck(message: Record<string, unknown>) {
-      fixture.sent.push(message);
-      return Promise.resolve(true);
-    }
-    cancelCurrentTurn() { return Promise.resolve(true); }
-    setResumeState() {}
-  },
-}));
+  };
+  return {
+    UnifiedTurnClient: class {
+      constructor(
+        emit: (event: Record<string, unknown>) => void,
+        close: () => void,
+      ) {
+        fixture.emit = emit;
+        fixture.close = close;
+      }
+      get connected() {
+        return fixture.connected;
+      }
+      connect() {}
+      disconnect() {}
+      send(message: Record<string, unknown>) {
+        fixture.sent.push(message);
+        fixture.order.push(`send:${String(message.type)}`);
+        if (message.type === "subscribe_turn") replayTurnLog(message);
+      }
+      sendAwaitingAck(message: Record<string, unknown>) {
+        fixture.sent.push(message);
+        fixture.order.push(`send:${String(message.type)}`);
+        if (message.type === "subscribe_turn") replayTurnLog(message);
+        return Promise.resolve(true);
+      }
+      cancelCurrentTurn() { return Promise.resolve(true); }
+      setResumeState() {}
+      rewindTo(turnId: string) {
+        fixture.rewinds.push(turnId);
+        fixture.order.push(`rewind:${turnId}`);
+      }
+    },
+  };
+});
 
 vi.mock("@/lib/session-api", () => ({
   supportsSubmissionReplacement: async () => fixture.replacementSupported,
@@ -256,6 +284,16 @@ function Harness() {
           })),
         )}
       </div>
+      {/* The composer's own signal: `true` renders Stop/queue instead of Send. */}
+      <div data-testid="streaming">{String(state.isStreaming)}</div>
+      {/* Turn annotation the transcript renders from: `ended_at` is what stops
+          a settled reply from reading as "Thinking…" forever. */}
+      <div data-testid="traces">
+        {JSON.stringify(state.messages.map((message) => ({
+          content: message.content,
+          trace: message.trace ?? null,
+        })))}
+      </div>
       <div data-testid="stored">
         {JSON.stringify(readFailedSubmissions("s1"))}
       </div>
@@ -288,6 +326,15 @@ function readMessages() {
   ) as Array<{ role: string; content: string; failed: boolean }>;
 }
 
+function readTraces() {
+  return JSON.parse(
+    screen.getByTestId("traces").textContent ?? "[]",
+  ) as Array<{
+    content: string;
+    trace: { turn_id?: string | null; last_seq?: number; ended_at?: number | null } | null;
+  }>;
+}
+
 function readStoredKeys() {
   return readFailedSubmissions("s1").length ? ["s1"] : [];
 }
@@ -299,6 +346,9 @@ beforeEach(() => {
   resetReadingTurnState();
   fixture.connected = false;
   fixture.sent = [];
+  fixture.rewinds = [];
+  fixture.order = [];
+  fixture.turnLog = [];
   fixture.deleted = [];
   fixture.emit = undefined;
   fixture.close = undefined;
@@ -1891,4 +1941,287 @@ it("keeps the original settings when an unsent message is edited", async () => {
     llm_selection: { model_id: "model-a", profile_id: "profile-a" },
     language: "en",
   });
+});
+
+/* ── Reloading a conversation whose turn is still running ───────────────
+   A long generation (a Word report, a research tool call) streams into the
+   event log and persists nothing until it settles, so `updated_at` freezes
+   at the moment the turn started. A page switch used to read that as "not
+   running": blank transcript, composer inviting a message the backend was
+   guaranteed to refuse ("Session already has an active or recovering
+   turn"), and a second switch needed before content appeared
+   (ThinkBuddy #2026-11-18/19). */
+
+/**
+ * The payload the server really returns for a live turn.
+ *
+ * `deeptutor/services/session/sqlite_store.py::_get_session_sync` derives the
+ * session status with `COALESCE(<newest turn status>, 'idle')`, so the row
+ * reads `status: "running"` — *not* a missing status — while `updated_at`
+ * still points at the moment the turn began: it is only bumped by
+ * `add_message`, and the assistant row is written when the turn settles.
+ * Recency alone therefore calls any generation longer than the response
+ * timeout (180s by default, 1800s at most) a dead turn; this fixture is an
+ * hour stale, i.e. past every settable timeout.
+ *
+ * Fixture caution, learned the hard way: a persisted assistant row's `events`
+ * must be built like the server's preview — done/error/cancelled/result, tool
+ * rows and cards, never `content` frames (`_canonical_trace_preview_sync`,
+ * sqlite_store.py:2653-2697). Hand-seeding a `content` frame makes the
+ * reducer's seq dedupe succeed and hides replay bugs that the real payload
+ * cannot hide.
+ */
+function serverOwnedLiveTurnSession() {
+  const now = Date.now() / 1000;
+  return {
+    ...completedServerSession(),
+    status: "running",
+    updated_at: now - 3600,
+    messages: [
+      {
+        id: 1, session_id: "s1", role: "user", content: "make a word doc",
+        events: [], attachments: [], created_at: 1, parent_message_id: null,
+      },
+    ],
+    active_turns: [{
+      id: "turn-live", turn_id: "turn-live", session_id: "s1",
+      capability: "chat", status: "running", error: "",
+      created_at: now - 600, updated_at: now - 600,
+      finished_at: null, last_seq: 5,
+    }],
+  };
+}
+
+it("resubscribes to a server-owned live turn even when the session row looks stale", async () => {
+  fixture.session = serverOwnedLiveTurnSession();
+  render(<ChatStateAdapterProvider><Harness /></ChatStateAdapterProvider>);
+  await act(async () => { fireEvent.click(screen.getByText("Load")); });
+  expect(fixture.sent).toEqual([
+    { type: "subscribe_turn", turn_id: "turn-live", after_seq: 0 },
+  ]);
+});
+
+it("trusts a live turn row even when the payload carries no status at all", async () => {
+  // Compatibility path, not the main one: older payloads listed a turn row
+  // without a status field. An unreadable status must not be mistaken for a
+  // finished turn, so the row alone still opens the subscription.
+  fixture.session = { ...serverOwnedLiveTurnSession(), status: undefined };
+  render(<ChatStateAdapterProvider><Harness /></ChatStateAdapterProvider>);
+  await act(async () => { fireEvent.click(screen.getByText("Load")); });
+  expect(fixture.sent).toEqual([
+    { type: "subscribe_turn", turn_id: "turn-live", after_seq: 0 },
+  ]);
+});
+
+it("does not subscribe when the server reports no active turn", async () => {
+  fixture.session = { ...completedServerSession(), active_turns: [] };
+  render(<ChatStateAdapterProvider><Harness /></ChatStateAdapterProvider>);
+  await act(async () => { fireEvent.click(screen.getByText("Load")); });
+  expect(fixture.sent).toEqual([]);
+  expect(screen.getByTestId("streaming")).toHaveTextContent("false");
+});
+
+it("replays a live turn from the start when the transcript holds none of it", async () => {
+  // Nothing is persisted while the turn runs, so the replay is the only thing
+  // that can put the partial answer back on screen after a page switch — the
+  // original bug, and the branch that must keep working.
+  fixture.session = serverOwnedLiveTurnSession();
+  fixture.turnLog = [
+    { type: "content", turn_id: "turn-live", seq: 1, content: "Draft body" },
+  ];
+  render(<ChatStateAdapterProvider><Harness /></ChatStateAdapterProvider>);
+  await act(async () => { fireEvent.click(screen.getByText("Load")); });
+  expect(fixture.sent).toEqual([
+    { type: "subscribe_turn", turn_id: "turn-live", after_seq: 0 },
+  ]);
+  expect(readMessages()).toEqual([
+    { role: "user", content: "make a word doc", failed: false },
+    { role: "assistant", content: "Draft body", failed: false },
+  ]);
+});
+
+it("loads a live turn in the busy state so the composer cannot send into a refused turn", async () => {
+  fixture.session = serverOwnedLiveTurnSession();
+  render(<ChatStateAdapterProvider><Harness /></ChatStateAdapterProvider>);
+  await act(async () => { fireEvent.click(screen.getByText("Load")); });
+  // `isStreaming` is what turns Send into Stop/queue. False here is the bug:
+  // the user types, sends, and the backend answers "Session already has an
+  // active or recovering turn".
+  expect(screen.getByTestId("streaming")).toHaveTextContent("true");
+  expect(screen.getByTestId("lastTurnFailed")).toHaveTextContent("false");
+});
+
+it("settles the composer back to idle once the replayed turn finishes", async () => {
+  fixture.session = serverOwnedLiveTurnSession();
+  render(<ChatStateAdapterProvider><Harness /></ChatStateAdapterProvider>);
+  await act(async () => { fireEvent.click(screen.getByText("Load")); });
+  await act(async () => {
+    fixture.emit?.({ type: "content", turn_id: "turn-live", seq: 1, content: "Draft body" });
+  });
+  await act(async () => {
+    // The ids keep this on the in-place reconcile path; a `done` without ids
+    // takes the legacy refetch branch instead, which is a different subject.
+    fixture.emit?.({
+      type: "done",
+      turn_id: "turn-live",
+      seq: 2,
+      metadata: { status: "completed", user_message_id: 1, assistant_message_id: 2 },
+    });
+  });
+  expect(screen.getByTestId("streaming")).toHaveTextContent("false");
+  expect(screen.getByTestId("lastTurnFailed")).toHaveTextContent("false");
+  expect(readMessages().at(-1)).toEqual({
+    role: "assistant",
+    content: "Draft body",
+    failed: false,
+  });
+});
+
+it("keeps the replayed body when a background revalidate lands mid-turn", async () => {
+  // The revalidate snapshot only holds the persisted user row (the assistant
+  // row is written when the turn settles), so letting it through would blank
+  // the replayed answer — the "switch away and back, now there is text"
+  // half of the bug.
+  fixture.session = serverOwnedLiveTurnSession();
+  render(<ChatStateAdapterProvider><Harness /></ChatStateAdapterProvider>);
+  await act(async () => { fireEvent.click(screen.getByText("Load")); });
+  await act(async () => {
+    fixture.emit?.({ type: "content", turn_id: "turn-live", seq: 1, content: "Draft body" });
+  });
+  await act(async () => { fireEvent.click(screen.getByText("Revalidate")); });
+  expect(readMessages().some((message) => message.content === "Draft body")).toBe(true);
+  // …and the early return must not have asked for a second replay either.
+  expect(fixture.sent.filter((message) => message.type === "subscribe_turn")).toHaveLength(1);
+});
+
+it("subscribes at most once to the same live turn inside the retry window", async () => {
+  // Re-subscribing replays the whole turn on top of itself, so the retry that
+  // heals a lost command has to be bounded. Both loads happen well inside
+  // LIVE_TURN_RESUME_RETRY_MS (10s).
+  fixture.session = serverOwnedLiveTurnSession();
+  render(<ChatStateAdapterProvider><Harness /></ChatStateAdapterProvider>);
+  await act(async () => { fireEvent.click(screen.getByText("Load")); });
+  await act(async () => { fireEvent.click(screen.getByText("Load")); });
+  expect(fixture.sent.filter((message) => message.type === "subscribe_turn")).toHaveLength(1);
+});
+
+it("re-subscribes to the same live turn once the retry window has passed", async () => {
+  // The window has to fail open, not closed: the old latch was once per turn
+  // per mount, so a single lost command (socket never opened, runner already
+  // torn down) left the transcript blank for the lifetime of the page.
+  fixture.session = serverOwnedLiveTurnSession();
+  const clock = { now: Date.now() };
+  vi.spyOn(Date, "now").mockImplementation(() => clock.now);
+  const subscribes = () =>
+    fixture.sent.filter((message) => message.type === "subscribe_turn").length;
+  render(<ChatStateAdapterProvider><Harness /></ChatStateAdapterProvider>);
+  await act(async () => { fireEvent.click(screen.getByText("Load")); });
+  expect(subscribes()).toBe(1);
+  // One millisecond short of LIVE_TURN_RESUME_RETRY_MS (10s) is still inside.
+  clock.now += 9_999;
+  await act(async () => { fireEvent.click(screen.getByText("Load")); });
+  expect(subscribes()).toBe(1);
+  clock.now += 2;
+  await act(async () => { fireEvent.click(screen.getByText("Load")); });
+  expect(subscribes()).toBe(2);
+  expect(fixture.rewinds).toEqual(["turn-live", "turn-live"]);
+});
+
+/* ── The settle race: answer persisted, turn row not yet flipped ────────
+   The store writes the assistant row before the turn leaves `active_turns`
+   (`turns/executor.py` inserts the message and links it before settling the
+   turn), so a load can hydrate the answer *and* still see a live row. What
+   the client may ask the server to replay then depends on how far that row
+   already got — the replay window is the server's decision, taken from
+   `after_seq`, never the test's. */
+
+/**
+ * A load taken inside the settle race: the assistant row is already written.
+ *
+ * `trace` is not optional here. `_get_messages_sync` joins `turns` on
+ * `assistant_message_id` and returns `_canonical_trace_preview_sync(...)`'s
+ * `trace`, whose `last_seq` is `MAX(seq)` over *all* of that turn's events
+ * (sqlite_store.py:2659-2666) — unaffected by the preview's own truncation,
+ * which is why it can serve as a replay cursor. `updated_at` is fresh: the
+ * row that was just inserted bumped it.
+ */
+function settledLiveTurnSession({ terminal }: { terminal: boolean }) {
+  return {
+    ...serverOwnedLiveTurnSession(),
+    updated_at: Date.now() / 1000,
+    messages: [
+      { id: 1, session_id: "s1", role: "user", content: "make a word doc",
+        events: [], attachments: [], created_at: 1, parent_message_id: null },
+      { id: 2, session_id: "s1", role: "assistant", content: "Draft body",
+        // The preview keeps terminal/tool rows and cards, never `content`
+        // frames (sqlite_store.py:2653-2697), so the reducer cannot match a
+        // replayed content frame by seq.
+        events: terminal
+          ? [{ type: "done", turn_id: "turn-live", seq: 2, metadata: { status: "completed" } }]
+          : [{ type: "tool_call", turn_id: "turn-live", seq: 3 }],
+        trace: {
+          turn_id: "turn-live", total: 7, last_seq: 5, truncated: false,
+          started_at: 1, ended_at: 2,
+        },
+        attachments: [], created_at: 2, parent_message_id: 1 },
+    ],
+  };
+}
+
+it("does not replay a turn whose body is already on screen and settled", async () => {
+  // The preview carries the terminal frame, so the turn is over: the live row
+  // is just a lagging write-back. Re-subscribing would replay prose the
+  // transcript already holds (and, with no cursor, replay it a second time).
+  fixture.session = settledLiveTurnSession({ terminal: true });
+  fixture.turnLog = [
+    { type: "content", turn_id: "turn-live", seq: 1, content: "Draft body" },
+    { type: "done", turn_id: "turn-live", seq: 2, metadata: { status: "completed" } },
+  ];
+  render(<ChatStateAdapterProvider><Harness /></ChatStateAdapterProvider>);
+  await act(async () => { fireEvent.click(screen.getByText("Load")); });
+  expect(readMessages().map((message) => message.content)).toEqual([
+    "make a word doc",
+    "Draft body",
+  ]);
+  expect(fixture.sent).toEqual([]);
+  expect(fixture.rewinds).toEqual([]);
+  // A settled reply must not read as "Thinking…": the annotation is complete.
+  expect(screen.getByTestId("streaming")).toHaveTextContent("false");
+  expect(readTraces().at(-1)?.trace?.ended_at).toBe(2);
+});
+
+it("replays only the frames a persisted body has not covered yet", async () => {
+  // No terminal frame in the preview: the turn is still producing, and the
+  // row is a prefix of it. The cursor has to be the row's high-water mark, or
+  // the prefix is appended to itself.
+  fixture.session = settledLiveTurnSession({ terminal: false });
+  fixture.turnLog = [
+    { type: "content", turn_id: "turn-live", seq: 1, content: "Draft body" },
+    { type: "content", turn_id: "turn-live", seq: 4, content: " more" },
+    { type: "content", turn_id: "turn-live", seq: 6, content: " tail" },
+    { type: "done", turn_id: "turn-live", seq: 7,
+      metadata: { status: "completed", user_message_id: 1, assistant_message_id: 2 } },
+  ];
+  render(<ChatStateAdapterProvider><Harness /></ChatStateAdapterProvider>);
+  await act(async () => { fireEvent.click(screen.getByText("Load")); });
+  // trace.last_seq is 5 while the preview's own last seq is 3: taking the
+  // preview's maximum would replay seq 4 and duplicate " more".
+  expect(fixture.sent).toEqual([
+    { type: "subscribe_turn", turn_id: "turn-live", after_seq: 5 },
+  ]);
+  expect(readMessages().map((message) => message.content)).toEqual([
+    "make a word doc",
+    "Draft body tail",
+  ]);
+});
+
+it("rewinds the transport cursor before asking for the replay", async () => {
+  // The load just replaced the transcript and zeroed the reduced cursor, but
+  // the socket keeps its own high-water mark and would discard the replayed
+  // frames as duplicates — leaving the page blank with the right command sent.
+  fixture.session = serverOwnedLiveTurnSession();
+  render(<ChatStateAdapterProvider><Harness /></ChatStateAdapterProvider>);
+  await act(async () => { fireEvent.click(screen.getByText("Load")); });
+  expect(fixture.rewinds).toEqual(["turn-live"]);
+  expect(fixture.order).toEqual(["rewind:turn-live", "send:subscribe_turn"]);
 });
