@@ -1,9 +1,9 @@
 "use client";
 
 import Tooltip from "@/shared/ui/Tooltip";
+import { Dialog } from "@/shared/ui/Dialog";
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import dynamic from "next/dynamic";
 import { Check, ChevronDown, Folder, FolderOpen, Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -11,19 +11,16 @@ import { useLingerExpand } from "@/hooks/use-linger-expand";
 import ToolbarLabel from "@/components/chat/home/ToolbarLabel";
 import { saveWorkspace, type ChatWorkspaceRegistration } from "@/lib/workspaces-api";
 
-const ServerFolderPicker = dynamic(() => import("./ServerFolderPicker").then(module => module.ServerFolderPicker), { ssr: false });
-
 /**
  * Which workspace this conversation belongs to.
  *
- * Unlike the other composer settings, picking a workspace is not a preference
- * that takes effect next turn: it re-navigates the app (a full page load,
- * which drops the draft) and moves an existing conversation's storage. That is
- * why ``readOnly``
- * turns it into a plain label once the conversation has messages. Re-binding a
- * thread mid-conversation is a management action; it belongs on the workspace
- * settings page, where the consequences are visible, rather than one stray
- * click away from a half-written message.
+ * Selecting a workspace is never a pure preference change; it moves the
+ * conversation's storage in place (via ``updateSessionOrganization`` when a
+ * session already exists) and navigates so that the runtime connection's
+ * workspace scope matches the new storage location. ``readOnly`` is an opt-in
+ * freeze the caller can pass for screens where mid-thread moves are still
+ * undesirable (e.g. co-writer, learning modules); the chat composer always
+ * leaves it unset so existing conversations can be relocated with one click.
  */
 export function WorkspacePill({
   workspaces,
@@ -47,7 +44,6 @@ export function WorkspacePill({
 }) {
   const { t } = useTranslation();
   const [creating, setCreating] = useState(false);
-  const [browsing, setBrowsing] = useState(false);
   const [name, setName] = useState("");
   const [saving, setSaving] = useState(false);
   const [createError, setCreateError] = useState("");
@@ -56,6 +52,7 @@ export function WorkspacePill({
   const { expanded, triggerProps } = useLingerExpand(open, 1200, !collapsible);
   const menuRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
+  const nameInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -78,6 +75,41 @@ export function WorkspacePill({
       document.removeEventListener("keydown", closeOnEscape);
     };
   }, [open]);
+
+  const handleOpenCreate = () => {
+    setName("");
+    setCreateError("");
+    setCreating(true);
+    setOpen(false);
+    // Autofocus after the dialog has mounted — Dialog handles focus on
+    // [data-autofocus]; we still keep a ref ready for submit-on-Enter.
+    requestAnimationFrame(() => nameInputRef.current?.focus());
+  };
+
+  const handleSubmitCreate = async (event?: React.FormEvent) => {
+    event?.preventDefault();
+    if (!name.trim() || saving) return;
+    setSaving(true);
+    setCreateError("");
+    try {
+      const row = await saveWorkspace({ name: name.trim() });
+      setCreated((items) => [...items, row]);
+      onSelect(row.workspace_id);
+      setCreating(false);
+      setName("");
+    } catch (error) {
+      setCreateError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleCloseCreate = () => {
+    if (saving) return;
+    setCreating(false);
+    setCreateError("");
+    setName("");
+  };
 
   const choices = [...workspaces, ...created.filter(row => !workspaces.some(item => item.workspace_id === row.workspace_id))];
   const active = choices.find((row) => row.workspace_id === workspaceId);
@@ -171,93 +203,59 @@ export function WorkspacePill({
           className="dt-popup-up absolute bottom-full left-0 z-50 mb-1.5 w-[248px] overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--popover)] py-1 shadow-lg backdrop-blur-md"
         >
           <div className="max-h-[280px] overflow-y-auto [&>span]:w-full">
-            {selectable.length === 0 ? (
-              <p className="px-3 py-2.5 text-[11.5px] leading-relaxed text-[var(--muted-foreground)]">
-                {t(
-                  "Create a workspace to keep conversations and learning materials together.",
-                )}
-              </p>
-            ) : (
-              selectable.map((row) => (
-                <Tooltip
-                  key={row.workspace_id}
-                  label={row.status === "ready" ? row.path : row.error}
-                  side="right"
+            {selectable.map((row) => (
+              <Tooltip
+                key={row.workspace_id}
+                label={row.status === "ready" ? row.path : row.error}
+                side="right"
+              >
+                <button
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={row.workspace_id === workspaceId}
+                  disabled={row.status !== "ready"}
+                  onClick={() => {
+                    onSelect(row.workspace_id);
+                    setOpen(false);
+                  }}
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12.5px] text-[var(--foreground)] transition-colors hover:bg-[color-mix(in_srgb,var(--muted)_60%,transparent)] disabled:opacity-50"
                 >
-                  <button
-                    type="button"
-                    role="menuitemradio"
-                    aria-checked={row.workspace_id === workspaceId}
-                    disabled={row.status !== "ready"}
-                    onClick={() => {
-                      onSelect(row.workspace_id);
-                      setOpen(false);
-                    }}
-                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12.5px] text-[var(--foreground)] transition-colors hover:bg-[color-mix(in_srgb,var(--muted)_60%,transparent)] disabled:opacity-50"
-                  >
-                    <Folder
-                      size={13}
-                      strokeWidth={1.7}
-                      className="shrink-0 text-[var(--muted-foreground)]"
-                    />
-                    <span className="min-w-0 flex-1 truncate">
-                      {row.display_name}
-                    </span>
-                    {row.workspace_id === workspaceId ? (
-                      <Check size={12} className="shrink-0" />
-                    ) : null}
-                  </button>
-                </Tooltip>
-              ))
-            )}
-          </div>
-
-          {workspaceId ? (
+                  <Folder
+                    size={13}
+                    strokeWidth={1.7}
+                    className="shrink-0 text-[var(--muted-foreground)]"
+                  />
+                  <span className="min-w-0 flex-1 truncate">
+                    {row.display_name}
+                  </span>
+                  {row.workspace_id === workspaceId ? (
+                    <Check size={12} className="shrink-0" />
+                  ) : null}
+                </button>
+              </Tooltip>
+            ))}
             <button
               type="button"
+              role="menuitemradio"
+              aria-checked={!workspaceId}
               onClick={() => {
                 onSelect("");
                 setOpen(false);
               }}
-              className="mt-1 flex w-full items-center gap-2 border-t border-[color-mix(in_srgb,var(--border)_70%,transparent)] px-3 py-1.5 pt-2 text-left text-[12px] text-[var(--muted-foreground)] transition-colors hover:bg-[color-mix(in_srgb,var(--muted)_60%,transparent)] hover:text-[var(--foreground)]"
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12.5px] text-[var(--foreground)] transition-colors hover:bg-[color-mix(in_srgb,var(--muted)_60%,transparent)]"
             >
-              {t("Default workspace")}
+              <Folder
+                size={13}
+                strokeWidth={1.7}
+                className="shrink-0 text-[var(--muted-foreground)]"
+              />
+              <span className="min-w-0 flex-1 truncate">
+                {t("Default workspace")}
+              </span>
+              {!workspaceId ? <Check size={12} className="shrink-0" /> : null}
             </button>
-          ) : null}
+          </div>
 
-          <button type="button" role="menuitem" onClick={() => { setOpen(false); setBrowsing(true); }}
-            className="flex w-full items-center gap-2 border-t border-[var(--border)] px-3 py-2 text-left text-xs hover:bg-[var(--muted)]">
-            <FolderOpen size={15} />{t("Choose a server folder")}
-          </button>
-          {creating ? (
-            <form className="space-y-2 border-t border-[var(--border)] p-3" onSubmit={async event => {
-              event.preventDefault();
-              event.stopPropagation();
-              if (!name.trim() || saving) return;
-              setSaving(true);
-              setCreateError("");
-              try {
-                const row = await saveWorkspace({ name: name.trim() });
-                setCreated(items => [...items, row]);
-                onSelect(row.workspace_id);
-                setCreating(false);
-                setName("");
-                setOpen(false);
-              } catch (error) {
-                setCreateError(error instanceof Error ? error.message : String(error));
-              } finally { setSaving(false); }
-            }}>
-              <label className="block text-xs">{t("Workspace name")}
-                <input autoFocus required maxLength={100} value={name} onChange={event => setName(event.target.value)}
-                  className="mt-1 w-full rounded border border-[var(--border)] bg-[var(--background)] p-2" />
-              </label>
-              {createError && <p role="alert" className="text-xs text-[var(--destructive)]">{createError}</p>}
-              <div className="flex gap-3 text-xs">
-                <button type="submit" disabled={saving || !name.trim()} className="rounded bg-[var(--primary)] px-2 py-1 text-[var(--primary-foreground)] disabled:opacity-50">{t("Create workspace")}</button>
-                <button type="button" disabled={saving} onClick={() => setCreating(false)}>{t("Cancel")}</button>
-              </div>
-            </form>
-          ) : null}
           <div className="mt-1 flex items-center gap-1 border-t border-[color-mix(in_srgb,var(--border)_70%,transparent)] px-2 pt-1 text-[var(--muted-foreground)]">
             <Link
               href="/settings/workspace"
@@ -266,29 +264,84 @@ export function WorkspacePill({
             >
               {t("Manage workspaces")}
             </Link>
-            {!creating && (
-              <Tooltip label={t("New workspace")} side="top">
-                <button
-                  type="button"
-                  aria-label={t("New workspace")}
-                  onClick={() => setCreating(true)}
-                  className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-[var(--muted)] hover:text-[var(--foreground)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--ring)]"
-                >
-                  <Plus size={15} strokeWidth={1.7} />
-                </button>
-              </Tooltip>
-            )}
+            <Tooltip label={t("New workspace")} side="top">
+              <button
+                type="button"
+                aria-label={t("New workspace")}
+                onClick={handleOpenCreate}
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-[var(--muted)] hover:text-[var(--foreground)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--ring)]"
+              >
+                <Plus size={15} strokeWidth={1.7} />
+              </button>
+            </Tooltip>
           </div>
         </div>
       )}
-      {browsing && <ServerFolderPicker onClose={() => setBrowsing(false)} onSelect={async folder => {
-        const existing = choices.find(item => item.kind === "workspace" && item.path === folder.path);
-        const row = existing
-          ? existing.archived ? await saveWorkspace({ archived: false }, existing.workspace_id) : existing
-          : await saveWorkspace({ name: folder.name.slice(0, 100), path: folder.path });
-        setCreated(items => [...items.filter(item => item.workspace_id !== row.workspace_id), row]);
-        onSelect(row.workspace_id);
-      }} />}
+
+      {/* New workspace modal — replaces the old inline form so the menu stays
+          small and the input gets its own focused surface (matches PRD
+          folder.group / WorkBuddy pattern). */}
+      <Dialog
+        open={creating}
+        title={t("folder.group.create")}
+        description={t("folder.group.nameHint")}
+        onClose={handleCloseCreate}
+        busy={saving}
+        size="sm"
+        footer={
+          <>
+            <button
+              type="button"
+              disabled={saving}
+              onClick={handleCloseCreate}
+              className="rounded-md border border-[var(--border)] bg-transparent px-3 py-1.5 text-sm font-medium text-[var(--foreground)] transition-colors hover:bg-[var(--muted)] disabled:opacity-50"
+            >
+              {t("folder.group.cancel")}
+            </button>
+            <button
+              type="button"
+              disabled={saving || !name.trim()}
+              onClick={() => handleSubmitCreate()}
+              className="rounded-md bg-[var(--primary)] px-3 py-1.5 text-sm font-medium text-[var(--primary-foreground)] transition-opacity hover:opacity-90 disabled:opacity-50"
+            >
+              {saving ? t("Creating…") : t("folder.group.confirm")}
+            </button>
+          </>
+        }
+      >
+        <form onSubmit={handleSubmitCreate} className="space-y-3">
+          <label className="block">
+            <span className="mb-1 block text-sm font-medium text-[var(--foreground)]">
+              {t("folder.group.nameLabel")}
+            </span>
+            <input
+              ref={nameInputRef}
+              data-autofocus
+              type="text"
+              required
+              maxLength={100}
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  handleSubmitCreate();
+                }
+              }}
+              placeholder={t("folder.group.namePlaceholder")}
+              className="w-full rounded-md border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-sm text-[var(--foreground)] placeholder:text-[var(--muted-foreground)]/60 focus:border-[var(--ring)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)]/40"
+            />
+          </label>
+          {createError ? (
+            <p role="alert" className="text-xs text-[var(--destructive)]">
+              {createError}
+            </p>
+          ) : null}
+          <p className="text-xs text-[var(--muted-foreground)]">
+            {t("folder.group.nameHint")}
+          </p>
+        </form>
+      </Dialog>
     </div>
   );
 }

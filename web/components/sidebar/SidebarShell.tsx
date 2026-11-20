@@ -281,6 +281,7 @@ export function SidebarShell({
               timeline={chatView}
               masteryTopics={masteryTopics}
               readingCollections={readingCollections}
+              groupByWorkspace
               activeSessionId={activeSessionId}
               liveSessionIds={liveSessionIds}
               onSelect={(sessionId) => {
@@ -336,7 +337,10 @@ export function SidebarShell({
         )}
 
         {homeSlot ? homeSlot(true) : <CategoryTabs nav={categoryNav} collapsed />}
-        <div className="min-h-0 w-full flex-1 overflow-y-auto overscroll-contain">
+        <div
+          className="min-h-0 w-full flex-1 overflow-y-auto overscroll-contain"
+          style={{ scrollbarGutter: 'stable' }}
+        >
           {bodySlot ? bodySlot(true) : <CategoryBody nav={categoryNav} collapsed sessions={null} />}
         </div>
 
@@ -422,6 +426,7 @@ export function SidebarShell({
       {/* Partner previews stay visible while their conversation list scrolls. */}
       <div
         ref={recentsScrollRef}
+        style={{ scrollbarGutter: 'stable' }}
         className={`min-h-0 flex-1 ${!bodySlot && ["partners", "learning"].includes(categoryNav.category) ? "overflow-hidden" : "overflow-y-auto overscroll-contain pb-2"}`}
       >
         <Suspense fallback={<div aria-busy="true" className="mx-4 mt-5 h-3 w-28 rounded bg-muted" />}>

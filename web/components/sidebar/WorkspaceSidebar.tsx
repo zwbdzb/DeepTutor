@@ -107,12 +107,16 @@ export default function WorkspaceSidebar() {
       setLoadingSessions(true);
     }
     try {
-      // Only this workspace's conversations: switching workspace is switching
-      // stores. Topic labels only name a group heading, so a failure to load
-      // them must not cost the session list.
+      // PRD P0-1 / A2: load conversations across every registered workspace so
+      // the sidebar can show one flat list grouped by folder without the user
+      // ever switching workspaces to hunt down a chat. Archived conversations
+      // are still carried through and demoted to the default bucket downstream
+      // (see sidebar-entries.ts → workspaceOf()). Topic/collection labels are
+      // only used for rendering existing groups; failing to load them must not
+      // hide the session list.
       const [nextSessions, nextTopics, nextCollections] =
         await Promise.all([
-          listAllSessions({ force: true }),
+          listAllSessions({ force: true, allWorkspaces: true }),
           fetchMasteryTopicIndex().catch(() => [] as MasteryTopicLabel[]),
           fetchReadingCollectionIndex().catch(() => [] as ReadingCollectionLabel[]),
         ]);
@@ -332,24 +336,28 @@ export default function WorkspaceSidebar() {
   const handleOrganizeSession = useCallback(
     async (sessionId: string, patch: SessionOrganizationPatch) => {
       const updated = await updateSessionOrganization(sessionId, patch, sessionWorkspaceId(listedSessions.find(item => item.session_id === sessionId)));
+      const nextWorkspaceId = updated.preferences?.workspace_id || "";
       if ("workspace_id" in patch) {
-        configureSession({ workspaceId: updated.preferences?.workspace_id ?? null }, sessionId);
+        configureSession({ workspaceId: nextWorkspaceId || null }, sessionId);
         if (selectedSessionId === sessionId) {
           navigateTask(sessionRoute({ ...listedSessions.find(row => row.session_id === sessionId)!,
-            preferences: updated.preferences, content_workspace_id: updated.preferences?.workspace_id || "" }), router.push);
+            preferences: updated.preferences, content_workspace_id: nextWorkspaceId }), router.push);
         }
       }
-      // A conversation moved to another workspace has left this list.
-      const movedAway = "workspace_id" in patch &&
-        (updated.preferences?.workspace_id || "") !== activeWorkspaceId();
+      // This list spans every workspace, so moving a conversation to another
+      // folder changes the folder it belongs to — it does not remove the row
+      // from the sidebar (filtering it here made it blink out until refresh).
       setSessions((previous) =>
-        movedAway
-          ? previous.filter((session) => session.session_id !== sessionId)
-          : previous.map((session) =>
-              session.session_id === sessionId
-                ? { ...session, updated_at: updated.updated_at, preferences: updated.preferences }
-                : session,
-            ),
+        previous.map((session) =>
+          session.session_id === sessionId
+            ? {
+                ...session,
+                updated_at: updated.updated_at,
+                preferences: updated.preferences,
+                content_workspace_id: nextWorkspaceId,
+              }
+            : session,
+        ),
       );
     },
     [configureSession, listedSessions, selectedSessionId, router],
