@@ -11,6 +11,8 @@ import { watchingRoute } from "@/lib/learning-routes";
 import { useChatWorkspaces } from "@/hooks/useChatWorkspaces";
 import { useComposerResources } from "@/hooks/useComposerResources";
 import { useActiveWorkspaceId } from "@/hooks/useActiveWorkspaceId";
+import { useWorkspaceBinding } from "@/hooks/useWorkspaceBinding";
+import { WorkspacePill } from "@/components/workspaces/WorkspacePill";
 import dynamic from "next/dynamic";
 import {
   type KeyboardEvent,
@@ -374,6 +376,19 @@ export default function ChatWorkspace() {
   // the sidebar groups and the settings page through one hook, so a workspace
   // created or renamed elsewhere shows up here without a reload.
   const { workspaces } = useChatWorkspaces();
+  // Picking a folder is a storage-scope change, not a preference: the turn
+  // request must be admitted by the connection bound to that folder, otherwise
+  // the backend rejects it with "workspace does not match its connection".
+  // This hook saves the draft and re-navigates for empty drafts, and moves an
+  // existing conversation through the organization API before navigating.
+  const workspaceBinding = useWorkspaceBinding(
+    {
+      sessionKey: state.sessionKey,
+      sessionId: state.sessionId,
+      isStreaming: state.isStreaming,
+    },
+    configureSession,
+  );
   // What the composer's skill / MCP pickers may offer, clipped to what this
   // conversation's workspace already allows.
   const resourceCatalog = useComposerResources(state.workspaceId, workspaces);
@@ -3094,30 +3109,43 @@ export default function ChatWorkspace() {
                 focusInputRef={focusComposerRef}
                 queueWhileStreaming
                 inputHeader={
-                  retrying ? (
-                    <div className="flex items-center gap-2 px-4 pt-3 text-[12.5px]">
-                      <RotateCcw
-                        size={13}
-                        strokeWidth={1.8}
-                        aria-hidden="true"
-                        className="shrink-0 text-[var(--muted-foreground)]"
-                      />
-                      <span className="shrink-0 font-medium text-[var(--foreground)]">
-                        {t("Retrying this turn")}
-                      </span>
-                      <span className="min-w-0 flex-1 truncate text-[var(--muted-foreground)]">
-                        {t("The earlier attempt stays as a version you can switch back to.")}
-                      </span>
-                      <button
-                        type="button"
-                        aria-label={t("Cancel retry")}
-                        onClick={() => setRetryingTurn(null)}
-                        className="-mr-1 inline-flex size-5 shrink-0 items-center justify-center rounded-md text-[var(--muted-foreground)] transition hover:bg-[var(--muted)] hover:text-[var(--foreground)]"
-                      >
-                        <X size={12} />
-                      </button>
-                    </div>
-                  ) : undefined
+                  <div className="flex items-center gap-3 px-4 pt-3">
+                    <WorkspacePill
+                      workspaces={workspaces}
+                      workspaceId={state.workspaceId ?? ""}
+                      onSelect={workspaceBinding.selectWorkspace}
+                      error={workspaceBinding.error}
+                      disabled={state.isStreaming || workspaceBinding.pending}
+                      label={t("folder.group.select")}
+                    />
+                    {retrying ? (
+                      <>
+                        <span className="h-4 w-px shrink-0 bg-[var(--border)]/60" aria-hidden />
+                        <div className="flex min-w-0 flex-1 items-center gap-2 text-[12.5px]">
+                          <RotateCcw
+                            size={13}
+                            strokeWidth={1.8}
+                            aria-hidden="true"
+                            className="shrink-0 text-[var(--muted-foreground)]"
+                          />
+                          <span className="shrink-0 font-medium text-[var(--foreground)]">
+                            {t("Retrying this turn")}
+                          </span>
+                          <span className="min-w-0 flex-1 truncate text-[var(--muted-foreground)]">
+                            {t("The earlier attempt stays as a version you can switch back to.")}
+                          </span>
+                          <button
+                            type="button"
+                            aria-label={t("Cancel retry")}
+                            onClick={() => setRetryingTurn(null)}
+                            className="-mr-1 inline-flex size-5 shrink-0 items-center justify-center rounded-md text-[var(--muted-foreground)] transition hover:bg-[var(--muted)] hover:text-[var(--foreground)]"
+                          >
+                            <X size={12} />
+                          </button>
+                        </div>
+                      </>
+                    ) : null}
+                  </div>
                 }
                 inputFooter={
                   <QueuedMessages

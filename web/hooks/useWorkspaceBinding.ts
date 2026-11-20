@@ -4,6 +4,7 @@ import { useCallback, useLayoutEffect, useRef, useState } from 'react'
 import { transferWorkspaceDraft } from '@/lib/workspace-drafts'
 import { updateSessionOrganization } from '@/lib/session-api'
 import { selectWorkspace as navigateWorkspace } from '@/lib/workspace-scope'
+import { notify } from '@/lib/notifications'
 
 type BindingState = { sessionKey: string; sessionId: string | null; isStreaming: boolean }
 
@@ -43,7 +44,11 @@ export function useWorkspaceBinding(
           void navigateWorkspace(workspaceId, `/chat/${encodeURIComponent(sid)}`)
         }
       })
-      .catch((err: unknown) => setFailure({ key, message: err instanceof Error ? err.message : String(err) }))
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err)
+        setFailure({ key, message })
+        notify(message, { tone: 'error' })
+      })
       .finally(() => {
         pending.current.delete(key)
         setPendingKey(current => current === key ? null : current)
