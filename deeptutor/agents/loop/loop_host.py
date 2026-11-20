@@ -565,6 +565,10 @@ class AgentLoopHost:
             stage=self.loop.stage,
         )
         self.state.sources.extend(self.dispatch.sources)
+        # Files produced here must survive the round: the finish round is the
+        # model's to write, and when it writes nothing this ledger is the only
+        # truthful thing left to report (see ``AgentLoop._finalize_finish``).
+        self.loop._record_turn_artifacts(self.dispatch)
         self.messages.extend(self.dispatch.tool_messages)
         extend_transient_model_messages(
             self.loop._transient_model_messages, self.dispatch.model_messages

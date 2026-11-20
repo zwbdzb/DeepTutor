@@ -167,6 +167,138 @@ class _Registry:
         )
 
 
+class _DeliverableRegistry(_Registry):
+    """Registry standing in for the tools that produce user-facing files."""
+
+    artifact = {
+        "filename": "report.docx",
+        "path": "/tmp/outputs/report.docx",
+        "relative_path": "outputs/report.docx",
+        "url": "",
+        "size_bytes": 147456,
+        "mime_type": ("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+    }
+
+    def __init__(self, metadata: dict[str, Any] | None = None) -> None:
+        super().__init__()
+        self._metadata = (
+            metadata
+            if metadata is not None
+            else {"artifacts": [dict(self.artifact)], "workspace_items": []}
+        )
+
+    def build_openai_schemas(self, _enabled):
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "exec",
+                    "description": "Run code",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"code": {"type": "string"}},
+                        "required": ["code"],
+                    },
+                },
+            }
+        ]
+
+    async def execute(self, name: str, **kwargs):
+        self.executed.append({"name": name, "kwargs": kwargs})
+        return ToolResult(
+            content="wrote files",
+            sources=[],
+            metadata=self._metadata,
+            success=True,
+        )
+
+
+PUBLISHED_URL = "/files/workspace-items/ws_test/wsi_test?dt_workspace=dtw-1"
+
+
+class _FakeWorkspaceFile:
+    """Path stand-in for ``service.resolve`` — never touches the disk."""
+
+    def __init__(self, size_bytes: int | None) -> None:
+        self._size_bytes = size_bytes
+
+    def is_file(self) -> bool:
+        return self._size_bytes is not None
+
+    def stat(self) -> SimpleNamespace:
+        return SimpleNamespace(st_size=self._size_bytes or 0)
+
+
+class _FakeWorkspaceService:
+    """Minimal content-workspace service: no binding, no blob, no filesystem.
+
+    ``resolve`` models the one property that decides whether a fallback link
+    works: which relative paths name a file that exists. ``existing=None``
+    means "every path the caller asks about exists"; pass a set to model a
+    real tree where only some spellings are real.
+
+    ``publish`` echoes paths through the *real* ``_normalise_relative``
+    instead of echoing the input, because the production correction turns on
+    whether the published row still matches the entry key it came from.
+    """
+
+    def __init__(
+        self,
+        *,
+        size_bytes: int | None = 147456,
+        error: Exception | None = None,
+        url: str = PUBLISHED_URL,
+        existing: set[str] | None = None,
+        sizes: dict[str, int] | None = None,
+    ) -> None:
+        self.size_bytes = size_bytes
+        self.error = error
+        self.url = url
+        self.existing = existing
+        self.sizes = sizes or {}
+        self.published: list[dict[str, Any]] = []
+        self.resolved_paths: list[str] = []
+        self.binding = SimpleNamespace(workspace_id="ws_test", root=Path("/tmp/ws"))
+
+    def current_binding(self) -> SimpleNamespace:
+        return self.binding
+
+    def resolve(self, _binding: Any, path: str) -> _FakeWorkspaceFile:
+        self.resolved_paths.append(path)
+        if self.existing is not None and path not in self.existing:
+            return _FakeWorkspaceFile(None)
+        return _FakeWorkspaceFile(self.sizes.get(path, self.size_bytes))
+
+    def __getattr__(self, name: str) -> Any:
+        """Anything this fake does not model stays the real service.
+
+        The pipeline still builds a real workspace runtime context around the
+        turn; only presentation is faked, so the test never writes a blob.
+        """
+        from deeptutor.services.workspace.service import get_content_workspace_service
+
+        return getattr(get_content_workspace_service(), name)
+
+    def publish(self, _binding: Any, items: Any) -> list[SimpleNamespace]:
+        from deeptutor.services.workspace.service import _normalise_relative
+
+        rows = [dict(item) for item in items]
+        self.published.extend(rows)
+        if self.error is not None:
+            raise self.error
+        return [
+            SimpleNamespace(
+                to_dict=lambda row=row: {
+                    "relative_path": _normalise_relative(row["path"]),
+                    "url": self.url,
+                    "title": row.get("title", ""),
+                    "size_bytes": self.sizes.get(row["path"], self.size_bytes),
+                }
+            )
+            for row in rows
+        ]
+
+
 @pytest.fixture(autouse=True)
 def _isolated_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from deeptutor.capabilities.setup.binding import mark_intro_shown
@@ -901,6 +1033,474 @@ async def test_empty_round_nudge_keeps_multimodal_user_parts(
     result = _result(events)
     assert result.metadata["response"] == "Here is the real answer."
     assert result.metadata["completed"] is True
+
+
+@pytest.mark.asyncio
+async def test_silent_finish_reports_the_turn_artifacts_instead_of_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A silent finish over a finished deliverable must not claim failure.
+
+    The turn wrote ``outputs/report.docx``; the forced tool-less finish round
+    then came back ``finish_reason=stop`` with zero characters — the live
+    incident, where the model spent 96 completion tokens and delivered none.
+    Telling the user "I could not produce a useful response" sends them to redo
+    work that already succeeded, so the fallback names the file instead.
+    """
+    registry = _DeliverableRegistry()
+    client = _ScriptedChatClient(
+        [
+            [
+                _llm_chunk(
+                    tool_calls=[
+                        {
+                            "id": "call-1",
+                            "name": "exec",
+                            "arguments": json.dumps({"code": "render_report()"}),
+                        }
+                    ]
+                )
+            ],
+            # Forced finish: clean stop, nothing delivered.
+            [_llm_chunk(finish_reason="stop")],
+        ]
+    )
+    pipeline = AgenticChatPipeline(language="en")
+    pipeline.registry = registry
+    pipeline._max_rounds = 1
+    monkeypatch.setattr(agent_loop_mod, "MAX_SETTLEMENT_ROUNDS", 0)
+    monkeypatch.setattr(pipeline, "_compose_enabled_tools", lambda _context: ["exec"])
+    monkeypatch.setattr(pipeline, "_build_openai_client", lambda: client)
+
+    events = await _run(
+        pipeline,
+        UnifiedContext(session_id="s1", user_message="Write the report", enabled_tools=["exec"]),
+    )
+
+    assert client.call_count == 2
+    assert "tools" not in client.calls[1]
+    result = _result(events)
+    response = result.metadata["response"]
+    # The leaf name is the label; the deep workspace path is not printed.
+    assert "report.docx" in response
+    assert "outputs/report.docx" not in response
+    assert "144.0 KB" in response
+    assert "could not produce a useful response" not in response
+    assert result.metadata["completed"] is True
+
+
+@pytest.mark.asyncio
+async def test_silent_finish_without_artifacts_keeps_the_failure_notice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The artifact branch must not fire on turns that produced nothing."""
+    client = _ScriptedChatClient(
+        [
+            [
+                _llm_chunk(
+                    tool_calls=[
+                        {
+                            "id": "call-1",
+                            "name": "web_search",
+                            "arguments": json.dumps({"query": "nothing useful"}),
+                        }
+                    ]
+                )
+            ],
+            [_llm_chunk(finish_reason="stop")],
+        ]
+    )
+    pipeline = AgenticChatPipeline(language="en")
+    pipeline.registry = _Registry()
+    pipeline._max_rounds = 1
+    monkeypatch.setattr(agent_loop_mod, "MAX_SETTLEMENT_ROUNDS", 0)
+    monkeypatch.setattr(pipeline, "_compose_enabled_tools", lambda _context: ["web_search"])
+    monkeypatch.setattr(pipeline, "_build_openai_client", lambda: client)
+
+    events = await _run(
+        pipeline,
+        UnifiedContext(session_id="s1", user_message="Research", enabled_tools=["web_search"]),
+    )
+
+    result = _result(events)
+    assert result.metadata["response"] == (
+        "I could not produce a useful response from the model output. "
+        "Please try again or narrow the request."
+    )
+
+
+async def _run_silent_finish_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    registry: _DeliverableRegistry,
+    *,
+    service: _FakeWorkspaceService | None = None,
+) -> dict[str, Any]:
+    """Drive one exec round, then a forced finish that delivers nothing."""
+    if service is not None:
+        monkeypatch.setattr(
+            "deeptutor.services.workspace.get_content_workspace_service",
+            lambda: service,
+        )
+    client = _ScriptedChatClient(
+        [
+            [
+                _llm_chunk(
+                    tool_calls=[
+                        {
+                            "id": "call-1",
+                            "name": "exec",
+                            "arguments": json.dumps({"code": "render()"}),
+                        }
+                    ]
+                )
+            ],
+            [_llm_chunk(finish_reason="stop")],
+        ]
+    )
+    pipeline = AgenticChatPipeline(language="en")
+    pipeline.registry = registry
+    pipeline._max_rounds = 1
+    monkeypatch.setattr(agent_loop_mod, "MAX_SETTLEMENT_ROUNDS", 0)
+    monkeypatch.setattr(pipeline, "_compose_enabled_tools", lambda _context: ["exec"])
+    monkeypatch.setattr(pipeline, "_build_openai_client", lambda: client)
+
+    events = await _run(
+        pipeline,
+        UnifiedContext(session_id="s1", user_message="Write the report", enabled_tools=["exec"]),
+    )
+    assert "tools" not in client.calls[1]
+    return _result(events).metadata
+
+
+async def _run_silent_finish_over(
+    monkeypatch: pytest.MonkeyPatch,
+    registry: _DeliverableRegistry,
+    *,
+    service: _FakeWorkspaceService | None = None,
+) -> str:
+    """The closing message of a silent finish, for message-shaped assertions."""
+    metadata = await _run_silent_finish_metadata(monkeypatch, registry, service=service)
+    return str(metadata["response"])
+
+
+@pytest.mark.asyncio
+async def test_silent_finish_uses_the_presented_title_as_the_label(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``workspace_present`` rows carry the model's own title for the file."""
+    registry = _DeliverableRegistry(
+        {
+            "workspace_items": [
+                {
+                    **dict(_DeliverableRegistry.artifact),
+                    "title": "Quarterly report",
+                    "workspace_item_id": "wsi-1",
+                }
+            ]
+        }
+    )
+
+    response = await _run_silent_finish_over(monkeypatch, registry)
+
+    assert "- Quarterly report (144.0 KB)" in response
+    # The title wins, so the workspace path is never printed at all.
+    assert "outputs/report.docx" not in response
+
+
+@pytest.mark.asyncio
+async def test_silent_finish_bounds_the_deliverable_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unpacking an archive must not turn the fallback into a 200-line dump."""
+    rows = [
+        {
+            **dict(_DeliverableRegistry.artifact),
+            "filename": f"part-{index}.docx",
+            "relative_path": f"outputs/part-{index}.docx",
+        }
+        for index in range(25)
+    ]
+    registry = _DeliverableRegistry({"artifacts": rows, "workspace_items": []})
+
+    response = await _run_silent_finish_over(monkeypatch, registry)
+
+    assert response.count("- part-") == agent_loop_mod.MAX_FINISH_ARTIFACT_LINES
+    assert "- part-0.docx" in response
+    assert "part-24.docx" not in response
+    assert "and 5 more file(s)" in response
+
+
+@pytest.mark.asyncio
+async def test_silent_finish_links_a_file_that_already_has_a_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A presented file arrives with its URL; the summary must use it as a link."""
+    registry = _DeliverableRegistry(
+        {
+            "workspace_items": [
+                {
+                    **dict(_DeliverableRegistry.artifact),
+                    "title": "Quarterly report",
+                    "url": PUBLISHED_URL,
+                    "workspace_item_id": "wsi-1",
+                }
+            ]
+        }
+    )
+
+    response = await _run_silent_finish_over(monkeypatch, registry)
+
+    assert f"- [Quarterly report]({PUBLISHED_URL}) (144.0 KB)" in response
+
+
+@pytest.mark.asyncio
+async def test_silent_finish_publishes_files_that_have_no_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``exec`` reports no URL, so the fallback presents the file itself.
+
+    This is the whole point of the publish step: without it the user is told a
+    file exists and has no way to open it.
+    """
+    service = _FakeWorkspaceService()
+
+    response = await _run_silent_finish_over(
+        monkeypatch, _DeliverableRegistry(), service=service
+    )
+
+    assert service.published == [{"path": "outputs/report.docx", "title": "report.docx"}]
+    assert f"- [report.docx]({PUBLISHED_URL}) (144.0 KB)" in response
+
+
+@pytest.mark.asyncio
+async def test_silent_finish_publishes_the_path_the_sandbox_really_wrote(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The duplicated segment is the real path, not a display artefact.
+
+    ``exec`` runs with its working directory at
+    ``<workspace>/outputs/chat/<s>/<turn>/exec``, so a program that writes the
+    workspace path it was told to use lands under that prefix twice. Artifact
+    metadata is built by taking a real file's path relative to the workspace
+    root, so the doubled spelling is the file, and the shortened one is a file
+    that does not exist. Publishing the shortened one yields no link at all.
+    """
+    duplicated = (
+        "outputs/chat/unified_1/turn_2/exec/"
+        "outputs/chat/unified_1/turn_2/RD02-project-proposal.docx"
+    )
+    registry = _DeliverableRegistry(
+        {
+            "artifacts": [
+                {
+                    **dict(_DeliverableRegistry.artifact),
+                    "filename": "RD02-project-proposal.docx",
+                    "relative_path": duplicated,
+                }
+            ],
+            "workspace_items": [],
+        }
+    )
+    service = _FakeWorkspaceService(existing={duplicated})
+
+    response = await _run_silent_finish_over(monkeypatch, registry, service=service)
+
+    assert service.resolved_paths == [duplicated]
+    assert service.published == [
+        {"path": duplicated, "title": "RD02-project-proposal.docx"}
+    ]
+    # The URL still lands on its entry even though publish echoed a normalised
+    # path, so the label is a link and not dead text.
+    assert f"- [RD02-project-proposal.docx]({PUBLISHED_URL})" in response
+    # The 200-character path never reaches the chat, only the leaf name.
+    assert "exec/" not in response
+
+
+@pytest.mark.asyncio
+async def test_silent_finish_falls_back_to_the_short_path_when_only_it_exists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A layout with no doubled prefix must still be linkable.
+
+    The shortened spelling is only a second chance: when the reported path
+    names nothing, the fallback is tried rather than dropping the link.
+    """
+    duplicated = (
+        "outputs/chat/unified_1/turn_2/exec/"
+        "outputs/chat/unified_1/turn_2/RD02-project-proposal.docx"
+    )
+    flat = "outputs/chat/unified_1/turn_2/RD02-project-proposal.docx"
+    registry = _DeliverableRegistry(
+        {
+            "artifacts": [
+                {
+                    **dict(_DeliverableRegistry.artifact),
+                    "filename": "RD02-project-proposal.docx",
+                    "relative_path": duplicated,
+                }
+            ],
+            "workspace_items": [],
+        }
+    )
+    service = _FakeWorkspaceService(existing={flat})
+
+    response = await _run_silent_finish_over(monkeypatch, registry, service=service)
+
+    assert service.resolved_paths == [duplicated, flat]
+    assert service.published == [{"path": flat, "title": "RD02-project-proposal.docx"}]
+    assert f"- [RD02-project-proposal.docx]({PUBLISHED_URL})" in response
+
+
+@pytest.mark.asyncio
+async def test_silent_finish_never_links_a_file_that_does_not_exist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An artifact row whose path resolves to nothing gets text, not a link."""
+    registry = _DeliverableRegistry(
+        {
+            "artifacts": [
+                {
+                    **dict(_DeliverableRegistry.artifact),
+                    "relative_path": "outputs/archive/outputs/report.docx",
+                }
+            ],
+            "workspace_items": [],
+        }
+    )
+    service = _FakeWorkspaceService(existing=set())
+
+    response = await _run_silent_finish_over(monkeypatch, registry, service=service)
+
+    assert service.published == []
+    assert "- report.docx (144.0 KB)" in response
+    assert "](" not in response
+
+
+@pytest.mark.asyncio
+async def test_silent_finish_collapses_a_multiline_title(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A newline in a model-written title must not split the bullet in two."""
+    registry = _DeliverableRegistry(
+        {
+            "workspace_items": [
+                {
+                    **dict(_DeliverableRegistry.artifact),
+                    "title": "Quarterly\nreport\r\nfor Q3",
+                    "workspace_item_id": "wsi-1",
+                }
+            ]
+        }
+    )
+
+    response = await _run_silent_finish_over(monkeypatch, registry)
+
+    assert "- Quarterly report for Q3 (144.0 KB)" in response
+    # One bullet, and nothing that used to be the second half of the title
+    # sitting on its own line as if it were a file.
+    assert response.count("\n- ") == 1
+
+
+@pytest.mark.asyncio
+async def test_silent_finish_keeps_a_parenthesised_url_inside_its_link(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``)`` and a space inside the URL must not spill out of the link target."""
+    awkward = "/files/workspace-items/ws test(wsi_1)?dt_workspace=x%20y"
+    registry = _DeliverableRegistry(
+        {
+            "workspace_items": [
+                {
+                    **dict(_DeliverableRegistry.artifact),
+                    "title": "Quarterly report",
+                    "url": awkward,
+                    "workspace_item_id": "wsi-1",
+                }
+            ]
+        }
+    )
+
+    response = await _run_silent_finish_over(monkeypatch, registry)
+
+    assert (
+        "- [Quarterly report]("
+        "/files/workspace-items/ws%20test%28wsi_1%29?dt_workspace=x%20y) (144.0 KB)"
+    ) in response
+    # The existing escape survives: re-encoding it would break the link.
+    assert "%2520" not in response
+    assert "](" in response
+
+
+@pytest.mark.asyncio
+async def test_silent_finish_stops_publishing_at_the_turn_byte_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ten 8 MB deliverables must not be copied in one finish message."""
+    chunk = agent_loop_mod.MAX_FINISH_ARTIFACT_PUBLISH_BYTES // 2
+    rows = [
+        {
+            **dict(_DeliverableRegistry.artifact),
+            "filename": f"chunk-{index}.bin",
+            "relative_path": f"outputs/chunk-{index}.bin",
+            "size_bytes": chunk,
+        }
+        for index in range(10)
+    ]
+    registry = _DeliverableRegistry({"artifacts": rows, "workspace_items": []})
+    service = _FakeWorkspaceService(sizes={row["relative_path"]: chunk for row in rows})
+
+    await _run_silent_finish_over(monkeypatch, registry, service=service)
+
+    copied = len(service.published) * chunk
+    assert copied <= agent_loop_mod.MAX_FINISH_ARTIFACT_PUBLISH_TOTAL_BYTES
+    assert len(service.published) == 6
+    # The files over budget are still named, just not linked.
+    assert len(service.published) < len(rows)
+
+
+@pytest.mark.asyncio
+async def test_silent_finish_falls_back_to_plain_text_when_publish_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed publish must cost the link, never the turn."""
+    service = _FakeWorkspaceService(error=RuntimeError("workspace unavailable"))
+
+    metadata = await _run_silent_finish_metadata(
+        monkeypatch, _DeliverableRegistry(), service=service
+    )
+
+    response = str(metadata["response"])
+    assert metadata["completed"] is True
+    assert "- report.docx (144.0 KB)" in response
+    # No half-built Markdown link: an opening bracket implies a target.
+    assert "](" not in response
+
+
+@pytest.mark.asyncio
+async def test_silent_finish_skips_publishing_oversized_files(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A GB-scale deliverable is not copied into the blob store for a link."""
+    oversized = 40 * 1024 * 1024
+    rows = [
+        {
+            **dict(_DeliverableRegistry.artifact),
+            "filename": "recording.mp4",
+            "relative_path": "outputs/recording.mp4",
+            "size_bytes": oversized,
+        },
+        dict(_DeliverableRegistry.artifact),
+    ]
+    registry = _DeliverableRegistry({"artifacts": rows, "workspace_items": []})
+    service = _FakeWorkspaceService()
+
+    response = await _run_silent_finish_over(monkeypatch, registry, service=service)
+
+    assert service.published == [{"path": "outputs/report.docx", "title": "report.docx"}]
+    assert service.resolved_paths == ["outputs/report.docx"]
+    assert "- recording.mp4 (40.0 MB)" in response
+    # Only the small file gets a link.
+    assert response.count("](") == 1
 
 
 @pytest.mark.asyncio

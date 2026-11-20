@@ -195,6 +195,8 @@ notices:
   ask_questions_fallback_prompt: "What is the most important goal or constraint I should account for?"
   image_fallback: "Model does not support image input; retrying without images."
   empty_final_response: "I could not produce a useful response from the model output. Please try again or narrow the request."
+  empty_final_response_with_artifacts: "The model produced no closing message, but this turn did produce the following files, which are saved in your workspace (click a file to open it, or find it in the workspace file panel):\n{artifacts}\n\nAsk me to summarize or continue from them if you need more."
+  empty_final_response_artifacts_more: "- …and {count} more file(s)."
   reasoning_only_final_response: "The model produced internal reasoning but no usable answer. Please try again or narrow the request."
   empty_finish_nudged: "The round produced only internal reasoning; asked the model to continue."
   reasoning_progress: "The model is still reasoning; it has not produced an answer or tool action yet."

@@ -113,6 +113,19 @@ MAX_SETTLEMENT_ROUNDS = 3
 # forced tool-less finish instead of spending the full exploration budget on
 # the same failure.
 MAX_REASONING_ONLY_RECOVERIES = 2
+# The empty-finish fallback names this turn's deliverables. A turn that
+# unpacks an archive can write hundreds of files; the message stays a chat
+# message and states the count for the rest.
+MAX_FINISH_ARTIFACT_LINES = 20
+# Presenting a fallback deliverable copies it into a content-addressed blob.
+# That is exactly right for a report or a deck and pointless for a multi-GB
+# video the user already owns, so the fallback links only files small enough
+# to hand over twice. The per-file cap keeps one hulking export out; the total
+# cap is what actually bounds the turn: a per-file-only limit would still let
+# MAX_FINISH_ARTIFACT_LINES × the per-file cap (20 × 16 MB = 320 MB) be copied
+# and hashed synchronously while the user waits for a finish message.
+MAX_FINISH_ARTIFACT_PUBLISH_BYTES = 16 * 1024 * 1024
+MAX_FINISH_ARTIFACT_PUBLISH_TOTAL_BYTES = 48 * 1024 * 1024
 # The SDK already retries failures that happen before response headers. These
 # short outer retries also cover SSE connections that fail before yielding any
 # user-visible output. Once output is visible, replay is unsafe because it can
@@ -182,6 +195,126 @@ def _reasoning_item_text(item: dict[str, Any]) -> str:
     return "".join(parts)
 
 
+def _human_size(size_bytes: int) -> str:
+    """``147.2 KB``-style size for prose a person reads, never for logic."""
+    value = float(max(0, size_bytes))
+    for unit in ("B", "KB", "MB", "GB"):
+        if value < 1024 or unit == "GB":
+            return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} GB"
+
+
+def _one_line(value: Any) -> str:
+    """Collapse a model-written string to one line of prose.
+
+    A ``title`` is prose and prose can contain a newline. A newline inside a
+    bullet splits it, and inside a link label it ends the link; both turn a
+    tidy list of deliverables into broken Markdown, so whitespace runs become
+    single spaces before the value reaches either.
+    """
+    return " ".join(str(value or "").split())
+
+
+def _posix_relative(value: str) -> str:
+    """The relative-path spelling the workspace service stores and compares.
+
+    ``ContentWorkspaceService.publish`` normalises every input path before it
+    echoes it back as ``WorkspaceItem.relative_path``. Producing that same
+    spelling here is what lets a published row be matched to the entry it came
+    from — without it, ``./outputs/x`` goes in and ``outputs/x`` comes back,
+    the lookup misses, and the file silently keeps its unlinked plain-text
+    bullet.
+    """
+    parts = [
+        part
+        for part in str(value or "").strip().replace("\\", "/").split("/")
+        if part not in {"", "."}
+    ]
+    return "/".join(parts)
+
+
+def _finish_artifact_label(entry: dict[str, Any]) -> str:
+    """Best human name for one deliverable, most specific first.
+
+    ``title`` is the model's own wording and only ``workspace_present`` sets
+    it. ``filename`` is the real leaf name ``exec`` reported. The raw
+    workspace-relative path is the last resort, shortened for display: for
+    sandbox output it repeats the whole ``outputs/chat/<session>/<turn>/``
+    prefix and wraps across four lines of chat.
+    """
+    title = _one_line(entry.get("title"))
+    if title:
+        return title[:200]
+    filename = _one_line(entry.get("filename"))
+    if filename:
+        return filename[:200]
+    return _one_line(_finish_artifact_relative(str(entry.get("relative_path") or "")))
+
+
+def _finish_artifact_relative(relative_path: str) -> str:
+    """Shorten a sandbox path **for display only**.
+
+    ``exec`` runs with its working directory inside the turn's output folder,
+    so a program that writes the workspace path it was told to use produces::
+
+        outputs/chat/<session>/<turn>/exec/outputs/chat/<session>/<turn>/x.docx
+
+    Only the last ``outputs/`` segment is worth reading, so that is what a
+    label shows.
+
+    Never resolve this value. The doubled path is not a display artefact: it is
+    the real workspace-relative path of the file that exists on disk, and this
+    shortening names a different file that usually does not. Resolution order
+    lives in ``_finish_artifact_candidates``.
+    """
+    text = str(relative_path or "").strip().replace("\\", "/")
+    marker = "outputs/"
+    if text.count(marker) >= 2:
+        return text[text.rindex(marker) :]
+    return text
+
+
+def _finish_artifact_candidates(relative_path: str) -> list[str]:
+    """Workspace-relative paths to try, most likely first.
+
+    The reported path comes first because it is the one that is *known* to
+    exist: artifact metadata is built from a real file's position under the
+    workspace root, so the reported relative path always names that file. The
+    shortened form is kept as a second chance for the layouts where the
+    repeated prefix really is spurious. Every candidate is normalised, because
+    a candidate that is not in the service's own spelling would publish fine
+    and then fail to map back to its entry.
+    """
+    candidates: list[str] = []
+    for value in (relative_path, _finish_artifact_relative(relative_path)):
+        candidate = _posix_relative(value)
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+    return candidates
+
+
+def _markdown_url(url: str) -> str:
+    """Make a URL safe inside ``[label](url)``.
+
+    An unescaped ``)`` closes the target early and spills the rest of the URL
+    into the message as prose; a space truncates it. Percent-encoding these
+    specific characters keeps the URL byte-comparable for the client while
+    leaving any existing ``%xx`` escape untouched — a blind ``quote()`` would
+    double-encode those and break the link it was meant to protect.
+    """
+    text = _one_line(url)
+    for character, escape in (
+        (" ", "%20"),
+        ("(", "%28"),
+        (")", "%29"),
+        ("<", "%3C"),
+        (">", "%3E"),
+    ):
+        text = text.replace(character, escape)
+    return text
+
+
 class AgentLoop:
     """Run one chat turn as a single agent loop over one conversation."""
 
@@ -213,6 +346,12 @@ class AgentLoop:
         # One stall settlement per turn: a provider that keeps going silent
         # must fail the turn rather than walk through bound after bound.
         self._stall_recoveries = 0
+        # Files this turn actually wrote, keyed by workspace-relative path, in
+        # discovery order. The finish round is the model's to write; when it
+        # writes nothing, this is the only truthful thing left to report — a
+        # finished deliverable is not "no useful response" (see
+        # ``_finalize_finish``).
+        self._turn_artifacts: dict[str, dict[str, Any]] = {}
         context.extension("source_visual_evidence")["image_hashes"] = []
         self._request_fingerprint = (context.runtime.previous_model_turn or {}).get(
             "request_fingerprint"
@@ -531,6 +670,188 @@ class AgentLoop:
             ),
         )
 
+    def _record_turn_artifacts(self, dispatch: DispatchOutcome) -> None:
+        """Remember every file this turn produced, keyed by workspace-relative path.
+
+        Two tools report deliverables and both are needed. ``exec`` reports the
+        files a call created or changed (``artifacts``) — the only proof the
+        file exists. ``workspace_present`` reports the files the user was given
+        an openable card for (``workspace_items``) and carries the model's own
+        title/caption — the only proof the deliverable was surfaced, and the
+        nicer label. A file that went through both keeps one entry with the
+        richer fields merged in, so the closing message never repeats a path.
+        """
+        for metadata in dispatch.tool_metadata_by_id.values():
+            if not isinstance(metadata, dict):
+                continue
+            for key in ("artifacts", "workspace_items"):
+                rows = metadata.get(key)
+                if not isinstance(rows, list):
+                    continue
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    relative_path = str(row.get("relative_path") or "").strip()
+                    if not relative_path:
+                        continue
+                    entry = self._turn_artifacts.setdefault(relative_path, {})
+                    entry.update(
+                        {name: value for name, value in row.items() if value not in (None, "")}
+                    )
+                    entry["relative_path"] = relative_path
+
+    async def _present_turn_artifacts(self) -> None:
+        """Give this turn's fallback deliverables a real, openable URL.
+
+        A normal turn ends with the model calling ``workspace_present``, which
+        publishes the file and returns an openable card. A silent closing round
+        never does, so the files exist but nothing links them and the summary
+        is the user's only chance to reach them. This publishes through the
+        very same service call, which is the only sanctioned way to turn a
+        workspace path into a URL the client can open. Blobs are
+        content-addressed, so presenting a file the model already presented is
+        an idempotent no-op rather than a second copy.
+
+        Only the fallback path calls this. Every failure — no binding, an
+        unreadable path, a rejected publish — is swallowed: the caller is the
+        turn's finish path, so a missing link must degrade to plain text and
+        must never fail the turn or change its ``completed`` state.
+        """
+        pending = [
+            (relative_path, entry)
+            for relative_path, entry in self._turn_artifacts.items()
+            if not str(entry.get("url") or "").strip()
+        ][:MAX_FINISH_ARTIFACT_LINES]
+        if not pending:
+            return
+        # Local import: the loop must not take a module-level dependency on the
+        # workspace service, whose package imports this engine's tooling back.
+        try:
+            from deeptutor.services.workspace import get_content_workspace_service
+
+            service = get_content_workspace_service()
+            binding = service.current_binding()
+            items: list[dict[str, Any]] = []
+            # ``publish`` answers with the normalised relative path, which may
+            # differ from the sandbox path we keyed on; remember the mapping so
+            # each URL lands back on the entry it came from. One path can serve
+            # several entries — the same file reported once by ``exec`` and once
+            # by ``workspace_present`` — so the value is a list, not one key.
+            entry_keys_by_path: dict[str, list[str]] = {}
+            budget = MAX_FINISH_ARTIFACT_PUBLISH_TOTAL_BYTES
+            for relative_path, entry in pending:
+                reported_size = entry.get("size_bytes")
+                if isinstance(reported_size, int):
+                    if reported_size > MAX_FINISH_ARTIFACT_PUBLISH_BYTES:
+                        continue
+                candidate = ""
+                path_size = 0
+                for attempt in _finish_artifact_candidates(relative_path):
+                    try:
+                        resolved = service.resolve(binding, attempt)
+                        if not resolved.is_file():
+                            continue
+                        path_size = resolved.stat().st_size
+                    except Exception as exc:
+                        # One unresolvable path must not cost the other files
+                        # their links; the plain-text summary still names it.
+                        logger.debug("finish artifact path rejected (%s): %s", attempt, exc)
+                        continue
+                    candidate = attempt
+                    break
+                if not candidate:
+                    # Neither spelling names a real file: report it as text
+                    # rather than inventing a link that opens nothing.
+                    logger.debug("finish artifact not found: %s", relative_path)
+                    continue
+                if path_size > MAX_FINISH_ARTIFACT_PUBLISH_BYTES:
+                    continue
+                if path_size > budget:
+                    # Copying is synchronous and happens while the user waits
+                    # for the finish message; stop at the turn's total budget
+                    # instead of paying it file by file.
+                    logger.debug("finish artifact budget exhausted at %s", candidate)
+                    continue
+                item: dict[str, Any] = {"path": candidate}
+                title = _one_line(entry.get("title") or entry.get("filename"))
+                if title:
+                    item["title"] = title[:200]
+                items.append(item)
+                entry_keys_by_path.setdefault(candidate, []).append(relative_path)
+                budget -= path_size
+            if not items:
+                return
+            # ``publish`` hashes and copies whole files synchronously.
+            rows = await asyncio.to_thread(service.publish, binding, items)
+        except Exception as exc:
+            # No service, no binding, or a rejected batch: keep the plain-text
+            # summary. Never let presentation decide whether the turn finished.
+            logger.debug("finish artifact present failed: %s", exc)
+            return
+        for row in rows or []:
+            payload = row.to_dict() if hasattr(row, "to_dict") else row
+            if not isinstance(payload, dict):
+                continue
+            row_path = _posix_relative(str(payload.get("relative_path") or ""))
+            entry_keys = entry_keys_by_path.get(row_path) or []
+            if not entry_keys:
+                continue
+            url = _one_line(payload.get("url"))
+            title = _one_line(payload.get("title"))
+            size = payload.get("size_bytes")
+            for entry_key in entry_keys:
+                entry = self._turn_artifacts.get(entry_key)
+                if entry is None:
+                    continue
+                if url:
+                    entry["url"] = url
+                if title:
+                    entry["title"] = title
+                current = entry.get("size_bytes")
+                known_size = isinstance(current, int) and current > 0
+                if not known_size and isinstance(size, int) and size > 0:
+                    entry["size_bytes"] = size
+
+    def _turn_artifact_lines(self) -> list[str]:
+        """One bullet per deliverable: readable name, openable link, size.
+
+        Bounded on purpose. A turn that unpacks an archive can write hundreds
+        of files, and a fallback message is still a chat message — the count
+        carries the rest.
+        """
+        lines: list[str] = []
+        for entry in self._turn_artifacts.values():
+            label = _finish_artifact_label(entry)
+            if not label:
+                continue
+            url = _one_line(entry.get("url") or "")
+            if url:
+                # A title is model-written prose; a stray bracket would close
+                # the link early and spill the URL into the message, and a
+                # stray ``)`` inside the URL would do the same from the other
+                # side.
+                safe_label = label.replace("[", "(").replace("]", ")")
+                text = f"[{safe_label}]({_markdown_url(url)})"
+            else:
+                # No verified URL means no link. A guessed path renders as a
+                # dead card, which is worse than a plain filename.
+                text = label
+            size = entry.get("size_bytes")
+            if isinstance(size, int) and size > 0:
+                text += f" ({_human_size(size)})"
+            lines.append(f"- {text}")
+        if len(lines) > MAX_FINISH_ARTIFACT_LINES:
+            remainder = len(lines) - MAX_FINISH_ARTIFACT_LINES
+            lines = lines[:MAX_FINISH_ARTIFACT_LINES]
+            lines.append(
+                self.pipeline._t(
+                    "notices.empty_final_response_artifacts_more",
+                    default="- …and {count} more file(s).",
+                    count=remainder,
+                )
+            )
+        return lines
+
     async def _finalize_finish(
         self,
         raw_text: str,
@@ -551,8 +872,30 @@ class AgentLoop:
             final_text = cleaned_text
         if not final_text and not allow_empty:
             # The finish round produced no usable text; nothing streamed to
-            # the user, so emit a fallback answer here.
-            if empty_response_kind == "reasoning_only":
+            # the user, so emit a fallback answer here. A turn that wrote files
+            # is NOT a failed turn: reporting "no useful response" over a
+            # finished deliverable sends the user to retry work that already
+            # succeeded. Name the deliverables instead, and keep the honest
+            # failure text for turns that truly produced nothing.
+            if self._turn_artifacts:
+                # Nothing presented these files (a presented file already has
+                # its URL), so publish them here to hand the user real links.
+                # It never raises and never changes the outcome.
+                await self._present_turn_artifacts()
+            artifact_lines = self._turn_artifact_lines()
+            if artifact_lines:
+                final_text = self.pipeline._t(
+                    "notices.empty_final_response_with_artifacts",
+                    default=(
+                        "The model produced no closing message, but this turn did "
+                        "produce the following files, which are saved in your "
+                        "workspace (click a file to open it, or find it in the "
+                        "workspace file panel):\n{artifacts}\n\n"
+                        "Ask me to summarize or continue from them if you need more."
+                    ),
+                    artifacts="\n".join(artifact_lines),
+                )
+            elif empty_response_kind == "reasoning_only":
                 final_text = self.pipeline._t(
                     "notices.reasoning_only_final_response",
                     default=(

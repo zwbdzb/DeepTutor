@@ -148,6 +148,8 @@ notices:
   ask_questions_fallback_prompt: "我最需要了解的目标或限制条件是什么？"
   image_fallback: "当前模型不支持图片输入；将去除图片后重试。"
   empty_final_response: "未能从模型输出中得到有效回答。请重试或缩小问题范围。"
+  empty_final_response_with_artifacts: "模型本次没有输出总结文字，但本轮已经生成了以下文件，均已保存在你的工作区（可直接点击打开，或在文件面板中查看）：\n{artifacts}\n\n如需更多内容，可以让我基于这些文件继续补充或整理。"
+  empty_final_response_artifacts_more: "- 另有 {count} 个文件未在此列出。"
   reasoning_only_final_response: "模型产生了内部推理，但没有可用回答。请重试或缩小问题范围。"
   empty_finish_nudged: "模型这一轮只有内部推理，已提示其继续执行。"
   reasoning_progress: "模型仍在进行内部推理，尚未生成回答或执行工具。"
