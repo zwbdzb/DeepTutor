@@ -72,16 +72,10 @@ beforeEach(() => {
 })
 afterEach(cleanup)
 
-it('selects an existing server directory without renaming or rewriting its resources', async () => {
-  fixtures.browse.mockResolvedValue({ roots: [{ name: 'materials', path: '/materials' }],
-    path: workspace.path, name: 'algebra', parent: '/materials', folders: [], truncated: false })
+it('does not offer the server-folder shortcut from the composer picker', () => {
   render(<BindingHarness />)
   openPicker()
-  fireEvent.click(screen.getByRole('menuitem', { name: 'Choose a server folder' }))
-  await screen.findByText('No subfolders')
-  fireEvent.click(screen.getByRole('button', { name: 'Select this folder' }))
-  await waitFor(() => expect(fixtures.navigateWorkspace).toHaveBeenCalledWith('ws_a', '/chat', expect.anything()))
-  expect(fixtures.save).not.toHaveBeenCalled()
+  expect(screen.queryByRole('menuitem', { name: 'Choose a server folder' })).toBeNull()
 })
 
 it('binds a draft and preserves omitted versus explicit null on the wire', async () => {
@@ -101,7 +95,7 @@ it('persists a move before updating the existing session UI', async () => {
   fixtures.state.workspaceId = 'ws_a'
   render(<BindingHarness />)
   openPicker()
-  fireEvent.click(screen.getByRole('button', { name: 'Default workspace' }))
+  fireEvent.click(screen.getByRole('menuitemradio', { name: 'Default workspace' }))
   await waitFor(() =>
     expect(fixtures.configure).toHaveBeenCalledWith({ workspaceId: null }, 'draft-a')
   )
@@ -174,11 +168,36 @@ it('hides system, general, archived and invalid workspaces as new chat destinati
     workspace,
   ]} workspaceId="ws_a" onSelect={fixtures.configure} />)
   openPicker()
-  expect(screen.getByRole('button', { name: 'Default workspace' })).toBeInTheDocument()
+  expect(screen.getByRole('menuitemradio', { name: 'Default workspace' })).toBeInTheDocument()
   expect(screen.getByRole('menuitemradio', { name: 'Invalid' })).toBeDisabled()
   expect(screen.queryByRole('menuitemradio', { name: 'System' })).toBeNull()
   expect(screen.queryByRole('menuitemradio', { name: 'General' })).toBeNull()
   expect(screen.queryByRole('menuitemradio', { name: 'Archive' })).toBeNull()
+})
+
+it('always offers the Default workspace item and reflects the current binding', () => {
+  const { rerender } = render(<WorkspacePill workspaces={[workspace]} workspaceId="" onSelect={fixtures.configure} />)
+  openPicker()
+  expect(screen.getByRole('menuitemradio', { name: 'Default workspace' })).toHaveAttribute('aria-checked', 'true')
+  rerender(<WorkspacePill workspaces={[workspace]} workspaceId="ws_a" onSelect={fixtures.configure} />)
+  expect(screen.getByRole('menuitemradio', { name: 'Default workspace' })).toHaveAttribute('aria-checked', 'false')
+  expect(screen.getByRole('menuitemradio', { name: 'Algebra' })).toHaveAttribute('aria-checked', 'true')
+})
+
+it('keeps Default workspace in the same folder region as other rows, last and undivided', () => {
+  render(<WorkspacePill workspaces={[workspace]} workspaceId="ws_a" onSelect={fixtures.configure} />)
+  openPicker()
+  const folderRow = screen.getByRole('menuitemradio', { name: 'Algebra' })
+  const defaultRow = screen.getByRole('menuitemradio', { name: 'Default workspace' })
+  const folderWrapper = folderRow.parentElement
+  const region = folderWrapper?.parentElement
+  expect(region?.className).toContain('overflow-y-auto')
+  // Both rows are direct children of the very same scroll container.
+  expect(defaultRow.parentElement).toBe(folderWrapper?.parentElement)
+  expect(defaultRow.closest('[class*="overflow-y-auto"]')).toBe(region)
+  // Default row is last in that region and carries no divider.
+  expect(region?.lastElementChild).toBe(defaultRow)
+  expect(defaultRow.className).not.toContain('border-t')
 })
 
 it('blocks duplicate moves while persistence is pending', async () => {

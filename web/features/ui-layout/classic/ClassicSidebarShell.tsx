@@ -211,7 +211,7 @@ export function ClassicSidebarShell({
         </div>
 
         <SidebarHome collapsed onHomeClick={handleHomeClick} />
-        <div className="min-h-0 w-full flex-1 overflow-y-auto overscroll-contain">
+        <div className="min-h-0 w-full flex-1 overflow-y-auto overscroll-contain" style={{ scrollbarGutter: 'stable' }}>
           <SidebarNav
             collapsed
             onHomeClick={handleHomeClick}
@@ -291,6 +291,7 @@ export function ClassicSidebarShell({
       <div
         ref={recentsScrollRef}
         className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-2"
+        style={{ scrollbarGutter: 'stable' }}
       >
         <SidebarNav
           scrollRef={recentsScrollRef}
@@ -322,6 +323,7 @@ export function ClassicSidebarShell({
                 workspaces={workspaces}
                 masteryTopics={masteryTopics}
                 readingCollections={readingCollections}
+                groupByWorkspace
                 activeSessionId={activeSessionId}
                 liveSessionIds={liveSessionIds}
                 manualOrder={sessionOrder}

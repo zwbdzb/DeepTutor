@@ -156,6 +156,16 @@ export interface SessionPreferences {
 export interface SessionSummary {
   /** Authoritative storage scope, supplied by the account navigation index. */
   content_workspace_id?: string;
+  /** Human-readable display name of the content_workspace_id; empty when
+   *  the conversation belongs to the general (default) scope. */
+  content_workspace_name?: string;
+  /** Whether the source workspace is currently archived. Non-archived unless
+   *  the account navigation index is used (all_workspaces=true). */
+  content_workspace_archived?: boolean;
+  /** "ready" if the workspace path is readable, otherwise "invalid". */
+  content_workspace_status?: "ready" | "invalid" | string;
+  /** Human-readable reason when content_workspace_status !== "ready". */
+  content_workspace_error?: string;
   id: string;
   session_id: string;
   title: string;

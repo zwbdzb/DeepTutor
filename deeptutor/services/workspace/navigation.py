@@ -22,25 +22,40 @@ async def read_workspace_indexes(
     reader: Callable[[], Awaitable[list[dict[str, Any]]]],
 ) -> tuple[list[dict[str, Any]], list[str]]:
     catalog = get_content_workspace_service().list_workspaces()
-    names = {row["workspace_id"]: row["display_name"] for row in catalog}
     # Archived workspaces are hidden everywhere else (the picker and the
     # catalog resolve path both skip them), so polling them here only reports
-    # a folder the learner has already retired.
-    ids = [""] + [
-        row["workspace_id"]
-        for row in catalog
-        if row["kind"] == "workspace" and not row.get("archived")
-    ]
+    # a folder the learner has already retired. Invalid paths are carried
+    # through instead: their sessions still belong to the account, and the
+    # reading attempt is what reports the folder as unavailable.
+    meta: dict[str, dict[str, Any]] = {
+        "": {
+            "display_name": "",
+            "status": "ready",
+            "error": "",
+        }
+    }
+    for row in catalog:
+        if row["kind"] != "workspace" or row.get("archived"):
+            continue
+        meta[row["workspace_id"]] = {
+            "display_name": row["display_name"],
+            "status": row.get("status", "ready"),
+            "error": row.get("error", ""),
+        }
+    ids = list(meta.keys())
     rows: list[dict[str, Any]] = []
     unavailable: list[str] = []
     for workspace_id in dict.fromkeys(ids):
+        info = meta[workspace_id]
         try:
             with workspace_context(workspace_id):
                 rows.extend(
                     {
                         **row,
                         "content_workspace_id": workspace_id,
-                        "content_workspace_name": names.get(workspace_id, ""),
+                        "content_workspace_name": info["display_name"],
+                        "content_workspace_status": info["status"],
+                        "content_workspace_error": info["error"],
                     }
                     for row in await reader()
                 )

@@ -5,6 +5,7 @@ import { buildSidebarEntries } from "../lib/sidebar-entries";
 import { organizeSessionTree } from "../lib/session-organization";
 import type { SessionSummary } from "../lib/session-api";
 import type { SessionPreferences } from "../lib/session-api";
+import type { ChatWorkspaceRegistration } from "../lib/workspaces-api";
 
 let clock = 2000;
 
@@ -170,4 +171,132 @@ test("a streaming conversation carries its group to the top with it", () => {
     entries.map((entry) => entry.id),
     ["langgraph", "chat"],
   );
+});
+
+function inWorkspace(
+  id: string,
+  workspaceId: string,
+  name: string,
+  extra: Partial<SessionSummary> = {},
+): SessionSummary {
+  return session(id, {}, {
+    content_workspace_id: workspaceId,
+    content_workspace_name: name,
+    ...extra,
+  });
+}
+
+function workspace(
+  workspaceId: string,
+  displayName: string,
+  extra: Partial<ChatWorkspaceRegistration> = {},
+): ChatWorkspaceRegistration {
+  return {
+    workspace_id: workspaceId,
+    display_name: displayName,
+    kind: "workspace",
+    follows_root: true,
+    path: `/materials/${workspaceId}`,
+    archived: false,
+    created_at: "",
+    status: "ready",
+    error: "",
+    ...extra,
+  };
+}
+
+test("folder grouping files a named workspace under one heading", () => {
+  const entries = buildSidebarEntries({
+    roots: [
+      inWorkspace("algebra-new", "ws_a", "Algebra"),
+      inWorkspace("biology-new", "ws_b", "Biology"),
+      inWorkspace("algebra-old", "ws_a", "Algebra"),
+      session("plain"),
+    ],
+    groupByWorkspace: true,
+    workspaces: [workspace("ws_a", "Algebra"), workspace("ws_b", "Biology")],
+  });
+  assert.deepEqual(
+    entries.map((entry) => `${entry.kind}:${entry.id}`),
+    ["group:workspace:ws_a", "group:workspace:ws_b", "session:plain"],
+  );
+  const algebra = entries[0];
+  assert.equal(algebra.kind, "group");
+  if (algebra.kind !== "group") return;
+  assert.equal(algebra.label, "Algebra");
+  assert.equal(algebra.workspaceId, "ws_a");
+  assert.deepEqual(
+    algebra.rows.map((row) => row.session_id),
+    ["algebra-new", "algebra-old"],
+  );
+});
+
+test("default-workspace conversations are never wrapped in a default folder", () => {
+  const entries = buildSidebarEntries({
+    roots: [session("chat-a"), session("chat-b")],
+    groupByWorkspace: true,
+    workspaces: [workspace("ws_a", "Algebra")],
+  });
+  assert.deepEqual(
+    entries.map((entry) => `${entry.kind}:${entry.id}`),
+    ["session:chat-a", "session:chat-b"],
+  );
+});
+
+test("folder grouping is off unless the caller asks for it", () => {
+  const entries = buildSidebarEntries({
+    roots: [inWorkspace("chat-a", "ws_a", "Algebra")],
+    workspaces: [workspace("ws_a", "Algebra")],
+  });
+  assert.deepEqual(
+    entries.map((entry) => `${entry.kind}:${entry.id}`),
+    ["session:chat-a"],
+  );
+});
+
+test("an archived folder is demoted instead of heading the list", () => {
+  const entries = buildSidebarEntries({
+    roots: [inWorkspace("chat-a", "ws_a", "Retired")],
+    groupByWorkspace: true,
+    workspaces: [workspace("ws_a", "Retired", { archived: true })],
+  });
+  assert.deepEqual(
+    entries.map((entry) => `${entry.kind}:${entry.id}`),
+    ["session:chat-a"],
+  );
+});
+
+test("an empty folder is listed after the recency-ordered entries", () => {
+  const entries = buildSidebarEntries({
+    roots: [inWorkspace("chat-a", "ws_a", "Algebra")],
+    groupByWorkspace: true,
+    workspaces: [
+      workspace("ws_empty", "Brand new"),
+      workspace("ws_a", "Algebra"),
+    ],
+  });
+  assert.deepEqual(
+    entries.map((entry) => entry.id),
+    ["workspace:ws_a", "workspace:ws_empty"],
+  );
+  const empty = entries[1];
+  assert.equal(empty.kind, "group");
+  if (empty.kind !== "group") return;
+  assert.deepEqual(empty.rows, []);
+  assert.equal(empty.label, "Brand new");
+});
+
+test("a folder carries its invalid-path warning from the catalog", () => {
+  const entries = buildSidebarEntries({
+    roots: [inWorkspace("chat-a", "ws_a", "Algebra")],
+    groupByWorkspace: true,
+    workspaces: [
+      workspace("ws_a", "Algebra", { status: "invalid", error: "Path is gone" }),
+    ],
+  });
+  const folder = entries[0];
+  assert.equal(folder.kind, "group");
+  if (folder.kind !== "group") return;
+  assert.equal(folder.workspaceStatus, "invalid");
+  assert.equal(folder.workspaceError, "Path is gone");
 });

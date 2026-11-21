@@ -3,14 +3,20 @@
 import Tooltip from "@/shared/ui/Tooltip";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import Link from "next/link";
+import { useSearchParams } from "next/navigation";
+import { activeWorkspaceId as urlActiveWorkspaceId } from "@/lib/workspace-scope";
 import {
   ChevronDown,
   ChevronRight,
+  Folder,
   MessagesSquare,
   MoreHorizontal,
+  Plus,
   Unlink,
   Pin,
   RotateCcw,
+  AlertTriangle,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import {
@@ -19,7 +25,11 @@ import {
   SessionAvatar,
 } from "@/components/sidebar/SessionAvatar";
 import { useTaskBoard } from "@/lib/task-board-store";
-import { sessionTaskLinks, setTaskStatusLink } from "@/lib/task-board-api";
+import {
+  sessionTaskColor,
+  sessionTaskLinks,
+  setTaskStatusLink,
+} from "@/lib/task-board-api";
 import { notify } from "@/lib/notifications";
 import { useUnreadSessions } from "@/lib/session-unread";
 import type { ChatWorkspaceRegistration } from "@/lib/workspaces-api";
@@ -54,6 +64,7 @@ import {
   buildSidebarEntries,
   type SidebarGroupEntry,
 } from "@/lib/sidebar-entries";
+import { selectWorkspace } from "@/lib/workspace-scope";
 import {
   readCollapsedGroups,
   writeCollapsedGroups,
@@ -81,6 +92,13 @@ interface OrganizedSessionListProps {
   masteryTopics?: MasteryTopicLabel[];
   /** Collections whose reading conversations get their own group. */
   readingCollections?: ReadingCollectionLabel[];
+  /**
+   * Group conversations under their workspace folder. The account-wide sidebar
+   * passes this; a list that already shows one workspace's conversations does
+   * not, or every row would sit under a single folder heading naming the
+   * workspace the reader is already in.
+   */
+  groupByWorkspace?: boolean;
   activeSessionId: string | null;
   /**
    * Conversations the caller is streaming right now. They sort above the rest
@@ -122,6 +140,7 @@ export default function OrganizedSessionList({
   times = false,
   masteryTopics = [],
   readingCollections = [],
+  groupByWorkspace = false,
   activeSessionId,
   liveSessionIds,
   emptyLabel,
@@ -200,8 +219,10 @@ export default function OrganizedSessionList({
         masteryTopics,
         readingCollections,
         manualOrder,
+        groupByWorkspace,
+        workspaces,
       }),
-    [recents, manualOrder, masteryTopics, readingCollections, roots],
+    [recents, manualOrder, masteryTopics, readingCollections, roots, workspaces, groupByWorkspace],
   );
 
   const entryIds = useMemo(() => entries.map((entry) => entry.id), [entries]);
@@ -292,6 +313,18 @@ export default function OrganizedSessionList({
     });
   };
 
+  // Which workspace scope this tab is currently in — decides the highlight on
+  // its folder heading. Based on the URL scope (dt_workspace), NOT on which
+  // conversation happens to be open: being in the "test" workspace should
+  // highlight "test" even on an empty draft or when the open conversation is
+  // unbound. Falls back to the remembered scope when the URL names none.
+  const searchParams = useSearchParams();
+  const activeWorkspaceId = useMemo(() => {
+    return urlActiveWorkspaceId();
+    // searchParams is the reactive trigger: navigating to a new scope changes
+    // the URL, which re-runs this memo so the highlight follows the tab.
+  }, [searchParams]);
+
   if (entries.length === 0) {
     return (
       <div className="px-3 py-2 text-[11px] text-[var(--muted-foreground)]/65">
@@ -311,6 +344,17 @@ export default function OrganizedSessionList({
     const taskLinks = sessionTaskLinks(
       taskBoard, session.session_id, sessionWorkspaceId(session),
     );
+    // What the row's mark column has to say. It exists to report *state* —
+    // running, unread, failed, or the board colour of a task this conversation
+    // is linked to — and an idle row with none of those says nothing, so it
+    // gets no mark at all. The hollow ring that used to be drawn there was
+    // read as a row number, not as "nothing happening"; the column keeps its
+    // width as empty space so titles stay on one left edge either way.
+    const mark = deriveSessionMark(session, liveSessionIds, unread);
+    const taskColor = sessionTaskColor(
+      taskBoard, session.session_id, sessionWorkspaceId(session),
+    );
+    const showMark = mark !== "idle" || Boolean(taskColor);
 
     return (
       <div key={session.session_id} className="relative">
@@ -354,14 +398,21 @@ export default function OrganizedSessionList({
           ) : hasThreads ? (
             <span className="w-3" />
           ) : null}
-          <SessionAvatar
-            sessionId={session.session_id}
-            workspaceId={sessionWorkspaceId(session)}
-            mark={deriveSessionMark(session, liveSessionIds, unread)}
-            kind={sessionKindOf(session)}
-            size={child ? 11 : 12}
-            className={child ? "opacity-65" : "opacity-80"}
-          />
+          {showMark ? (
+            <SessionAvatar
+              sessionId={session.session_id}
+              workspaceId={sessionWorkspaceId(session)}
+              mark={mark}
+              kind={sessionKindOf(session)}
+              size={child ? 11 : 12}
+              className={child ? "opacity-65" : "opacity-80"}
+            />
+          ) : (
+            <span
+              aria-hidden
+              className={child ? "w-[11px] shrink-0" : "w-3 shrink-0"}
+            />
+          )}
           {child ? (
             <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[var(--muted)]/70 px-1.5 py-0.5 text-[9px] font-medium text-[var(--muted-foreground)]">
               <MessagesSquare size={9} strokeWidth={1.8} />
@@ -384,19 +435,13 @@ export default function OrganizedSessionList({
               className="min-w-0 flex-1 rounded border border-[var(--border)] bg-[var(--background)] px-1.5 py-0.5 text-[12px] outline-none focus:border-[var(--ring)]"
             />
           ) : (
-            <Tooltip
-              label={`${t("Conversation")}: ${isPlaceholderSessionTitle(session.title) ? placeholderLabel : session.title}`}
-              side="top"
-              className="min-w-0 flex-1"
+            <span
+              className={isPlaceholderSessionTitle(session.title)
+                ? "dt-breathing-text min-w-0 flex-1 truncate text-[12.5px] italic text-[var(--foreground)]"
+                : "min-w-0 flex-1 truncate text-[12.5px]"}
             >
-              <span
-                className={isPlaceholderSessionTitle(session.title)
-                  ? "dt-breathing-text min-w-0 flex-1 truncate text-[12.5px] italic text-[var(--foreground)]"
-                  : "min-w-0 flex-1 truncate text-[12.5px]"}
-              >
-                {displaySessionTitle(session.title, placeholderLabel)}
-              </span>
-            </Tooltip>
+              {displaySessionTitle(session.title, placeholderLabel)}
+            </span>
           )}
           {pinned ? <Pin size={10} className="shrink-0 opacity-55" /> : null}
           {children.length > 0 && !expanded ? (
@@ -578,8 +623,9 @@ export default function OrganizedSessionList({
   };
 
   /**
-   * A collapsible group — a mastery topic or a reading collection —
-   * standing at the same level as a single conversation, and dragged like one.
+   * A collapsible group — a workspace folder (new PRD grouping), or a mastery
+   * topic / reading collection (legacy grouping). All three stand at the same
+   * level as a single conversation and drag like one.
    *
    * Only the heading takes the press that starts a drag: grabbing a group by
    * one of its rows and watching the whole block move is not what that press
@@ -591,6 +637,14 @@ export default function OrganizedSessionList({
   const renderGroup = (entry: SidebarGroupEntry) => {
     const collapsed = collapsedGroups.has(entry.id);
     const recent = entry.group === "recent";
+    const isWorkspace = entry.group === "workspace";
+    const workspaceId = entry.workspaceId ?? "";
+    // 默认工作区（workspaceId=""）匹配 activeWorkspaceId 也为空的情况
+    const isActiveWorkspace = isWorkspace && (
+      workspaceId === activeWorkspaceId ||
+      (workspaceId === "" && !activeWorkspaceId)
+    );
+    const isInvalid = isWorkspace && entry.workspaceStatus === "invalid";
     const limit = recent ? groupLimits[entry.id] ?? 5 : entry.rows.length;
     // Keep the active conversation visible, including older deep links.
     const activeIndex = entry.rows.findIndex(row => row.session_id === activeSessionId);
@@ -601,65 +655,181 @@ export default function OrganizedSessionList({
     const sortable = Boolean(onReorder);
     const { style, ...handlers } = drag.getItemProps(entry.id);
     const dragging = drag.draggingId === entry.id;
+
+    // --- Heading mark column -----------------------------------------------
+    let headingMark: React.ReactNode;
+    if (recent) {
+      headingMark = null;
+    } else if (isWorkspace) {
+      headingMark = isInvalid ? (
+        <Tooltip
+          label={entry.workspaceError || t("folder.group.invalid")}
+          side="top"
+        >
+          <AlertTriangle
+            size={11}
+            strokeWidth={2}
+            className="shrink-0 text-[var(--destructive)]"
+          />
+        </Tooltip>
+      ) : (
+        <Folder
+          size={11}
+          strokeWidth={1.7}
+          className="shrink-0 text-[var(--muted-foreground)]"
+        />
+      );
+    } else {
+      headingMark = <GroupMark />;
+    }
+
+    // --- Collapse target ---------------------------------------------------
+    const isEmptyWorkspace = isWorkspace && entry.rows.length === 0;
+
+    // --- Highlight state ---------------------------------------------------
+    // A folder heading looks exactly like every other heading at rest: the
+    // pointer is the only thing that paints it (``hover:bg-background/40``).
+    // It used to keep a permanent pill — ``bg-background/60`` plus a ring —
+    // on the folder whose scope the tab was in, which read as a leftover
+    // hover rather than as state, and made one heading sit in a card the
+    // others did not. The scope is still announced (``aria-current``), and
+    // the composer's workspace pill already names it in the open
+    // conversation, so no visual cue is lost that another surface does not
+    // already carry.
+    //
+    // The right edge stays clear for the hover actions (`+`, `⋯`) — 20px +
+    // 2px + 20px + the 4px lead-in that fades the pair in over the row —
+    // reserved at rest as well as under the pointer, so a long folder name
+    // truncates where the buttons begin instead of running beneath them, and
+    // no title reflows when the pointer arrives.
+    const groupHeadingClass = `group/heading flex w-full min-w-0 items-center gap-1.5 rounded-lg px-1.5 py-1 text-left text-[12.5px] font-medium text-[var(--foreground)] transition-colors hover:bg-background/40${
+      isWorkspace ? " pr-[46px]" : ""
+    }`;
+
     return (
       <div
         key={entry.id}
         data-group-id={entry.id}
+        data-group-kind={entry.group}
         ref={sortable ? handlers.ref : undefined}
         style={sortable ? style : undefined}
-        className={`${recent ? "pt-5" : "pt-1.5"} first:pt-0 ${
+        className={`relative ${
           dragging
             ? "rounded-lg bg-background/85 shadow-lg ring-1 ring-border/70"
             : ""
         }`}
       >
-        <button
-          type="button"
-          onPointerDown={sortable ? handlers.onPointerDown : undefined}
-          onClickCapture={sortable ? handlers.onClickCapture : undefined}
-          onKeyDown={sortable ? handlers.onKeyDown : undefined}
-          onDragStartCapture={
-            sortable ? handlers.onDragStartCapture : undefined
-          }
-          onClick={() => toggleGroup(entry.id)}
-          aria-expanded={!collapsed}
-          // A quiet title, not a section banner: the same size and the same ink
-          // as the conversation titles it sits among, one weight heavier, with
-          // its mark column holding the two in one left edge. Earlier passes
-          // had it a hair smaller than a caption and uppercase, which shouted
-          // in a list of 12.5px rows and did nothing whatsoever to the CJK
-          // titles most of these groups actually carry.
-          className="group/heading flex w-full min-w-0 items-center gap-1.5 rounded-lg px-1.5 py-1 text-left text-[12.5px] font-medium text-[var(--foreground)] transition-colors hover:bg-background/40 hover:text-[var(--foreground)]"
-        >
-          {!recent && <GroupMark />}
-          <span className="min-w-0 truncate">{recent ? t("Recent") : entry.label}</span>
-          {/* The caret follows the words rather than introducing them — a
-              title that can be folded, instead of a row of controls with a
-              label attached. */}
-          <ChevronDown
-            size={11}
-            strokeWidth={2}
-            className={`shrink-0 opacity-50 transition-[transform,opacity] duration-150 group-hover/heading:opacity-80 ${
-              collapsed ? "-rotate-90" : ""
-            }`}
-          />
+        <div className="group/folderhead relative flex min-w-0 items-center">
+          <button
+            type="button"
+            onPointerDown={sortable ? handlers.onPointerDown : undefined}
+            onClickCapture={sortable ? handlers.onClickCapture : undefined}
+            onKeyDown={sortable ? handlers.onKeyDown : undefined}
+            onDragStartCapture={
+              sortable ? handlers.onDragStartCapture : undefined
+            }
+            onClick={() => toggleGroup(entry.id)}
+            aria-expanded={!collapsed}
+            aria-current={isActiveWorkspace ? "page" : undefined}
+            className={groupHeadingClass}
+          >
+          {headingMark}
+          <span className="min-w-0 truncate">
+            {recent
+              ? t("Recent")
+              : isWorkspace && workspaceId === ""
+                ? t("Default workspace")
+                : entry.label}
+          </span>
           <span className="flex-1" />
-          {/* Only while folded. An open group has its conversations on screen;
-              counting them for the reader is a number that says nothing. */}
-          {collapsed ? (
+          {/* Count badge — for a collapsed mastery topic or reading collection
+              only, where it is the sole hint of how much is folded away. A
+              workspace never carries one, folded or open: its rows are the
+              folder's own contents, and the heading is not a tally of them. */}
+          {collapsed && !isWorkspace ? (
             <span className="shrink-0 text-[10.5px] tabular-nums opacity-50">
               {entry.rows.length}
             </span>
           ) : null}
-        </button>
+          {/* The disclosure caret is for the folded sections; a workspace is
+              folded by pressing its name, and the room its caret held now
+              belongs to the hover actions (see the gutter reserved on the
+              heading above). */}
+          {isWorkspace ? null : (
+            <ChevronDown
+              size={11}
+              strokeWidth={2}
+              className={`shrink-0 opacity-50 transition-[transform,opacity] duration-150 group-hover/heading:opacity-80 ${
+                collapsed ? "-rotate-90" : ""
+              }`}
+            />
+          )}
+          </button>
+          {/* Folder actions sit beside the heading, not inside it: a button
+              cannot contain another button, and nesting them broke both the
+              click target and the drag handle. They fade in over the gutter
+              the heading reserves for them, so nothing is covered or moved. */}
+          {isWorkspace ? (
+            <span className="pointer-events-none absolute right-0 top-1/2 flex shrink-0 -translate-y-1/2 items-center gap-0.5 bg-[var(--secondary)] pl-1 opacity-0 transition-opacity duration-150 group-hover/folderhead:pointer-events-auto group-hover/folderhead:opacity-100 group-focus-within/folderhead:pointer-events-auto group-focus-within/folderhead:opacity-100">
+              <Tooltip
+                label={
+                  !workspaceId
+                    ? t("folder.group.newChatInDefault")
+                    : t("folder.group.newChatIn")
+                }
+                side="top"
+              >
+                <button
+                  type="button"
+                  data-no-drag
+                  aria-label={
+                    !workspaceId
+                      ? t("folder.group.newChatInDefault")
+                      : t("folder.group.newChatIn")
+                  }
+                  disabled={isInvalid}
+                  onClick={() => {
+                    // 默认工作区（空 workspaceId）→ 不带 scope，直接 /chat
+                    void selectWorkspace(workspaceId || "", "/chat");
+                  }}
+                  className="flex h-5 w-5 items-center justify-center rounded-md text-[var(--muted-foreground)] transition-colors hover:bg-[var(--muted)] hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-30"
+                >
+                  <Plus size={11} strokeWidth={2} />
+                </button>
+              </Tooltip>
+              <Tooltip label={t("folder.group.manage")} side="top">
+                <Link
+                  href="/settings/workspace"
+                  data-no-drag
+                  aria-label={t("folder.group.manage")}
+                  className="flex h-5 w-5 items-center justify-center rounded-md text-[var(--muted-foreground)] transition-colors hover:bg-[var(--muted)] hover:text-[var(--foreground)]"
+                >
+                  <MoreHorizontal size={12} strokeWidth={2} />
+                </Link>
+              </Tooltip>
+            </span>
+          ) : null}
+        </div>
         {collapsed ? null : (
-          <div className={recent ? "" : "ml-1.5 border-l border-[var(--border)]/40 pl-1"}>
-            {visibleRows.map((session) => renderRow(session))}
-            {entry.rows.length > limit && (
-              <button type="button" className="px-2 py-1 text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
-                onClick={() => setGroupLimits(previous => ({ ...previous, [entry.id]: limit + 5 }))}>
-                {t("Show more")}
-              </button>
+          // Indentation carries the nesting; a rule down the left edge of the
+          // block used to as well, and it read as a stray border running the
+          // height of the panel rather than as a tree guide. ``ml-1.5 pl-1``
+          // keeps the children where they were.
+          <div className={recent ? "" : "ml-1.5 pl-1"}>
+            {isEmptyWorkspace ? (
+              <div className="px-1 py-1.5 text-[11.5px] text-[var(--muted-foreground)]">
+                {t("folder.group.empty")}
+              </div>
+            ) : (
+              <>
+                {visibleRows.map((session) => renderRow(session))}
+                {entry.rows.length > limit && (
+                  <button type="button" className="px-2 py-1 text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
+                    onClick={() => setGroupLimits(previous => ({ ...previous, [entry.id]: limit + 5 }))}>
+                    {t("Show more")}
+                  </button>
+                )}
+              </>
             )}
           </div>
         )}

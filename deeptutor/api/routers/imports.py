@@ -30,6 +30,10 @@ from deeptutor.services.session import (
     get_sqlite_session_store,
     make_imported_session_id,
 )
+from deeptutor.services.workspace.context import (
+    current_workspace_id,
+    workspace_context,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -112,69 +116,93 @@ def _require_loopback(request: Request) -> None:
         )
 
 
+def _request_workspace_id(request: Request) -> str:
+    """Resolve the content workspace a import was started from.
+
+    The import endpoints intentionally skip the auth dependency (they are
+    loopback/local flows), so the usual per-request scope install never runs.
+    Without this the import always lands in the default workspace no matter
+    which workspace the browser was in.
+    """
+    raw = request.headers.get("x-deeptutor-workspace") or request.query_params.get(
+        "dt_workspace"
+    )
+    return (raw or "").strip()
+
+
 async def _persist_imports(
     source: str,
     agent_id: str,
     agent_name: str,
     sessions: list[ImportedSession],
+    workspace_id: str = "",
 ) -> dict[str, Any]:
-    store = get_sqlite_session_store()
-    imported = 0
-    skipped = 0
-    results: list[dict[str, Any]] = []
+    # Establish the target scope explicitly so the session store resolves the
+    # importing workspace's own database, and tag each session with that
+    # workspace so cross-workspace indexes file it correctly.
+    with workspace_context(workspace_id):
+        store = get_sqlite_session_store()
+        resolved_workspace = current_workspace_id()
+        imported = 0
+        skipped = 0
+        results: list[dict[str, Any]] = []
 
-    for incoming in sessions:
-        # Drop content-less rows (e.g. tool-only turns the adapter could not
-        # reduce to text) so the transcript stays a clean human conversation.
-        messages = [m for m in incoming.messages if (m.content or "").strip()]
-        if not messages:
-            skipped += 1
-            results.append(
-                {"external_id": incoming.external_id, "imported": False, "reason": "empty"}
-            )
-            continue
-        if len(messages) > _MAX_MESSAGES_PER_SESSION:
-            messages = messages[:_MAX_MESSAGES_PER_SESSION]
+        for incoming in sessions:
+            # Drop content-less rows (e.g. tool-only turns the adapter could not
+            # reduce to text) so the transcript stays a clean human conversation.
+            messages = [m for m in incoming.messages if (m.content or "").strip()]
+            if not messages:
+                skipped += 1
+                results.append(
+                    {"external_id": incoming.external_id, "imported": False, "reason": "empty"}
+                )
+                continue
+            if len(messages) > _MAX_MESSAGES_PER_SESSION:
+                messages = messages[:_MAX_MESSAGES_PER_SESSION]
 
-        session_id = make_imported_session_id(source, incoming.external_id)
-        import_meta: dict[str, Any] = {
-            "source": source,
-            "source_cwd": incoming.source_cwd,
-            "external_id": incoming.external_id,
-        }
-        if agent_id:
-            import_meta["agent_id"] = agent_id
-        if agent_name:
-            import_meta["agent_name"] = agent_name
-        preferences = {"import": import_meta}
-        try:
-            result = await store.import_session(
-                session_id,
-                incoming.title,
-                incoming.created_at,
-                incoming.updated_at,
-                preferences,
-                [m.model_dump() for m in messages],
-            )
-        except Exception:
-            logger.exception("failed to import session %s", incoming.external_id)
-            skipped += 1
-            results.append(
-                {"external_id": incoming.external_id, "imported": False, "reason": "error"}
-            )
-            continue
+            session_id = make_imported_session_id(source, incoming.external_id)
+            import_meta: dict[str, Any] = {
+                "source": source,
+                "source_cwd": incoming.source_cwd,
+                "external_id": incoming.external_id,
+            }
+            if agent_id:
+                import_meta["agent_id"] = agent_id
+            if agent_name:
+                import_meta["agent_name"] = agent_name
+            preferences = {"import": import_meta}
+            if resolved_workspace:
+                preferences["workspace_id"] = resolved_workspace
+            try:
+                result = await store.import_session(
+                    session_id,
+                    incoming.title,
+                    incoming.created_at,
+                    incoming.updated_at,
+                    preferences,
+                    [m.model_dump() for m in messages],
+                )
+            except Exception:
+                logger.exception("failed to import session %s", incoming.external_id)
+                skipped += 1
+                results.append(
+                    {"external_id": incoming.external_id, "imported": False, "reason": "error"}
+                )
+                continue
 
-        if result.get("imported"):
-            imported += 1
-        else:
-            skipped += 1
-        results.append({"external_id": incoming.external_id, **result})
+            if result.get("imported"):
+                imported += 1
+            else:
+                skipped += 1
+            results.append({"external_id": incoming.external_id, **result})
 
-    return {"imported": imported, "skipped": skipped, "sessions": results}
+        return {"imported": imported, "skipped": skipped, "sessions": results}
 
 
 @router.post("/chat-history")
-async def import_chat_history(payload: ChatHistoryImportRequest) -> dict[str, Any]:
+async def import_chat_history(
+    payload: ChatHistoryImportRequest, request: Request
+) -> dict[str, Any]:
     if not payload.sessions:
         raise HTTPException(status_code=400, detail="No sessions to import")
     if len(payload.sessions) > _MAX_SESSIONS_PER_REQUEST:
@@ -187,6 +215,7 @@ async def import_chat_history(payload: ChatHistoryImportRequest) -> dict[str, An
         payload.agent_id,
         payload.agent_name,
         payload.sessions,
+        _request_workspace_id(request),
     )
 
 
@@ -224,7 +253,9 @@ async def import_local_sources(
             detail="No readable WorkBuddy sessions matched the selection",
         )
     incoming = [ImportedSession(**item) for item in parsed]
-    return await _persist_imports(payload.source, "", payload.agent_name, incoming)
+    return await _persist_imports(
+        payload.source, "", payload.agent_name, incoming, _request_workspace_id(request)
+    )
 
 
 @router.get("/local-sources")

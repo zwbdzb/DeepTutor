@@ -147,7 +147,12 @@ export const DASHBOARD_GROUPS: DashboardGroup[] = [
         },
         unit: { zh: "个知识库", en: "knowledge bases" },
         tile: "bg-blue-500/10 text-blue-600 dark:text-blue-400",
-        load: async () => (await listKnowledgeBases({ library: true })).length,
+        // Connected subagents are stored as ``type: subagent`` KBs for the chat
+        // composer; the Knowledge Center hides them, so the count must too.
+        load: async () =>
+          (await listKnowledgeBases({ library: true })).filter(
+            (kb) => kb.metadata?.type !== "subagent",
+          ).length,
       },
       {
         key: "co_writer",
