@@ -25,7 +25,11 @@ import {
   SessionAvatar,
 } from "@/components/sidebar/SessionAvatar";
 import { useTaskBoard } from "@/lib/task-board-store";
-import { sessionTaskLinks, setTaskStatusLink } from "@/lib/task-board-api";
+import {
+  sessionTaskColor,
+  sessionTaskLinks,
+  setTaskStatusLink,
+} from "@/lib/task-board-api";
 import { notify } from "@/lib/notifications";
 import { useUnreadSessions } from "@/lib/session-unread";
 import type { ChatWorkspaceRegistration } from "@/lib/workspaces-api";
@@ -340,6 +344,17 @@ export default function OrganizedSessionList({
     const taskLinks = sessionTaskLinks(
       taskBoard, session.session_id, sessionWorkspaceId(session),
     );
+    // What the row's mark column has to say. It exists to report *state* —
+    // running, unread, failed, or the board colour of a task this conversation
+    // is linked to — and an idle row with none of those says nothing, so it
+    // gets no mark at all. The hollow ring that used to be drawn there was
+    // read as a row number, not as "nothing happening"; the column keeps its
+    // width as empty space so titles stay on one left edge either way.
+    const mark = deriveSessionMark(session, liveSessionIds, unread);
+    const taskColor = sessionTaskColor(
+      taskBoard, session.session_id, sessionWorkspaceId(session),
+    );
+    const showMark = mark !== "idle" || Boolean(taskColor);
 
     return (
       <div key={session.session_id} className="relative">
@@ -383,14 +398,21 @@ export default function OrganizedSessionList({
           ) : hasThreads ? (
             <span className="w-3" />
           ) : null}
-          <SessionAvatar
-            sessionId={session.session_id}
-            workspaceId={sessionWorkspaceId(session)}
-            mark={deriveSessionMark(session, liveSessionIds, unread)}
-            kind={sessionKindOf(session)}
-            size={child ? 11 : 12}
-            className={child ? "opacity-65" : "opacity-80"}
-          />
+          {showMark ? (
+            <SessionAvatar
+              sessionId={session.session_id}
+              workspaceId={sessionWorkspaceId(session)}
+              mark={mark}
+              kind={sessionKindOf(session)}
+              size={child ? 11 : 12}
+              className={child ? "opacity-65" : "opacity-80"}
+            />
+          ) : (
+            <span
+              aria-hidden
+              className={child ? "w-[11px] shrink-0" : "w-3 shrink-0"}
+            />
+          )}
           {child ? (
             <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[var(--muted)]/70 px-1.5 py-0.5 text-[9px] font-medium text-[var(--muted-foreground)]">
               <MessagesSquare size={9} strokeWidth={1.8} />
@@ -413,19 +435,13 @@ export default function OrganizedSessionList({
               className="min-w-0 flex-1 rounded border border-[var(--border)] bg-[var(--background)] px-1.5 py-0.5 text-[12px] outline-none focus:border-[var(--ring)]"
             />
           ) : (
-            <Tooltip
-              label={`${t("Conversation")}: ${isPlaceholderSessionTitle(session.title) ? placeholderLabel : session.title}`}
-              side="top"
-              className="min-w-0 flex-1"
+            <span
+              className={isPlaceholderSessionTitle(session.title)
+                ? "dt-breathing-text min-w-0 flex-1 truncate text-[12.5px] italic text-[var(--foreground)]"
+                : "min-w-0 flex-1 truncate text-[12.5px]"}
             >
-              <span
-                className={isPlaceholderSessionTitle(session.title)
-                  ? "dt-breathing-text min-w-0 flex-1 truncate text-[12.5px] italic text-[var(--foreground)]"
-                  : "min-w-0 flex-1 truncate text-[12.5px]"}
-              >
-                {displaySessionTitle(session.title, placeholderLabel)}
-              </span>
-            </Tooltip>
+              {displaySessionTitle(session.title, placeholderLabel)}
+            </span>
           )}
           {pinned ? <Pin size={10} className="shrink-0 opacity-55" /> : null}
           {children.length > 0 && !expanded ? (
@@ -671,10 +687,23 @@ export default function OrganizedSessionList({
     const isEmptyWorkspace = isWorkspace && entry.rows.length === 0;
 
     // --- Highlight state ---------------------------------------------------
-    const groupHeadingClass = `group/heading flex w-full min-w-0 items-center gap-1.5 rounded-lg px-1.5 py-1 text-left text-[12.5px] font-medium transition-colors hover:bg-background/40 ${
-      isActiveWorkspace
-        ? "bg-background/60 text-[var(--foreground)] ring-1 ring-border/40"
-        : "text-[var(--foreground)]"
+    // A folder heading looks exactly like every other heading at rest: the
+    // pointer is the only thing that paints it (``hover:bg-background/40``).
+    // It used to keep a permanent pill — ``bg-background/60`` plus a ring —
+    // on the folder whose scope the tab was in, which read as a leftover
+    // hover rather than as state, and made one heading sit in a card the
+    // others did not. The scope is still announced (``aria-current``), and
+    // the composer's workspace pill already names it in the open
+    // conversation, so no visual cue is lost that another surface does not
+    // already carry.
+    //
+    // The right edge stays clear for the hover actions (`+`, `⋯`) — 20px +
+    // 2px + 20px + the 4px lead-in that fades the pair in over the row —
+    // reserved at rest as well as under the pointer, so a long folder name
+    // truncates where the buttons begin instead of running beneath them, and
+    // no title reflows when the pointer arrives.
+    const groupHeadingClass = `group/heading flex w-full min-w-0 items-center gap-1.5 rounded-lg px-1.5 py-1 text-left text-[12.5px] font-medium text-[var(--foreground)] transition-colors hover:bg-background/40${
+      isWorkspace ? " pr-[46px]" : ""
     }`;
 
     return (
@@ -713,32 +742,33 @@ export default function OrganizedSessionList({
                 : entry.label}
           </span>
           <span className="flex-1" />
-          {/* Count badge — only meaningful for workspaces and collapsed
-              sections. On a folder it gives way to the hover actions, so the
-              two never sit on top of one another. */}
-          {(collapsed || isWorkspace) ? (
-            <span
-              className={`shrink-0 text-[10.5px] tabular-nums opacity-50 ${
-                isWorkspace
-                  ? "transition-opacity group-hover/folderhead:opacity-0 group-focus-within/folderhead:opacity-0"
-                  : ""
-              }`}
-            >
+          {/* Count badge — for a collapsed mastery topic or reading collection
+              only, where it is the sole hint of how much is folded away. A
+              workspace never carries one, folded or open: its rows are the
+              folder's own contents, and the heading is not a tally of them. */}
+          {collapsed && !isWorkspace ? (
+            <span className="shrink-0 text-[10.5px] tabular-nums opacity-50">
               {entry.rows.length}
             </span>
           ) : null}
-          <ChevronDown
-            size={11}
-            strokeWidth={2}
-            className={`shrink-0 opacity-50 transition-[transform,opacity] duration-150 group-hover/heading:opacity-80 ${
-              collapsed ? "-rotate-90" : ""
-            }`}
-          />
+          {/* The disclosure caret is for the folded sections; a workspace is
+              folded by pressing its name, and the room its caret held now
+              belongs to the hover actions (see the gutter reserved on the
+              heading above). */}
+          {isWorkspace ? null : (
+            <ChevronDown
+              size={11}
+              strokeWidth={2}
+              className={`shrink-0 opacity-50 transition-[transform,opacity] duration-150 group-hover/heading:opacity-80 ${
+                collapsed ? "-rotate-90" : ""
+              }`}
+            />
+          )}
           </button>
           {/* Folder actions sit beside the heading, not inside it: a button
               cannot contain another button, and nesting them broke both the
-              click target and the drag handle. They replace the count badge
-              while hovered or focused instead of covering it. */}
+              click target and the drag handle. They fade in over the gutter
+              the heading reserves for them, so nothing is covered or moved. */}
           {isWorkspace ? (
             <span className="pointer-events-none absolute right-0 top-1/2 flex shrink-0 -translate-y-1/2 items-center gap-0.5 bg-[var(--secondary)] pl-1 opacity-0 transition-opacity duration-150 group-hover/folderhead:pointer-events-auto group-hover/folderhead:opacity-100 group-focus-within/folderhead:pointer-events-auto group-focus-within/folderhead:opacity-100">
               <Tooltip
@@ -781,7 +811,11 @@ export default function OrganizedSessionList({
           ) : null}
         </div>
         {collapsed ? null : (
-          <div className={recent ? "" : "ml-1.5 border-l border-[var(--border)]/40 pl-1"}>
+          // Indentation carries the nesting; a rule down the left edge of the
+          // block used to as well, and it read as a stray border running the
+          // height of the panel rather than as a tree guide. ``ml-1.5 pl-1``
+          // keeps the children where they were.
+          <div className={recent ? "" : "ml-1.5 pl-1"}>
             {isEmptyWorkspace ? (
               <div className="px-1 py-1.5 text-[11.5px] text-[var(--muted-foreground)]">
                 {t("folder.group.empty")}
