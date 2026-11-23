@@ -18,7 +18,8 @@ import java.security.MessageDigest
  *   python/       python-build-standalone linux-aarch64
  *   node/         node linux-arm64
  *   rootfs/       Debian bookworm arm64（PRoot 的根文件系统）
- *   proot         静态 aarch64 PRoot
+ *   proot         静态 aarch64 PRoot（proot-me，兜底）
+ *   proot-termux/ Termux 版 bionic PRoot（bin/proot + libexec/proot/loader + lib/*.so）
  *   android-bundle.json
  *
  * 解压必须用 commons-compress：运行包里有符号链接（python3 -> python3.12、
@@ -44,6 +45,9 @@ object RuntimeInstaller {
         if (!File(dir, "android-bundle.json").isFile ||
             !File(dir, "python/bin/python3").exists() ||
             !File(dir, "proot").exists() ||
+            // layout v2 才有 Termux 版 PRoot：老运行时必须重装，否则手机端
+            // 只能落到在 Android 上静默失败的静态版。
+            !File(dir, "proot-termux/bin/proot").exists() ||
             !File(dir, "rootfs/usr/bin/env").exists()
         ) {
             return false

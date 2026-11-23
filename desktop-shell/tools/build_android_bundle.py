@@ -10,7 +10,9 @@ zip the app downloads on first launch:
       python/                 # python-build-standalone linux-aarch64
       node/                   # node linux-arm64
       rootfs/                 # Linux aarch64 rootfs（Debian bookworm / Ubuntu Base）
-      proot                   # static aarch64 PRoot binary (mode 0755)
+      proot                   # static aarch64 PRoot binary (mode 0755, fallback)
+      proot-termux/           # Termux bionic PRoot: bin/proot, libexec/proot/loader,
+                              #   lib/libtalloc.so.2, lib/libandroid-shmem.so
       android-bundle.json     # phone-side metadata (versions, proot source)
 
 Everything is written straight into the zip: the rootfs tarball is streamed
@@ -27,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import re
 import shutil
@@ -62,6 +65,30 @@ PROOT_URLS = (
     "https://github.com/proot-me/proot/releases/download/v5.3.0/proot-v5.3.0-aarch64-static",
 )
 PROOT_SHA256 = "fa10b1a7818c2f5b1dcb5834450570c368c9ecf66d31521509621b95c4538a45"
+# Termux 版 PRoot（bionic 编译，Android 上 proot-distro 长期在用的组合）。
+# proot-me 的静态 glibc 版在 Android 上会静默退出：它把内嵌 loader 提取到
+# /proc/self/fd 再 exec，Android 上这一步直接失败（exit=255、零输出）。Termux
+# 版用外部 loader 文件 + PROOT_LOADER / PROOT_TMP_DIR，并且是 bionic 动态链接，
+# 只依赖自带的 libtalloc / libandroid-shmem。
+TERMUX_PROOT_VERSION = "5.1.107.102"
+TERMUX_PACKAGES = (
+    (f"https://packages.termux.dev/apt/termux-main/pool/main/p/proot/"
+     f"proot_{TERMUX_PROOT_VERSION}_aarch64.deb", "termux-proot.deb", 50_000),
+    ("https://packages.termux.dev/apt/termux-main/pool/main/libt/libtalloc/"
+     "libtalloc_2.5.0_aarch64.deb", "termux-libtalloc.deb", 20_000),
+    ("https://packages.termux.dev/apt/termux-main/pool/main/liba/libandroid-shmem/"
+     "libandroid-shmem_0.7_aarch64.deb", "termux-libandroid-shmem.deb", 5_000),
+)
+# deb 里的路径 -> 手机运行包里的路径（source 用后缀匹配，deb 的绝对前缀会变）。
+TERMUX_PROOT_FILES = (
+    ("termux-proot.deb", "files/usr/bin/proot", "proot-termux/bin/proot", 0o755),
+    ("termux-proot.deb", "files/usr/libexec/proot/loader",
+     "proot-termux/libexec/proot/loader", 0o755),
+    ("termux-libtalloc.deb", "files/usr/lib/libtalloc.so.2.5.0",
+     "proot-termux/lib/libtalloc.so.2", 0o755),
+    ("termux-libandroid-shmem.deb", "files/usr/lib/libandroid-shmem.so",
+     "proot-termux/lib/libandroid-shmem.so", 0o755),
+)
 ELF_MACHINE_AARCH64 = 0xB7
 # GitHub Release 单个资产上限 2 GB（硬限制），超了上传会失败；提前拦住。
 GITHUB_ASSET_LIMIT = 2_000_000_000
@@ -204,6 +231,60 @@ def _download_rootfs(dest: Path) -> Path:
     )
 
 
+def _deb_members(deb: Path) -> dict[str, bytes]:
+    """Read every regular file out of a .deb (ar archive -> data.tar.*)."""
+    data = deb.read_bytes()
+    if data[:8] != b"!<arch>\n":
+        raise SystemExit(f"{deb} is not a debian package")
+    offset = 8
+    while offset + 60 <= len(data):
+        header = data[offset:offset + 60]
+        name = header[:16].decode("ascii", "replace").strip()
+        try:
+            size = int(header[48:58].decode("ascii").strip())
+        except ValueError as exc:
+            raise SystemExit(f"corrupt ar header in {deb}: {exc}") from exc
+        body = data[offset + 60:offset + 60 + size]
+        offset += 60 + size + (size % 2)
+        if not name.startswith("data.tar"):
+            continue
+        members: dict[str, bytes] = {}
+        with tarfile.open(fileobj=io.BytesIO(body), mode="r:*") as tar:
+            for member in tar:
+                if member.isfile():
+                    handle = tar.extractfile(member)
+                    if handle is not None:
+                        members[member.name] = handle.read()
+        return members
+    raise SystemExit(f"no data.tar.* inside {deb}")
+
+
+def _add_termux_proot(out: zipfile.ZipFile) -> str:
+    """Bundle Termux's bionic PRoot (+ its loader and two shared libs)."""
+    downloaded: dict[str, Path] = {}
+    for url, filename, min_bytes in TERMUX_PACKAGES:
+        downloaded[filename] = _download((url,), CACHE / filename, min_bytes)
+    contents = {name: _deb_members(path) for name, path in downloaded.items()}
+    for deb_name, suffix, arc, mode in TERMUX_PROOT_FILES:
+        picked = next(
+            (data for name, data in contents[deb_name].items() if name.endswith(suffix)),
+            None,
+        )
+        if picked is None:
+            raise SystemExit(f"{deb_name} does not contain .../{suffix}")
+        if _elf_machine_bytes(picked) != ELF_MACHINE_AARCH64:
+            raise SystemExit(f"{arc} from {deb_name} is not an aarch64 ELF")
+        out.writestr(_zip_info(arc, mode), picked)
+        log(f"added {arc} ({len(picked) / 1e3:.0f} KB)")
+    return TERMUX_PROOT_VERSION
+
+
+def _elf_machine_bytes(data: bytes) -> int:
+    if len(data) < 20 or data[:4] != b"\x7fELF":
+        return -1
+    return data[18] | (data[19] << 8)
+
+
 def _zip_info(name: str, mode: int) -> zipfile.ZipInfo:
     info = zipfile.ZipInfo(name, date_time=_ZIP_DATE)
     # create_system=3（UNIX）让解压端按 external_attr 还原权限/符号链接；
@@ -309,18 +390,21 @@ def build(runtime_zip: Path, out_zip: Path, *, rootfs: Path | None = None,
     out_zip.unlink(missing_ok=True)
     with zipfile.ZipFile(out_zip, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as out:
         deeptutor_version = _add_existing_zip(out, runtime_zip)
+        rootfs_arch = "linux-aarch64"
         _add_rootfs(out, rootfs_archive)
         out.writestr(_zip_info("proot", 0o755), proot_binary.read_bytes())
+        termux_proot_version = _add_termux_proot(out)
         out.writestr(
             _zip_info("android-bundle.json", 0o644),
             json.dumps({
-                "layout_version": 1,
+                "layout_version": 2,
                 "deeptutor_version": deeptutor_version,
-                "rootfs": "linux-aarch64",
+                "rootfs": rootfs_arch,
                 "rootfs_source": rootfs_archive.name,
                 "rootfs_sha256": hashlib.sha256(rootfs_archive.read_bytes()).hexdigest(),
                 "rootfs_bytes": rootfs_archive.stat().st_size,
                 "proot_sha256": proot_sha,
+                "proot_termux": termux_proot_version,
             }, indent=2),
         )
 

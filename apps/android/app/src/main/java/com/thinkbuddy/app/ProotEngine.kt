@@ -41,47 +41,14 @@ object ProotEngine {
 
         writeBootScript(home, backendPort)
 
-        val prootArgs = mutableListOf(
-            File(runtime, "proot").absolutePath,
-            "--link2symlink",
-            "--kill-on-exit",
-            "-0",
-            "-r", File(runtime, "rootfs").absolutePath,
-            "-b", "/dev",
-            "-b", "/proc",
-            "-b", "/sys",
-            "-b", "${File(runtime, "python").absolutePath}:/opt/python",
-            "-b", "${File(runtime, "node").absolutePath}:/opt/node",
-            // 直接挂在 /root 上：PRoot 的 bind 目标必须在 rootfs 里已存在，
-            // /root/.deeptutor 这种新目录不存在会导致挂载失败。
-            "-b", "${home.absolutePath}:/root",
-            "-b", "${tmp.absolutePath}:/tmp",
-            "-w", "/root",
-        )
-
-        val baseEnv = mapOf(
-            "PROOT_NO_SECCOMP" to "1",
-            "PROOT_TMP_DIR" to tmp.absolutePath,
-            "HOME" to "/root",
-            "TMPDIR" to "/tmp",
-            // 进程环境被整体清空；不补 PATH 的话，guest 里任何 subprocess
-            // （exec 工具、git、ffmpeg）都会直接 "No such file"。
-            "PATH" to "/opt/python/bin:/opt/node/bin:/usr/local/sbin:/usr/local/bin:" +
-                "/usr/sbin:/usr/bin:/sbin:/bin",
-            "LANG" to "C.UTF-8",
-            "LC_ALL" to "C.UTF-8",
-            "PYTHONUNBUFFERED" to "1",
-            "PYTHONIOENCODING" to "utf-8:replace",
-            // 手机端只监听回环，登录/鉴权没有意义（与桌面壳的相对路径代理保持一致）。
-            "DEEPTUTOR_AUTH_ENABLED" to "false",
-            "DEEPTUTOR_HOME" to "/root",
-        )
-
-        onStatus("正在检查运行环境...")
         ensureExecutable(runtime)
-        // 先跑几条最小命令，把问题锁死在「PRoot 二进制」「rootfs」还是「参数/env」
-        // 这三层里的哪一层，免得所有失败都报成同一个含糊的「后端进程提前退出」。
-        runProbe(runtime, prootArgs, baseEnv)
+        onStatus("正在检查运行环境...")
+        // 运行包里同时带 Termux（bionic）与静态 glibc 两个 proot：谁能真正拉起
+        // guest 就用谁，失败的一方也留在报告里，便于定位。
+        val selection = selectProot(runtime, home, tmp)
+        val prootArgs = selection.args
+        val baseEnv = selection.env
+        runProbe(prootArgs, baseEnv)
 
         onStatus("正在启动本地引擎...")
         backend = launch(
@@ -190,87 +157,152 @@ object ProotEngine {
         throw IOException("$label 启动超时（端口 $port）")
     }
 
-    /**
-     * 逐层加参数地跑 PRoot，一次把问题定位到具体一层：
-     *   version  —— 只验证静态二进制本身能否被 exec（不碰 rootfs）
-     *   sh       —— -r rootfs 跑 /bin/sh（验证 rootfs 与 chdir）
-     *   sh-root  —— 再加 -0 假 root
-     *   sh-link  —— 再加 --link2symlink / --kill-on-exit（Android 10+ 必需）
-     *   full     —— 完整参数 + 解释器 + home/site-packages 检查
-     * 任一层失败，报告里会带上每层的 exit code 与输出。
-     */
-    private fun runProbe(
-        runtime: File,
-        prootArgs: List<String>,
-        environment: Map<String, String>,
-    ) {
-        val proot = File(runtime, "proot").absolutePath
-        val rootfs = File(runtime, "rootfs").absolutePath
-        // 决定性实验 1：完全不碰我们的目录，验证 ProcessBuilder 本身能跑
-        // 决定性实验 2：把系统的 echo 复制进 App 私有目录再执行，验证「能否从
-        //   filesDir 执行二进制」（W^X / ROM 限制）。两条都过而 proot 挂，就是
-        //   proot 二进制本身的问题。
-        val dataEcho = File(runtime, "probe-echo").absolutePath
-        runCatching {
-            File("/system/bin/echo").copyTo(File(dataEcho), overwrite = true)
-            android.system.Os.chmod(dataEcho, 493) // 0755
-        }
-        val fullScript = """
-            echo PROBE-OK
-            /opt/python/bin/python3.12 -V
-            test -f /root/boot_backend.py && echo BOOT-OK
-            /opt/python/bin/python3.12 -c "import deeptutor, uvicorn; print('IMPORT-OK')"
-        """.trimIndent()
-        val cases = listOf(
-            "sys-echo" to listOf("/system/bin/echo", "SYS-OK"),
-            "data-echo" to listOf(dataEcho, "DATA-OK"),
-            "version" to listOf(proot, "--version"),
-            "sh" to listOf(proot, "-r", rootfs, "/bin/sh", "-c", "echo MIN-OK"),
-            "sh-root" to listOf(proot, "-0", "-r", rootfs, "/bin/sh", "-c", "echo ROOT-OK"),
-            "sh-link" to listOf(
-                proot, "--link2symlink", "--kill-on-exit", "-0",
-                "-r", rootfs, "/bin/sh", "-c", "echo LINK-OK",
-            ),
-            "full" to prootArgs + listOf("/bin/sh", "-c", fullScript),
-        )
+    private class ProotVariant(
+        val label: String,
+        val executable: File,
+        val extraEnv: Map<String, String>,
+    )
 
+    private class ProotSelection(val args: List<String>, val env: Map<String, String>)
+
+    /**
+     * 运行包里可能同时带 Termux 的 bionic proot 与 proot-me 的静态 glibc proot。
+     * Termux 版用外部 loader（PROOT_LOADER）+ 自带 libtalloc/libandroid-shmem，
+     * 是 Android 上被 proot-distro 长期验证的组合；静态版作为兜底。
+     */
+    private fun prootVariants(runtime: File): List<ProotVariant> {
+        val variants = mutableListOf<ProotVariant>()
+        val termux = File(runtime, "proot-termux")
+        if (File(termux, "bin/proot").isFile) {
+            variants += ProotVariant(
+                "termux",
+                File(termux, "bin/proot"),
+                mapOf(
+                    "LD_LIBRARY_PATH" to File(termux, "lib").absolutePath,
+                    "PROOT_LOADER" to File(termux, "libexec/proot/loader").absolutePath,
+                ),
+            )
+        }
+        val static = File(runtime, "proot")
+        if (static.isFile) {
+            variants += ProotVariant("static", static, emptyMap())
+        }
+        if (variants.isEmpty()) {
+            throw IOException("运行包里没有 proot（proot-termux/bin/proot 与 proot 都不存在）")
+        }
+        return variants
+    }
+
+    private fun prootArgs(
+        variant: ProotVariant,
+        runtime: File,
+        home: File,
+        tmp: File,
+    ): List<String> = listOf(
+        variant.executable.absolutePath,
+        "--link2symlink",
+        "--kill-on-exit",
+        "-0",
+        "-r", File(runtime, "rootfs").absolutePath,
+        "-b", "/dev",
+        "-b", "/proc",
+        "-b", "/sys",
+        "-b", "${File(runtime, "python").absolutePath}:/opt/python",
+        "-b", "${File(runtime, "node").absolutePath}:/opt/node",
+        // 直接挂在 /root 上：PRoot 的 bind 目标必须在 rootfs 里已存在，
+        // /root/.deeptutor 这种新目录不存在会导致挂载失败。
+        "-b", "${home.absolutePath}:/root",
+        "-b", "${tmp.absolutePath}:/tmp",
+        "-w", "/root",
+    )
+
+    private fun prootEnv(variant: ProotVariant, tmp: File): Map<String, String> =
+        mapOf(
+            "PROOT_NO_SECCOMP" to "1",
+            "PROOT_TMP_DIR" to tmp.absolutePath,
+            "HOME" to "/root",
+            "TMPDIR" to "/tmp",
+            // 进程环境被整体清空；不补 PATH 的话，guest 里任何 subprocess
+            // （exec 工具、git、ffmpeg）都会直接 "No such file"。
+            "PATH" to "/opt/python/bin:/opt/node/bin:/usr/local/sbin:/usr/local/bin:" +
+                "/usr/sbin:/usr/bin:/sbin:/bin",
+            "LANG" to "C.UTF-8",
+            "LC_ALL" to "C.UTF-8",
+            "PYTHONUNBUFFERED" to "1",
+            "PYTHONIOENCODING" to "utf-8:replace",
+            // 手机端只监听回环，登录/鉴权没有意义（与桌面壳的相对路径代理保持一致）。
+            "DEEPTUTOR_AUTH_ENABLED" to "false",
+            "DEEPTUTOR_HOME" to "/root",
+        ) + variant.extraEnv
+
+    /**
+     * 用 `sh -c "echo MIN-OK"` 逐个子试：能真正拉起 guest 的那一个才用于后端/前端。
+     * 失败的一方（典型是静态 proot 的 exit=255 无输出）也会写进报告。
+     */
+    private fun selectProot(runtime: File, home: File, tmp: File): ProotSelection {
         val report = StringBuilder()
-        val prootMode = runCatching { android.system.Os.stat(proot).st_mode }.getOrDefault(0)
-        report.append(
-            "proot: ${File(proot).length()}B mode=${Integer.toOctalString(prootMode)}" +
-                " canExecute=${File(proot).canExecute()}\n",
-        )
-        report.append("rootfs/bin/sh: ${File(rootfs, "bin/sh").length()}B\n")
-        report.append("data-echo: ${File(dataEcho).length()}B\n")
-        var fullOutput: List<String> = emptyList()
-        var fullCode = -1
-        for ((label, command) in cases) {
-            val process = launch(command, environment, "probe-$label")
+        for (variant in prootVariants(runtime)) {
+            val args = prootArgs(variant, runtime, home, tmp)
+            val env = prootEnv(variant, tmp)
+            val process = launch(
+                args + listOf("/bin/sh", "-c", "echo MIN-OK"),
+                env,
+                "min-${variant.label}",
+            )
             val finished = runCatching {
-                process.waitFor(60, java.util.concurrent.TimeUnit.SECONDS)
+                process.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)
             }.getOrDefault(false)
             if (!finished) {
                 process.destroyForcibly()
             }
             Thread.sleep(150)
             val code = if (finished) runCatching { process.exitValue() }.getOrDefault(-1) else -1
-            val output = logSnapshot().filter { it.startsWith("[probe-$label]") }
-            if (label == "full") {
-                fullOutput = output
-                fullCode = if (finished) code else -1
-            }
-            report.append("· $label: ")
+            val output = logSnapshot().filter { it.startsWith("[min-${variant.label}]") }
+            report.append("· ${variant.label}: ")
                 .append(if (finished) "exit=$code" else "超时")
-                .append(if (output.isEmpty()) "（无输出）" else "\n  " + output.joinToString("\n  "))
+                .append(if (output.isEmpty()) "（无输出）" else " " + output.joinToString(" | "))
                 .append('\n')
+            if (finished && code == 0 && output.any { it.contains("MIN-OK") }) {
+                appendLog("[proot] 使用 ${variant.label} 版")
+                return ProotSelection(args, env)
+            }
         }
-        runCatching { File(dataEcho).delete() }
-        val passed = fullCode == 0 &&
-            fullOutput.any { it.contains("PROBE-OK") } &&
-            fullOutput.any { it.contains("BOOT-OK") } &&
-            fullOutput.any { it.contains("IMPORT-OK") }
-        if (!passed) {
-            throw IOException("环境自检失败\n$report")
+        val details = prootVariants(runtime).joinToString("\n") { variant ->
+            val mode = runCatching {
+                android.system.Os.stat(variant.executable.absolutePath).st_mode
+            }.getOrDefault(0)
+            "  - ${variant.label}: ${variant.executable.length()}B " +
+                "mode=${Integer.toOctalString(mode)}"
+        }
+        throw IOException("PRoot 无法启动 guest（两种实现都失败）\n$report$details")
+    }
+
+    /** 选定 proot 后再验一层：解释器、home 绑定和 site-packages。 */
+    private fun runProbe(prootArgs: List<String>, environment: Map<String, String>) {
+        val script = """
+            echo PROBE-OK
+            /opt/python/bin/python3.12 -V
+            test -f /root/boot_backend.py && echo BOOT-OK
+            /opt/python/bin/python3.12 -c "import deeptutor, uvicorn; print('IMPORT-OK')"
+        """.trimIndent()
+        val process = launch(prootArgs + listOf("/bin/sh", "-c", script), environment, "probe")
+        val finished = runCatching {
+            process.waitFor(180, java.util.concurrent.TimeUnit.SECONDS)
+        }.getOrDefault(false)
+        if (!finished) {
+            process.destroyForcibly()
+            throw IOException("环境自检超时（180s）\n" + tailLog(30))
+        }
+        val code = process.exitValue()
+        Thread.sleep(200)
+        val output = logSnapshot().filter { it.startsWith("[probe]") }
+        if (code != 0) {
+            throw IOException("环境自检失败（exit=$code）\n" + output.joinToString("\n"))
+        }
+        listOf("PROBE-OK", "BOOT-OK", "IMPORT-OK").forEach { marker ->
+            if (output.none { it.contains(marker) }) {
+                throw IOException("环境自检缺少 $marker\n" + output.joinToString("\n"))
+            }
         }
     }
 
@@ -282,6 +314,10 @@ object ProotEngine {
     private fun ensureExecutable(runtime: File) {
         listOf(
             "proot",
+            "proot-termux/bin/proot",
+            "proot-termux/libexec/proot/loader",
+            "proot-termux/lib/libtalloc.so.2",
+            "proot-termux/lib/libandroid-shmem.so",
             "rootfs/bin/sh",
             "rootfs/usr/bin/env",
             "rootfs/usr/bin/dash",
