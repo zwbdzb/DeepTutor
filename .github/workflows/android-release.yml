@@ -23,7 +23,10 @@ on:
         type: boolean
         default: false
   push:
-    branches: [main, "dev**"]
+    # feat-phone：手机端开发分支。默认分支 develop 上还没有本工作流，
+    # GitHub 侧边栏不会列出它（也就没有 Run workflow 按钮），所以需要
+    # 靠 push 触发；合并进默认分支后会自动出现在侧边栏。
+    branches: [main, "dev**", "feat-phone"]
     paths:
       - "apps/android/**"
       - "desktop-shell/tools/build_runtime.py"
