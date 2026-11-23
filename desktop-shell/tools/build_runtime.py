@@ -903,6 +903,16 @@ def version_gate_static(target: Path, expected: str) -> str:
     return expected
 
 
+def _installed_version_static(target: Path) -> str:
+    """读 staging 里 deeptutor 核心 distribution 的版本（不 spawn 目标解释器）。"""
+    sp = _py_site_packages(target)
+    for path in sorted(sp.glob("deeptutor-*.dist-info")):
+        version = _distinfo_metadata_version(path)
+        if version:
+            return version
+    return ""
+
+
 def smoke_test(py_exe: Path) -> None:
     """staging 冒烟测试：自家包可 import + PIP_EXTRAS 关键模块存在。
 
@@ -1465,19 +1475,26 @@ def build(make_zip: bool = False, source_root: Path | None = None,
     did_install = False
     if (sp / "deeptutor").exists():
         py_exe = _staging_py_exe(STAGING_PY)
-        res = subprocess.run([str(py_exe), "-c",
-                              "from deeptutor.__version__ import __version__; print(__version__)"],
-                             capture_output=True, text=True, timeout=120)
-        current = (res.stdout or "").strip()
+        if CAN_EXECUTE_STAGING:
+            res = subprocess.run([str(py_exe), "-c",
+                                  "from deeptutor.__version__ import __version__; print(__version__)"],
+                                 capture_output=True, text=True, timeout=120)
+            ok_import = res.returncode == 0
+            current = (res.stdout or "").strip()
+        else:
+            # 跨架构（x86 runner 产 aarch64）：staging 解释器不能执行（Exec format
+            # error），改读 dist-info 判断已装版本；模块缺陷同样静态化。
+            current = _installed_version_static(STAGING_PY)
+            ok_import = bool(current)
         # 模块状态是「已装好」的一部分，而不是装完之后才知道的事：缺
         # deeptutor-server / 版本错位 / 被 disable 时，必须走重装而不是跳过 pip
         # 然后在门禁里炸掉（CI 缓存恢复出的老 staging 正是这种形态）。
         module_defects = (
-            module_precheck(py_exe, modules) if res.returncode == 0
+            module_precheck(py_exe, modules) if ok_import
             else ["staging deeptutor is not importable"]
         )
         installed_ok = (
-            res.returncode == 0 and current == expected
+            ok_import and current == expected
             and not state_changed and not deps_changed and not module_defects
         )
         if module_defects and not state_changed and not deps_changed:
