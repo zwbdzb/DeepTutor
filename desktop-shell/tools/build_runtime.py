@@ -389,6 +389,102 @@ def build_wheelhouse(source_root: Path, modules: list[str]) -> dict[str, Path]:
     return wheels
 
 
+# 跨架构（android-arm64）安装的补丁 wheel：(发行名, 上游版本, 本地版本)。
+# pip 带 --only-binary=:all: 时不能源码编译，而 PyStemmer 2.x 只发 sdist
+# （没有 aarch64 轮子），llama-index-retrievers-bm25 的每个版本又都钉
+# pystemmer<3 —— 解析必然失败。PyStemmer 3.1.0 有 cp312 aarch64 轮子，顶层
+# 模块（Stemmer）和 API 与 2.x 相同，因此重新贴标成 2.2.0.1+android：
+# 本地版本号仍满足上游约束（>=2.2.0.1,<3），装进运行时的是 3.1.0 的二进制。
+ANDROID_COMPAT_WHEELS: tuple[tuple[str, str, str], ...] = (
+    ("pystemmer", "3.1.0", "2.2.0.1+android"),
+)
+
+
+def _pip_platform_args() -> list[str]:
+    """跨架构安装的 pip 平台参数（手机运行时是 aarch64/cp312）。"""
+    return [
+        "--platform", "manylinux2014_aarch64",
+        "--platform", "manylinux_2_17_aarch64",
+        "--python-version", PY_VER.rsplit(".", 1)[0],
+        "--implementation", "cp",
+        "--abi", "cp312",
+        "--only-binary=:all:",
+    ]
+
+
+def _relabel_wheel(src: Path, dest: Path, *, dist: str,
+                   old_version: str, new_version: str) -> None:
+    """把 wheel 的 dist-info 版本改名（内容不变），用于本地兼容贴标。"""
+    old_info = f"{dist}-{old_version}.dist-info"
+    new_info = f"{dist}-{new_version}.dist-info"
+    dest.unlink(missing_ok=True)
+    moved: list[str] = []
+    with zipfile.ZipFile(src) as zin, \
+            zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as zout:
+        for info in zin.infolist():
+            data = zin.read(info.filename)
+            name = info.filename
+            if name.startswith(f"{old_info}/"):
+                name = new_info + name[len(old_info):]
+                if name.endswith("/METADATA"):
+                    data = data.decode("utf-8").replace(
+                        f"Version: {old_version}", f"Version: {new_version}", 1,
+                    ).encode("utf-8")
+                elif name.endswith("/RECORD"):
+                    continue  # 最后重建：改名后原哈希已失效
+            if not name.endswith("/"):
+                moved.append(name)
+            zout.writestr(name, data)
+        # RECORD 必须列全自身；hash/size 留空是规范允许的形式。
+        record = "".join(f"{name},,\n" for name in moved) + f"{new_info}/RECORD,,\n"
+        zout.writestr(f"{new_info}/RECORD", record.encode("utf-8"))
+
+
+def vendor_android_compat_wheels() -> Path | None:
+    """生成 ``ANDROID_COMPAT_WHEELS`` 里的兼容 wheel，返回 find-links 目录。
+
+    只在跨架构（IS_LINUX）全量安装时调用；产物缓存在 ``runtime-build/cache``
+    里，重复构建直接复用。
+    """
+    if not IS_LINUX:
+        return None
+    if BUILD_PY is None or not BUILD_PY.exists():
+        raise SystemExit("no cp312 build interpreter found (set BUILD_PY=...py)")
+    dest = CACHE / "compat-wheels"
+    dest.mkdir(parents=True, exist_ok=True)
+    env = dict(os.environ)
+    env.setdefault("PIP_INDEX_URL", DEFAULT_PIP_INDEX_URL)
+    env.setdefault("PIP_DISABLE_PIP_VERSION_CHECK", "1")
+
+    for name, upstream, local in ANDROID_COMPAT_WHEELS:
+        cached = sorted(dest.glob(f"{name}-{local}-*.whl"))
+        if cached:
+            log(f"compat wheel reused: {cached[0].name}")
+            continue
+        scratch = CACHE / "compat-wheels" / "_download"
+        shutil.rmtree(scratch, ignore_errors=True)
+        scratch.mkdir(parents=True, exist_ok=True)
+        cmd = [str(BUILD_PY), "-m", "pip", "download", "--no-deps",
+               "--no-cache-dir", "--dest", str(scratch),
+               *_pip_platform_args(), f"{name}=={upstream}"]
+        res = subprocess.run(cmd, capture_output=True, text=True, env=env)
+        if res.returncode != 0:
+            log(res.stdout[-2000:])
+            log(res.stderr[-2000:])
+            raise SystemExit(
+                f"pip download {name}=={upstream} (aarch64) failed; "
+                f"update ANDROID_COMPAT_WHEELS"
+            )
+        src = next(iter(scratch.glob(f"{name}-{upstream}-*.whl")), None)
+        if src is None:
+            raise SystemExit(f"pip download produced no wheel for {name}=={upstream}")
+        out = dest / src.name.replace(f"-{upstream}-", f"-{local}-", 1)
+        _relabel_wheel(src, out, dist=name, old_version=upstream, new_version=local)
+        shutil.rmtree(scratch, ignore_errors=True)
+        log(f"compat wheel built: {out.name} (upstream {name} {upstream})")
+    return dest
+
+
 def _drop_wheelhouse() -> None:
     """Delete the install-only wheelhouse (the web wheel alone is ~90 MB).
 
@@ -707,14 +803,11 @@ def install_deeptutor(target: Path, source_root: Path, *,
         # 否则 pip 解析出 x86_64 的 manylinux wheel，装进 rootfs 里跑不起来。
         # 二进制都来自 Debian rootfs 的 glibc，所以 manylinux 轮子可用
         # （Android 自身的 bionic 在这里不参与，PRoot 交出的是 rootfs 的 libc）。
-        cmd.extend([
-            "--platform", "manylinux2014_aarch64",
-            "--platform", "manylinux_2_17_aarch64",
-            "--python-version", PY_VER.rsplit(".", 1)[0],
-            "--implementation", "cp",
-            "--abi", "cp312",
-            "--only-binary=:all:",
-        ])
+        cmd.extend(_pip_platform_args())
+        if with_deps:
+            compat = vendor_android_compat_wheels()
+            if compat is not None:
+                cmd.extend(["--find-links", str(compat)])
     if not with_deps:
         cmd.append("--no-deps")
     cmd.extend(str(wheels[name]) for name in modules)
