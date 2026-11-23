@@ -77,6 +77,11 @@ object ProotEngine {
             "DEEPTUTOR_HOME" to "/root",
         )
 
+        onStatus("正在检查运行环境...")
+        // 先跑一条最小命令，把问题锁死在「PRoot 本身跑不起来」还是「Python 有问题」，
+        // 免得所有失败都报成同一个含糊的「后端进程提前退出」。
+        runProbe(prootArgs, baseEnv)
+
         onStatus("正在启动本地引擎...")
         backend = launch(
             prootArgs + listOf(
@@ -139,6 +144,7 @@ object ProotEngine {
         } catch (exc: IOException) {
             throw IOException("无法启动 $tag 进程：${exc.message}", exc)
         }
+        appendLog("[cmd] ${command.joinToString(" ")}")
         Thread({ pump(process, tag) }, "engine-$tag").apply { isDaemon = true }.start()
         return process
     }
@@ -165,7 +171,11 @@ object ProotEngine {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
             if (process != null && !process.isAlive) {
-                throw IOException("$label 进程提前退出：\n" + logSnapshot().takeLast(12).joinToString("\n"))
+                // 进程刚退出时日志泵线程可能还没读完最后几行；直接取快照会拿到
+                // 空日志（界面上只剩"提前退出："）。先 waitFor 再给它一点时间收尾。
+                val code = runCatching { process.waitFor() }.getOrDefault(-1)
+                Thread.sleep(400)
+                throw IOException("$label 进程提前退出（exit=$code）：\n" + tailLog(30))
             }
             try {
                 Socket().use { socket ->
@@ -178,6 +188,49 @@ object ProotEngine {
         }
         throw IOException("$label 启动超时（端口 $port）")
     }
+
+    /**
+     * 在 PRoot 里跑 `/bin/sh -c "echo ...; python -V"`：
+     * 能过说明 rootfs + bind + 解释器这条链路是通的，问题只可能在应用层。
+     */
+    private fun runProbe(prootArgs: List<String>, environment: Map<String, String>) {
+        val script = "echo PROBE-OK; /opt/python/bin/python3.12 -V"
+        val process = launch(
+            prootArgs + listOf("/bin/sh", "-c", script),
+            environment,
+            "probe",
+        )
+        val finished = runCatching {
+            process.waitFor(90, java.util.concurrent.TimeUnit.SECONDS)
+        }.getOrDefault(false)
+        if (!finished) {
+            process.destroyForcibly()
+            throw IOException("环境自检超时（90s）\n" + tailLog(30))
+        }
+        val code = process.exitValue()
+        Thread.sleep(200)
+        val output = logSnapshot().filter { it.startsWith("[probe]") }
+        if (code != 0) {
+            throw IOException("环境自检失败（exit=$code）\n" + tailLog(30))
+        }
+        if (output.none { it.contains("PROBE-OK") }) {
+            throw IOException("环境自检没有输出（exit=0），日志：\n" + tailLog(30))
+        }
+    }
+
+    private fun tailLog(lines: Int): String {
+        val snapshot = logSnapshot().takeLast(lines)
+        return if (snapshot.isEmpty()) "（进程没有产生任何输出）" else snapshot.joinToString("\n")
+    }
+
+    /** 把最近的引擎日志落盘，方便用户导出/截图。返回可分享的路径（尽力而为）。 */
+    fun persistLog(context: Context): File? = runCatching {
+        val dir = context.getExternalFilesDir("logs") ?: File(context.filesDir, "logs")
+        dir.mkdirs()
+        val file = File(dir, "engine.log")
+        file.writeText(tailLog(MAX_LOG_LINES))
+        file
+    }.getOrNull()
 
     /**
      * 后端启动脚本：桌面端的 launcher 会做用户目录/设置初始化，这里直接跑

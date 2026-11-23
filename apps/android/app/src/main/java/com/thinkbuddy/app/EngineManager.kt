@@ -44,7 +44,11 @@ object EngineManager {
                 remote?.close()
                 remote = null
                 val detail = exc.message ?: exc.javaClass.simpleName
-                _status.value = EngineStatus(Phase.ERROR, detail)
+                val logFile = ProotEngine.persistLog(appContext)
+                _status.value = EngineStatus(
+                    Phase.ERROR,
+                    detail + if (logFile != null) "\n\n日志已保存：${logFile.absolutePath}" else "",
+                )
             }
         }
     }

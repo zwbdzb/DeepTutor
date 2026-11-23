@@ -176,6 +176,10 @@ class MainActivity : AppCompatActivity() {
             text = "设置"
             setOnClickListener { showSettings() }
         })
+        buttons.addView(Button(this@MainActivity).apply {
+            text = "日志"
+            setOnClickListener { showLogs() }
+        })
 
         overlay.addView(statusTitle, wrapContent())
         overlay.addView(statusText, wrapContent())
@@ -211,8 +215,7 @@ class MainActivity : AppCompatActivity() {
                     status.message + if (log.isBlank()) "" else "\n\n$log",
                     null,
                 )
-            }
-            Phase.IDLE, Phase.STOPPED -> showOverlay("引擎未启动", "点击「设置」选择引擎来源", null)
+            }            Phase.IDLE, Phase.STOPPED -> showOverlay("引擎未启动", "点击「设置」选择引擎来源", null)
         }
     }
 
@@ -231,6 +234,24 @@ class MainActivity : AppCompatActivity() {
         } else {
             progress.visibility = View.GONE
         }
+    }
+
+    /** 完整引擎日志：启动失败时把它整段截图/复制出来就能定位问题。 */
+    private fun showLogs() {
+        val log = ProotEngine.logSnapshot().joinToString("\n")
+        val body = TextView(this).apply {
+            text = log.ifBlank { "（暂无日志）" }
+            textSize = 11f
+            setTextColor(0xFF222222.toInt())
+            setTextIsSelectable(true)
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+        }
+        val scroll = ScrollView(this).apply { addView(body) }
+        AlertDialog.Builder(this)
+            .setTitle("引擎日志")
+            .setView(scroll)
+            .setPositiveButton("关闭", null)
+            .show()
     }
 
     private fun showSettings() {

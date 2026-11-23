@@ -10,14 +10,18 @@
 #
 # 单 job 结构：runtime 构建与 Gradle 打包放在同一个 job 里，避免在 job 之间搬运
 # 1GB 的文件（artifact 有配额限制，cache 中转也很慢）。
-#   push 到 feat-phone：构建运行时 + 离线 APK，发布到 release android-N（开发期拿包用）
+#   push 到 feat-phone：构建运行时 + 离线 APK（产物在本次 run 的 Artifacts 里，不发 release）
 #   push 到 main/dev*：只验证 aarch64 运行时能构建，不出 APK
-#   workflow_dispatch：构建运行时 + 离线 APK，发布到 release android-N
+#   workflow_dispatch：同上，可勾选 release 决定是否额外发布到 release android-N
 name: ThinkBuddy Android Build
 
 on:
   workflow_dispatch:
     inputs:
+      release:
+        description: "构建成功后发布 GitHub Release（android-N tag：APK + 运行时 zip）"
+        type: boolean
+        default: false
       skip_apk:
         description: "只构建运行时 bundle，跳过 APK"
         type: boolean
@@ -221,9 +225,19 @@ jobs:
             echo "- 大小：$(du -h ThinkBuddy-android-*.apk | cut -f1)"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # 1GB 级别的 APK 放不进 artifact 配额，只能发 release 资产（单文件上限 2GB）。
-      - name: Publish to GitHub Release
+      # 1GB 级别的 APK 不走 release 时放进 Actions Artifacts（公开仓库的
+      # artifact 存储免费）；勾选 release 才额外发到 release 页面。
+      - name: Upload APK artifact
         if: env.BUILD_APK == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ThinkBuddy-android-apk
+          path: out/*.apk
+          retention-days: 7
+          compression-level: 0
+
+      - name: Publish to GitHub Release
+        if: env.BUILD_APK == 'true' && inputs.release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: android-${{ github.run_number }}
