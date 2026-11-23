@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import socket
+import time
 import uuid
 
 import psutil
@@ -11,7 +12,12 @@ import psutil
 
 def new_worker_id() -> str:
     # Creation time distinguishes a restarted worker from an unrelated reused PID.
-    born = psutil.Process().create_time()
+    try:
+        born = psutil.Process().create_time()
+    except (psutil.Error, OSError, NotImplementedError):
+        # Android/PRoot 等受限环境下 psutil 可能读不到 /proc/<pid>/stat；
+        # born 只用于区分 PID 复用，退化成当前时间不影响恢复语义。
+        born = time.time()
     return f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}:{born}"
 
 
