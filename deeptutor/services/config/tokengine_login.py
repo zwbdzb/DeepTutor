@@ -157,7 +157,7 @@ def fetch_relay_models(relay_base: str, token: str) -> tuple[list[str], dict[str
 
 
 class _CallbackHandler(BaseHTTPRequestHandler):
-    server_version = "ThinkBuddyLogin/1.0"
+    server_version = "ThinkBuddy Login/1.0"
 
     def log_message(self, *_args: Any) -> None:  # 静音 stderr
         return
