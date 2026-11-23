@@ -401,10 +401,22 @@ ANDROID_COMPAT_WHEELS: tuple[tuple[str, str, str], ...] = (
 
 
 def _pip_platform_args() -> list[str]:
-    """跨架构安装的 pip 平台参数（手机运行时是 aarch64/cp312）。"""
+    """跨架构安装的 pip 平台参数（手机运行时是 aarch64/cp312）。
+
+    只列 ``manylinux2014`` / ``manylinux_2_17`` 会把新版本轮子挡在门外：numpy、
+    uvloop、PyMuPDF 等已经只发 ``manylinux_2_28_aarch64``（甚至 2_34）的构建，
+    ``--only-binary=:all:`` 又禁止回退到源码编译，结果是解析直接失败。手机端
+    rootfs 是 Debian bookworm / Ubuntu 24.04（glibc 2.36+），这些标签完全兼容，
+    所以把 2_28 / 2_34 一起放进来。
+    """
     return [
         "--platform", "manylinux2014_aarch64",
         "--platform", "manylinux_2_17_aarch64",
+        "--platform", "manylinux_2_28_aarch64",
+        "--platform", "manylinux_2_31_aarch64",
+        "--platform", "manylinux_2_34_aarch64",
+        "--platform", "manylinux_2_35_aarch64",
+        "--platform", "manylinux_2_36_aarch64",
         "--python-version", PY_VER.rsplit(".", 1)[0],
         "--implementation", "cp",
         "--abi", "cp312",

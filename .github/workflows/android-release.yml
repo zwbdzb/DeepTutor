@@ -22,6 +22,10 @@ on:
         description: "构建成功后发布 GitHub Release（android-N tag：APK + 运行时 zip）"
         type: boolean
         default: false
+      runtime_only:
+        description: "只构建运行时 bundle，跳过 APK（首次验证 aarch64 运行时用）"
+        type: boolean
+        default: false
   push:
     # feat-phone：手机端开发分支。默认分支 develop 上还没有本工作流，
     # GitHub 侧边栏不会列出它（也就没有 Run workflow 按钮），所以需要
@@ -134,21 +138,44 @@ jobs:
         run: |
           VERSION=$(sed -n 's/^__version__ *= *"\([^"]*\)".*/\1/p' ../deeptutor/__version__.py | head -n1)
           SHA=$(sha256sum dist/ThinkBuddy-android-runtime-arm64.zip | cut -d' ' -f1)
+          SIZE=$(stat -c%s dist/ThinkBuddy-android-runtime-arm64.zip)
           URL=""
           if [ "$RELEASE_ENABLED" = "true" ]; then
             URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${RUNTIME_TAG}/ThinkBuddy-android-runtime-arm64.zip"
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+          echo "size=$SIZE" >> "$GITHUB_OUTPUT"
           echo "url=$URL" >> "$GITHUB_OUTPUT"
-          echo "runtime $VERSION sha256=$SHA"
+          python - "$VERSION" "$SHA" "$URL" "$SIZE" <<'PY'
+          import json, sys
+          version, sha, url, size = sys.argv[1:5]
+          with open("dist/runtime-info.json", "w", encoding="utf-8") as handle:
+              json.dump({
+                  "deeptutor_version": version,
+                  "sha256": sha,
+                  "url": url,
+                  "bytes": int(size),
+              }, handle, indent=2)
+          PY
+          echo "runtime $VERSION sha256=$SHA size=$((SIZE / 1000000))MB"
           echo "download url: ${URL:-<empty: users paste it in Settings>}"
+          {
+            echo "### Android runtime"
+            echo "- version: \`$VERSION\`"
+            echo "- size: $((SIZE / 1000000)) MB"
+            echo "- sha256: \`$SHA\`"
+            echo "- download url: ${URL:-*(not published: pass release=true to publish)*}"
+          } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload runtime bundle
+      # 不要把 ~1GB 的 runtime zip 塞进 artifact：GitHub Free 的 artifact 存储上限
+      # 是 500MB，1GB 会直接失败，而且这一步排在发布 release 之前，会把整个 job
+      # 连同 release 一起拖死。release 资产不占 artifact 配额，所以只传小清单。
+      - name: Upload runtime manifest
         uses: actions/upload-artifact@v4
         with:
-          name: ThinkBuddy-android-runtime
-          path: desktop-shell/dist/ThinkBuddy-android-runtime-arm64.zip
+          name: ThinkBuddy-android-runtime-info
+          path: desktop-shell/dist/runtime-info.json
           if-no-files-found: error
 
       - name: Publish runtime to GitHub Release
@@ -167,6 +194,8 @@ jobs:
     name: Android · APK
     runs-on: ubuntu-24.04
     needs: runtime
+    # workflow_dispatch 勾了 runtime_only 时只跑运行时，不构建 APK。
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.runtime_only }}
     env:
       KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
     steps:
@@ -222,6 +251,16 @@ jobs:
           cd out
           for f in *.apk; do mv "$f" "ThinkBuddy-android-${f}"; done
           ls -lh
+          {
+            echo "### Android APK"
+            echo "- runtime url baked in: ${RUNTIME_URL:-*(empty)*}"
+            if [ -z "$RUNTIME_URL" ]; then
+              echo "- ⚠️ 这个包没有内置运行时下载地址，装完必须先在设置里填地址才能首启；"
+              echo "  要拿到「开箱可用」的包，请用 workflow_dispatch + release=true 重新构建。"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          RUNTIME_URL: ${{ needs.runtime.outputs.runtime_url }}
 
       - name: Upload APK
         uses: actions/upload-artifact@v4

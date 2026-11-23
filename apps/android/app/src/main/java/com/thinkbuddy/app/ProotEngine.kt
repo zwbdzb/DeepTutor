@@ -61,6 +61,10 @@ object ProotEngine {
             "PROOT_TMP_DIR" to tmp.absolutePath,
             "HOME" to "/root",
             "TMPDIR" to "/tmp",
+            // 进程环境被整体清空；不补 PATH 的话，guest 里任何 subprocess
+            // （exec 工具、git、ffmpeg）都会直接 "No such file"。
+            "PATH" to "/opt/python/bin:/opt/node/bin:/usr/local/sbin:/usr/local/bin:" +
+                "/usr/sbin:/usr/bin:/sbin:/bin",
             "LANG" to "C.UTF-8",
             "LC_ALL" to "C.UTF-8",
             "PYTHONUNBUFFERED" to "1",

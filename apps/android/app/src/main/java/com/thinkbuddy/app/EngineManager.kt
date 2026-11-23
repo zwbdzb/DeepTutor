@@ -61,8 +61,15 @@ object EngineManager {
     private fun startLocal(context: Context, config: EngineConfig) {
         if (!RuntimeInstaller.isInstalled(context)) {
             val url = config.runtimeUrl.ifBlank { BuildConfig.RUNTIME_URL }
+            // 只在用 CI 内置地址时校验 sha256；用户手填的地址（自建镜像/本地调试）
+            // 没有对应摘要，硬套 BuildConfig 里的值只会把安装卡在"校验失败"。
+            val expectedSha = if (url == BuildConfig.RUNTIME_URL) {
+                BuildConfig.RUNTIME_SHA256
+            } else {
+                ""
+            }
             _status.value = EngineStatus(Phase.INSTALLING, "准备下载运行时...")
-            val version = RuntimeInstaller.install(context, url, BuildConfig.RUNTIME_SHA256) { _, message ->
+            val version = RuntimeInstaller.install(context, url, expectedSha) { _, message ->
                 _status.value = EngineStatus(Phase.INSTALLING, message)
             }
             Prefs(context).installedVersion = version
