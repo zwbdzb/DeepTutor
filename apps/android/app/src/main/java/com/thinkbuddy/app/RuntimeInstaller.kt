@@ -30,6 +30,9 @@ object RuntimeInstaller {
     private const val S_IFLNK = 0xA000
     private const val S_IFDIR = 0x4000
 
+    /** 完全离线分发时，运行时 zip 在 APK assets 里的文件名。 */
+    const val BUNDLED_ASSET = "thinkbuddy-runtime.zip"
+
     fun runtimeDir(context: Context): File = File(context.filesDir, "runtime")
 
     fun homeDir(context: Context): File = File(context.filesDir, "home")
@@ -38,10 +41,33 @@ object RuntimeInstaller {
 
     fun isInstalled(context: Context): Boolean {
         val dir = runtimeDir(context)
-        return File(dir, "android-bundle.json").isFile &&
-            File(dir, "python/bin/python3").exists() &&
-            File(dir, "proot").exists() &&
-            File(dir, "rootfs/usr/bin/env").exists()
+        if (!File(dir, "android-bundle.json").isFile ||
+            !File(dir, "python/bin/python3").exists() ||
+            !File(dir, "proot").exists() ||
+            !File(dir, "rootfs/usr/bin/env").exists()
+        ) {
+            return false
+        }
+        // 新 APK 带了新运行时（内置或联网下载）必须重装：只比对文件存在的话，
+        // 老安装会一直跑旧前后端，和新 APK 的 UI 版本错配。
+        if (BuildConfig.ENGINE_VERSION.isBlank()) {
+            return true
+        }
+        val installed = runCatching {
+            JSONObject(File(dir, "android-bundle.json").readText())
+                .optString("deeptutor_version")
+        }.getOrDefault("")
+        return installed == BuildConfig.ENGINE_VERSION
+    }
+
+    /**
+     * PRoot 的 bind 目标必须已存在，否则 initialize_binding() 会静默丢弃这条
+     * 绑定（日志里只有一行 warning），随后 /opt/python/bin/python3.12 就找不到。
+     * rootfs 里默认只有 `opt`，所以这两个目录要自己建。
+     */
+    fun ensureMountPoints(runtime: File) {
+        File(runtime, "rootfs/opt/python").mkdirs()
+        File(runtime, "rootfs/opt/node").mkdirs()
     }
 
     /**
@@ -74,6 +100,59 @@ object RuntimeInstaller {
             }
         }
 
+        return finishInstall(context, archive, onProgress)
+    }
+
+    /**
+     * 完全离线安装：把 APK assets 里内置的运行时 zip 复制出来再解压。
+     * 用于「运行时打进 APK」的分发形态（APK ≈ 1GB，首次启动不联网）。
+     */
+    fun installFromAssets(
+        context: Context,
+        onProgress: (percent: Int, message: String) -> Unit,
+    ): String {
+        val cache = File(context.cacheDir, "runtime-install").apply {
+            deleteRecursively()
+            mkdirs()
+        }
+        val archive = File(cache, "runtime.zip")
+        // zip 在 build.gradle.kts 里设成 noCompress，才能直接拿文件描述符读长度；
+        // 拿不到就用 -1 退化成不确定进度。
+        val total = runCatching { context.assets.openFd(BUNDLED_ASSET).use { it.length } }
+            .getOrDefault(-1L)
+
+        onProgress(0, "正在释放内置运行时（约 1GB）...")
+        context.assets.open(BUNDLED_ASSET).use { input ->
+            FileOutputStream(archive).use { output ->
+                val buffer = ByteArray(256 * 1024)
+                var copied = 0L
+                var lastPercent = -2
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    output.write(buffer, 0, count)
+                    copied += count
+                    val percent = if (total > 0) (copied * 80 / total).toInt() else -1
+                    if (percent != lastPercent) {
+                        lastPercent = percent
+                        onProgress(
+                            percent,
+                            if (percent >= 0) "正在释放内置运行时 $percent%"
+                            else "正在释放内置运行时...",
+                        )
+                    }
+                }
+            }
+        }
+        return finishInstall(context, archive, onProgress)
+    }
+
+    /** 下载/复制完成后共用的解压 + 原子替换。 */
+    private fun finishInstall(
+        context: Context,
+        archive: File,
+        onProgress: (percent: Int, message: String) -> Unit,
+    ): String {
         onProgress(82, "正在解压运行时（这一步较慢）...")
         val staging = File(context.filesDir, "runtime.new")
         staging.deleteRecursively()
@@ -88,7 +167,8 @@ object RuntimeInstaller {
             staging.deleteRecursively()
         }
         archive.delete()
-        cache.deleteRecursively()
+        archive.parentFile?.deleteRecursively()
+        ensureMountPoints(target)
 
         val meta = File(target, "android-bundle.json")
         val version = if (meta.isFile) {

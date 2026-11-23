@@ -33,6 +33,9 @@ object ProotEngine {
     ) {
         if (isRunning()) return
         val runtime = RuntimeInstaller.runtimeDir(context)
+        // 老安装包的 rootfs 里没有 opt/python、opt/node；不补的话 PRoot 会丢弃
+        // 这两条绑定，python/node 就完全找不到（升级用户最容易踩到）。
+        RuntimeInstaller.ensureMountPoints(runtime)
         val home = RuntimeInstaller.homeDir(context).apply { mkdirs() }
         val tmp = RuntimeInstaller.tmpDir(context).apply { mkdirs() }
 

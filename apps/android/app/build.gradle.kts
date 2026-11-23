@@ -5,8 +5,11 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
-// 运行时下载地址/版本号由 CI 通过 -P 传入（或本地 app/runtime.properties 覆盖），
-// APK 里只烧进 BuildConfig 常量，不带 1GB 运行时本体。
+// 运行时下载地址/版本号由 CI 通过 -P 传入（或本地 app/runtime.properties 覆盖）。
+// 完全离线分发：把运行时 zip 放进 app/src/main/assets/thinkbuddy-runtime.zip，
+// 构建时自动检测并打进 APK（APK ≈ 1GB），首次启动从 assets 解压、不联网。
+val bundledRuntime = file("src/main/assets/thinkbuddy-runtime.zip").isFile
+
 val props = Properties().apply {
     val file = file("runtime.properties")
     if (file.exists()) file.inputStream().use { load(it) }
@@ -32,8 +35,15 @@ android {
         buildConfigField("String", "RUNTIME_URL", "\"${prop("runtimeUrl", "")}\"")
         buildConfigField("String", "RUNTIME_SHA256", "\"${prop("runtimeSha256", "")}\"")
         buildConfigField("String", "ENGINE_VERSION", "\"${prop("engineVersion", "")}\"")
+        buildConfigField("boolean", "BUNDLED_RUNTIME", bundledRuntime.toString())
         buildConfigField("int", "BACKEND_PORT", prop("backendPort", "8001"))
         buildConfigField("int", "FRONTEND_PORT", prop("frontendPort", "3782"))
+    }
+
+    androidResources {
+        // 运行时本身就是 zip：不二次压缩既省构建时间，也让 AssetManager 能走
+        // openFd（未压缩条目才能直接拿文件描述符读长度）。
+        noCompress += "zip"
     }
 
     buildFeatures {

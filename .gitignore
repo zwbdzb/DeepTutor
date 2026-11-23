@@ -105,6 +105,8 @@ desktop-shell/build/ThinkBuddyDesktop/
 apps/android/.gradle/
 apps/android/local.properties
 apps/android/.kotlin/
+# 完全离线打包时 CI 从 dist/ 复制进 APK assets 的 ~1GB 运行时，不入库
+apps/android/app/src/main/assets/thinkbuddy-runtime.zip
 
 # Next.js build output
 .next/
