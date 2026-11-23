@@ -78,9 +78,10 @@ object ProotEngine {
         )
 
         onStatus("正在检查运行环境...")
-        // 先跑一条最小命令，把问题锁死在「PRoot 本身跑不起来」还是「Python 有问题」，
-        // 免得所有失败都报成同一个含糊的「后端进程提前退出」。
-        runProbe(prootArgs, baseEnv)
+        ensureExecutable(runtime)
+        // 先跑几条最小命令，把问题锁死在「PRoot 二进制」「rootfs」还是「参数/env」
+        // 这三层里的哪一层，免得所有失败都报成同一个含糊的「后端进程提前退出」。
+        runProbe(runtime, prootArgs, baseEnv)
 
         onStatus("正在启动本地引擎...")
         backend = launch(
@@ -190,31 +191,107 @@ object ProotEngine {
     }
 
     /**
-     * 在 PRoot 里跑 `/bin/sh -c "echo ...; python -V"`：
-     * 能过说明 rootfs + bind + 解释器这条链路是通的，问题只可能在应用层。
+     * 逐层加参数地跑 PRoot，一次把问题定位到具体一层：
+     *   version  —— 只验证静态二进制本身能否被 exec（不碰 rootfs）
+     *   sh       —— -r rootfs 跑 /bin/sh（验证 rootfs 与 chdir）
+     *   sh-root  —— 再加 -0 假 root
+     *   sh-link  —— 再加 --link2symlink / --kill-on-exit（Android 10+ 必需）
+     *   full     —— 完整参数 + 解释器 + home/site-packages 检查
+     * 任一层失败，报告里会带上每层的 exit code 与输出。
      */
-    private fun runProbe(prootArgs: List<String>, environment: Map<String, String>) {
-        val script = "echo PROBE-OK; /opt/python/bin/python3.12 -V"
-        val process = launch(
-            prootArgs + listOf("/bin/sh", "-c", script),
-            environment,
-            "probe",
+    private fun runProbe(
+        runtime: File,
+        prootArgs: List<String>,
+        environment: Map<String, String>,
+    ) {
+        val proot = File(runtime, "proot").absolutePath
+        val rootfs = File(runtime, "rootfs").absolutePath
+        // 决定性实验 1：完全不碰我们的目录，验证 ProcessBuilder 本身能跑
+        // 决定性实验 2：把系统的 echo 复制进 App 私有目录再执行，验证「能否从
+        //   filesDir 执行二进制」（W^X / ROM 限制）。两条都过而 proot 挂，就是
+        //   proot 二进制本身的问题。
+        val dataEcho = File(runtime, "probe-echo").absolutePath
+        runCatching {
+            File("/system/bin/echo").copyTo(File(dataEcho), overwrite = true)
+            android.system.Os.chmod(dataEcho, 493) // 0755
+        }
+        val fullScript = """
+            echo PROBE-OK
+            /opt/python/bin/python3.12 -V
+            test -f /root/boot_backend.py && echo BOOT-OK
+            /opt/python/bin/python3.12 -c "import deeptutor, uvicorn; print('IMPORT-OK')"
+        """.trimIndent()
+        val cases = listOf(
+            "sys-echo" to listOf("/system/bin/echo", "SYS-OK"),
+            "data-echo" to listOf(dataEcho, "DATA-OK"),
+            "version" to listOf(proot, "--version"),
+            "sh" to listOf(proot, "-r", rootfs, "/bin/sh", "-c", "echo MIN-OK"),
+            "sh-root" to listOf(proot, "-0", "-r", rootfs, "/bin/sh", "-c", "echo ROOT-OK"),
+            "sh-link" to listOf(
+                proot, "--link2symlink", "--kill-on-exit", "-0",
+                "-r", rootfs, "/bin/sh", "-c", "echo LINK-OK",
+            ),
+            "full" to prootArgs + listOf("/bin/sh", "-c", fullScript),
         )
-        val finished = runCatching {
-            process.waitFor(90, java.util.concurrent.TimeUnit.SECONDS)
-        }.getOrDefault(false)
-        if (!finished) {
-            process.destroyForcibly()
-            throw IOException("环境自检超时（90s）\n" + tailLog(30))
+
+        val report = StringBuilder()
+        val prootMode = runCatching { android.system.Os.stat(proot).st_mode }.getOrDefault(0)
+        report.append(
+            "proot: ${File(proot).length()}B mode=${Integer.toOctalString(prootMode)}" +
+                " canExecute=${File(proot).canExecute()}\n",
+        )
+        report.append("rootfs/bin/sh: ${File(rootfs, "bin/sh").length()}B\n")
+        report.append("data-echo: ${File(dataEcho).length()}B\n")
+        var fullOutput: List<String> = emptyList()
+        var fullCode = -1
+        for ((label, command) in cases) {
+            val process = launch(command, environment, "probe-$label")
+            val finished = runCatching {
+                process.waitFor(60, java.util.concurrent.TimeUnit.SECONDS)
+            }.getOrDefault(false)
+            if (!finished) {
+                process.destroyForcibly()
+            }
+            Thread.sleep(150)
+            val code = if (finished) runCatching { process.exitValue() }.getOrDefault(-1) else -1
+            val output = logSnapshot().filter { it.startsWith("[probe-$label]") }
+            if (label == "full") {
+                fullOutput = output
+                fullCode = if (finished) code else -1
+            }
+            report.append("· $label: ")
+                .append(if (finished) "exit=$code" else "超时")
+                .append(if (output.isEmpty()) "（无输出）" else "\n  " + output.joinToString("\n  "))
+                .append('\n')
         }
-        val code = process.exitValue()
-        Thread.sleep(200)
-        val output = logSnapshot().filter { it.startsWith("[probe]") }
-        if (code != 0) {
-            throw IOException("环境自检失败（exit=$code）\n" + tailLog(30))
+        runCatching { File(dataEcho).delete() }
+        val passed = fullCode == 0 &&
+            fullOutput.any { it.contains("PROBE-OK") } &&
+            fullOutput.any { it.contains("BOOT-OK") } &&
+            fullOutput.any { it.contains("IMPORT-OK") }
+        if (!passed) {
+            throw IOException("环境自检失败\n$report")
         }
-        if (output.none { it.contains("PROBE-OK") }) {
-            throw IOException("环境自检没有输出（exit=0），日志：\n" + tailLog(30))
+    }
+
+    /**
+     * 解压后权限位理论上已由 RuntimeInstaller 恢复，但 exec 失败时会表现为
+     * Android 侧静默退出（exit=255、无任何输出），所以启动前再把关键二进制
+     * 的 0755 枪一遍，顺带在自检报告里读回真实 mode。
+     */
+    private fun ensureExecutable(runtime: File) {
+        listOf(
+            "proot",
+            "rootfs/bin/sh",
+            "rootfs/usr/bin/env",
+            "rootfs/usr/bin/dash",
+            "python/bin/python3.12",
+            "node/bin/node",
+        ).forEach { relative ->
+            val file = File(runtime, relative)
+            if (file.exists()) {
+                runCatching { android.system.Os.chmod(file.absolutePath, 493) } // 0755
+            }
         }
     }
 
