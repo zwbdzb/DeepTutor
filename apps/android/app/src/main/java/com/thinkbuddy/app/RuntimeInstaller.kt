@@ -19,7 +19,8 @@ import java.security.MessageDigest
  *   node/         node linux-arm64
  *   rootfs/       Debian bookworm arm64（PRoot 的根文件系统）
  *   proot         静态 aarch64 PRoot（proot-me，兜底）
- *   proot-termux/ Termux 版 bionic PRoot（bin/proot + libexec/proot/loader + lib/*.so）
+ *   proot-termux/ Termux 版 bionic PRoot（bin/proot、libexec/proot/loader、
+ *                 lib 下的 libtalloc.so.2 与 libandroid-shmem.so）
  *   android-bundle.json
  *
  * 解压必须用 commons-compress：运行包里有符号链接（python3 -> python3.12、
