@@ -101,6 +101,11 @@ web/pnpm-workspace.yaml
 # every build; keeping it locally speeds up incremental shell builds).
 desktop-shell/build/ThinkBuddyDesktop/
 
+# Android / Gradle（build/ 已由上面的全局规则忽略）
+apps/android/.gradle/
+apps/android/local.properties
+apps/android/.kotlin/
+
 # Next.js build output
 .next/
 # Custom distDir builds (DEEPTUTOR_NEXT_DIST_DIR / parallel dev servers)

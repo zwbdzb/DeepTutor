@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.ThinkBuddy" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="colorPrimary">#2F6BFF</item>
+        <item name="colorPrimaryDark">#1B4BD1</item>
+        <item name="colorAccent">#2F6BFF</item>
+        <item name="android:windowBackground">@android:color/white</item>
+        <item name="android:statusBarColor">#FFFFFF</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+</resources>

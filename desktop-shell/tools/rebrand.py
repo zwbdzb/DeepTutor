@@ -50,6 +50,7 @@ from __future__ import annotations
 import argparse
 import ast
 import io
+import os
 import re
 import subprocess
 import sys
@@ -58,10 +59,19 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 _PY_VER = "3.12"
-if sys.platform == "darwin":
-    DEFAULT_SITE_PACKAGES = ROOT / "runtime-build" / "staging" / "python" / "lib" / f"python{_PY_VER}" / "site-packages"
+_STAGING_PYTHON = ROOT / "runtime-build" / "staging" / "python"
+_POSIX_SITE_PACKAGES = _STAGING_PYTHON / "lib" / f"python{_PY_VER}" / "site-packages"
+_WIN_SITE_PACKAGES = _STAGING_PYTHON / "Lib" / "site-packages"
+# 布局以磁盘上的实际 staging 为准（同一份脚本在 Windows / macOS / 手机端
+# Linux staging 上都要能用），磁盘都探测不到时才回退到构建机的平台习惯。
+if _POSIX_SITE_PACKAGES.is_dir():
+    DEFAULT_SITE_PACKAGES = _POSIX_SITE_PACKAGES
+elif _WIN_SITE_PACKAGES.is_dir():
+    DEFAULT_SITE_PACKAGES = _WIN_SITE_PACKAGES
 else:
-    DEFAULT_SITE_PACKAGES = ROOT / "runtime-build" / "staging" / "python" / "Lib" / "site-packages"
+    DEFAULT_SITE_PACKAGES = (
+        _POSIX_SITE_PACKAGES if sys.platform == "darwin" else _WIN_SITE_PACKAGES
+    )
 
 # 只处理本项目的三个发行包；其余第三方包一律不扫
 TARGET_PACKAGES = ("deeptutor", "deeptutor_cli", "deeptutor_web")
@@ -249,17 +259,27 @@ def _staging_python_for(site_packages: Path) -> Path | None:
     """从 site-packages 路径反推同一 staging 树的解释器。
 
     build_runtime staging 布局：Windows ``.../python/Lib/site-packages``，
-    macOS ``.../python/lib/python3.X/site-packages``。反推失败（非 staging
-    布局，例如 --root 指向别处）返回 None，调用方跳过预编译。
+    macOS / Linux ``.../python/lib/python3.X/site-packages``。反推失败（非
+    staging 布局，例如 --root 指向别处）返回 None，调用方跳过预编译。
+
+    跨架构构建（x86 上产 aarch64）时 staging 解释器在本机无法执行，调用方
+    通过 ``REBRAND_COMPILE_PY`` 指定宿主机的同版本解释器（.pyc 与 CPU 架构
+    无关，只要求 magic 一致）。
     """
+    override = os.environ.get("REBRAND_COMPILE_PY", "").strip()
+    if override:
+        exe = Path(override)
+        return exe if exe.is_file() else None
+    candidates: list[Path] = []
     try:
-        if sys.platform == "darwin":
-            exe = site_packages.parents[2] / "bin" / "python3"
-        else:
-            exe = site_packages.parents[1] / "python.exe"
+        candidates.append(site_packages.parents[1] / "python.exe")
+        candidates.append(site_packages.parents[2] / "bin" / "python3")
     except IndexError:
-        return None
-    return exe if exe.is_file() else None
+        pass
+    for exe in candidates:
+        if exe.is_file():
+            return exe
+    return None
 
 
 def precompile_bytecode(site_packages: Path) -> None:

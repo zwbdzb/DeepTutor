@@ -203,14 +203,14 @@ def _shipped_selection(source_root: Path) -> tuple[list[str], list[str]]:
     manifests = _load_manifests(source_root)
     extras = _optional_dependencies(source_root, version)
     by_distribution = {row["distribution"]: name for name, row in manifests.items()}
-    missing_extras = [extra for extra in PIP_EXTRAS if extra not in extras]
+    missing_extras = [extra for extra in ACTIVE_EXTRAS if extra not in extras]
     if missing_extras:
         raise SystemExit(
-            f"PIP_EXTRAS declares {missing_extras} but pyproject defines no such "
+            f"ACTIVE_EXTRAS declares {missing_extras} but pyproject defines no such "
             f"extra; fix PIP_EXTRAS or the pyproject table."
         )
     requested = list(extras.get(FULL_PROFILE, []))
-    for extra in PIP_EXTRAS:
+    for extra in ACTIVE_EXTRAS:
         requested.extend(extras[extra])
     if not requested:
         raise SystemExit(
@@ -408,32 +408,62 @@ def _drop_wheelhouse() -> None:
 # python.org 没有 mac 等价 embeddable 发行版，python-build-standalone 是
 # PyInstaller/Relink 生态公认的可重定位 mac Python 来源。
 # Mac 通过 --arch 选择 arm64 / x86_64，默认跟随当前构建机架构。
+#
+# android-arm64（手机端）：Linux/aarch64 的 python-build-standalone + node
+# linux-arm64。Android 是 bionic libc，glibc 二进制不能直接执行，所以这份
+# 运行时跑在 PRoot 里的 Debian arm64 rootfs 中（见 build_android_bundle.py）；
+# 本文件只负责产出与桌面端同 schema 的 python/ + node/ 两棵树。
 IS_MAC = sys.platform == "darwin"
 PY_VER = "3.12.7"
 NODE_VER = "v22.22.2"
-# --- 先解析 --arch（若在 main 里按 parse 结果再下载就太晚了：URL 在模块加载期确定）---
-_arch = "native"
-if IS_MAC:
-    for _i, _a in enumerate(sys.argv):
-        if _a == "--arch":
-            if _i + 1 < len(sys.argv):
-                _arch = sys.argv[_i + 1]
-        elif _a.startswith("--arch="):
-            _arch = _a.split("=", 1)[1]
-    if _arch == "native":
-        _arch = {"x86_64": "x86_64", "arm64": "arm64"}.get(
-            platform.machine().lower().replace("amd64", "x86_64"),
-            "arm64" if platform.machine().lower() in ("aarch64", "arm64") else "x86_64")
-if IS_MAC:
-    if _arch == "x86_64":
-        # x64 用 x86_64-apple-darwin 的 python-build-standalone + node x64 tarball
-        _PY_TAG = f"cpython-{PY_VER}+20241016-x86_64-apple-darwin-install_only"
-        _PY_OSNODE = "darwin-x64"
-        _AR = "x86_64"
-    else:  # arm64
-        _PY_TAG = f"cpython-{PY_VER}+20241016-aarch64-apple-darwin-install_only"
-        _PY_OSNODE = "darwin-arm64"
-        _AR = "aarch64"
+
+TARGETS = ("native", "windows-x64", "macos-arm64", "macos-x86_64", "android-arm64")
+
+
+def _cli_value(name: str) -> str:
+    """读 argv 里的 ``--name value`` / ``--name=value``。
+
+    URL 是模块级常量、下载缓存文件名由它决定，所以目标平台必须在 import
+    期确定，不能等 main() 里 argparse 的结果。
+    """
+    for index, arg in enumerate(sys.argv):
+        if arg == f"--{name}" and index + 1 < len(sys.argv):
+            return sys.argv[index + 1]
+        if arg.startswith(f"--{name}="):
+            return arg.split("=", 1)[1]
+    return ""
+
+
+_target = _cli_value("target") or "native"
+if _target not in TARGETS:
+    raise SystemExit(f"unknown --target {_target!r}; choose from {', '.join(TARGETS)}")
+_arch = _cli_value("arch") or "native"
+
+IS_LINUX = _target == "android-arm64"
+IS_WIN = _target == "windows-x64" or (_target == "native" and sys.platform == "win32")
+IS_MAC_TARGET = _target.startswith("macos") or (_target == "native" and IS_MAC)
+# 布局判定：macOS 与 Linux 都是 POSIX 布局（bin/python3 + lib/python3.12）。
+IS_POSIX = not IS_WIN
+
+if IS_MAC_TARGET:
+    if _target == "macos-x86_64":
+        _arch = "x86_64"
+    elif _target == "macos-arm64":
+        _arch = "arm64"
+    elif _arch == "native":
+        _arch = "arm64" if platform.machine().lower() in ("aarch64", "arm64") else "x86_64"
+    _PY_TAG = (f"cpython-{PY_VER}+20241016-"
+               f"{'x86_64' if _arch == 'x86_64' else 'aarch64'}-apple-darwin-install_only")
+    _PY_OSNODE = "darwin-x64" if _arch == "x86_64" else "darwin-arm64"
+elif IS_LINUX:
+    _arch = "aarch64"
+    _PY_TAG = f"cpython-{PY_VER}+20241016-aarch64-unknown-linux-gnu-install_only"
+    _PY_OSNODE = "linux-arm64"
+else:
+    _arch = "x86_64"
+    _PY_OSNODE = ""
+
+if IS_POSIX:
     # install_only flavor 只含运行时（无 doc/test），体积小、解包即可用。
     # 解包后布局：python/bin/python3、python/lib/python3.12/...，展平到
     # staging/python/ 即与 Windows embeddable 同 schema（runtime/python/...）。
@@ -448,6 +478,19 @@ else:
     NODE_URL = f"https://nodejs.org/dist/{NODE_VER}/node-{NODE_VER}-win-x64.zip"
     NODE_ZIP = CACHE / f"node-{NODE_VER}-win-x64.zip"
 
+# 跨架构构建（x86 runner 上产 aarch64 运行时）无法 spawn staging 解释器：
+# 所有「跑一下证明它真的能导入」的门禁退化为读 dist-info 的静态校验。
+HOST_ARM = platform.machine().lower() in ("aarch64", "arm64")
+HOST_ARCH = "aarch64" if HOST_ARM else "x86_64"
+TARGET_OS = "windows" if IS_WIN else ("macos" if IS_MAC_TARGET else "linux")
+HOST_OS = "windows" if sys.platform == "win32" else ("macos" if IS_MAC else "linux")
+CAN_EXECUTE_STAGING = TARGET_OS == HOST_OS and _arch == HOST_ARCH
+
+# 手机运行时（android-arm64）不随包 manim：路线 4 里 math_animator /
+# video_lesson 这类重能力交给电脑引擎（SSH 远程模式）。这同时避开了 manim
+# 生态里若干只发 x86_64 manylinux 轮子的传递依赖（手机上装不上）。
+ACTIVE_EXTRAS: tuple[str, ...] = () if IS_LINUX else PIP_EXTRAS
+
 # A system cp312 interpreter used only to resolve cp312 wheels into the
 # embeddable distribution during the *build* (not needed at run time).
 def _find_build_py() -> Path | None:
@@ -458,6 +501,9 @@ def _find_build_py() -> Path | None:
         "AppData/Roaming/uv/python/cpython-3.1[12]*/python.exe"))
     candidates += list(Path.home().glob(
         ".local/share/uv/python/cpython-3.1[12]*/python.exe"))
+    candidates += list(Path.home().glob(
+        ".local/share/uv/python/cpython-3.1[12]*/bin/python3.12"))
+    candidates += [Path("/usr/bin/python3.12"), Path("/usr/local/bin/python3.12")]
     for c in candidates:
         if c.exists():
             return c
@@ -507,8 +553,9 @@ def enable_site(path: Path) -> None:
     Windows embeddable 用 ``python*._pth`` 控制 sys.path，默认注释掉
     ``import site``，这里取消注释并追加 ``Lib\\site-packages``。
     macOS 的 python-build-standalone 已启用 site 模块、无 _pth 文件，直接 return。
+    Linux（Android 运行时）同理。
     """
-    if IS_MAC:
+    if IS_POSIX:
         return
     pth = next(path.glob("python*._pth"))
     lines = [l.rstrip() for l in pth.read_text(encoding="utf-8").splitlines()]
@@ -537,10 +584,10 @@ def _find_ucrt_dlls() -> list[Path]:
     forwarders). python312.dll / python.exe import these forwarders which
     forward to ucrtbase.dll; neither the embeddable distro nor PyInstaller
     ships them, so on a UCRT-less target the runtime python fails to start.
-    Returning [] (e.g. building on macOS) is harmless — UCRT is assumed
+    Returning [] (e.g. building on macOS/Linux) is harmless — UCRT is assumed
     present there.
     """
-    if IS_MAC:
+    if IS_POSIX:
         return []
     win_dir = Path(os.environ.get("SystemRoot", r"C:\Windows"))
     found: list[Path] = []
@@ -571,7 +618,7 @@ def copy_ucrt_into_python(target: Path) -> int:
     Universal C Runtime (same root cause as the shell's "Failed to load
     Python DLL"). Returns the number of DLLs copied.
     """
-    if IS_MAC:
+    if IS_POSIX:
         return 0
     dlls = _find_ucrt_dlls()
     copied = 0
@@ -595,14 +642,14 @@ def _py_site_packages(target: Path) -> Path:
     Windows embeddable 是 ``Lib/site-packages``；python-build-standalone 是
     ``lib/python{ver}/site-packages``（与 CPython 标准布局一致）。
     """
-    if IS_MAC:
+    if IS_POSIX:
         return target / "lib" / f"python{PY_VER.rsplit('.', 1)[0]}" / "site-packages"
     return target / "Lib" / "site-packages"
 
 
 def _staging_py_exe(target: Path) -> Path:
     """staging python 树内解释器路径（用于版本门禁/冒烟测试）。"""
-    if IS_MAC:
+    if IS_POSIX:
         return target / "bin" / "python3"
     return target / "python.exe"
 
@@ -655,6 +702,19 @@ def install_deeptutor(target: Path, source_root: Path, *,
     # deeptutor-server==<v> 这类 Requires-Dist 由 --find-links 里的 wheel 满足。
     cmd = [str(BUILD_PY), "-m", "pip", "install", "--upgrade", "--no-compile",
            "--target", str(dest), "--find-links", str(WHEELHOUSE)]
+    if IS_LINUX:
+        # 手机运行时是 aarch64，构建机通常是 x86：必须显式指定目标平台，
+        # 否则 pip 解析出 x86_64 的 manylinux wheel，装进 rootfs 里跑不起来。
+        # 二进制都来自 Debian rootfs 的 glibc，所以 manylinux 轮子可用
+        # （Android 自身的 bionic 在这里不参与，PRoot 交出的是 rootfs 的 libc）。
+        cmd.extend([
+            "--platform", "manylinux2014_aarch64",
+            "--platform", "manylinux_2_17_aarch64",
+            "--python-version", PY_VER.rsplit(".", 1)[0],
+            "--implementation", "cp",
+            "--abi", "cp312",
+            "--only-binary=:all:",
+        ])
     if not with_deps:
         cmd.append("--no-deps")
     cmd.extend(str(wheels[name]) for name in modules)
@@ -674,6 +734,8 @@ def version_gate(target: Path, expected: str) -> str:
 
     防止「以为打了新版、其实静默回退到旧版」的事故再次发生。
     """
+    if not CAN_EXECUTE_STAGING:
+        return version_gate_static(target, expected)
     py_exe = _staging_py_exe(target)
     # 注意：deeptutor/__init__.py 不 re-export __version__，必须经子模块取
     code = "from deeptutor.__version__ import __version__; print(__version__)"
@@ -690,6 +752,52 @@ def version_gate(target: Path, expected: str) -> str:
     return actual
 
 
+def _site_packages_for_exe(py_exe: Path) -> Path:
+    """POSIX staging 布局下由解释器路径反推 site-packages。"""
+    return py_exe.parents[1] / "lib" / f"python{PY_VER.rsplit('.', 1)[0]}" / "site-packages"
+
+
+def _module_issues_static(site_packages: Path, modules: list[str],
+                          source_root: Path | None = None) -> list[str]:
+    """跨架构构建的模块门禁：只读 dist-info，不 spawn 目标解释器。
+
+    x86 runner 上产 aarch64 运行时无法执行 staging 里的 python（需要 qemu），
+    因此把「跑一下确认」换成读元数据：每个随包 distribution 的 dist-info
+    必须在、且版本等于源码版本；启动面依赖的包目录必须在。
+    """
+    root = source_root or MONOREPO_SOURCE
+    manifests = _load_manifests(root)
+    expected = _read_source_version(root)
+    issues: list[str] = []
+    for name in modules:
+        distribution = manifests[name]["distribution"]
+        prefix = distribution.replace("-", "_")
+        versions = [version for path in site_packages.glob(f"{prefix}-*.dist-info")
+                    if (version := _distinfo_metadata_version(path))]
+        if not versions:
+            issues.append(f"missing module distribution {distribution} ({name})")
+        elif expected not in versions:
+            issues.append(f"module {name} is {versions[0]} but core is {expected}")
+    for package in DESKTOP_SMOKE_PACKAGES:
+        if not (site_packages / package).is_dir():
+            issues.append(f"missing start-up package {package}")
+    return issues
+
+
+def version_gate_static(target: Path, expected: str) -> str:
+    """version_gate 的静态版本（跨架构构建）。"""
+    sp = _py_site_packages(target)
+    found = sorted(version for path in sp.glob("deeptutor-*.dist-info")
+                   if (version := _distinfo_metadata_version(path)))
+    if expected not in found:
+        raise SystemExit(
+            f"VERSION GATE FAILED (static): staging dist-info has "
+            f"{found or 'no deeptutor dist-info'} but source is {expected!r}."
+        )
+    log(f"VERSION GATE OK (static): deeptutor {expected} == source")
+    return expected
+
+
 def smoke_test(py_exe: Path) -> None:
     """staging 冒烟测试：自家包可 import + PIP_EXTRAS 关键模块存在。
 
@@ -698,6 +806,19 @@ def smoke_test(py_exe: Path) -> None:
     防止「extras 没装上但整条构建链路静默通过」。PIP_EXTRAS 为空时门禁
     自然跳过（与安装逻辑联动）。
     """
+    if not CAN_EXECUTE_STAGING:
+        # 跨架构：不能跑 staging 解释器，退化为目录存在性检查。
+        sp = _site_packages_for_exe(py_exe)
+        gated = [mod for extra in ACTIVE_EXTRAS
+                 for mod in EXTRA_SMOKE_MODULES.get(extra, ())]
+        missing = [mod for mod in gated if not (sp / mod).is_dir()]
+        if missing:
+            raise SystemExit(
+                f"EXTRAS GATE FAILED: modules missing from runtime: {missing}.\n"
+                f"extras {list(ACTIVE_EXTRAS)} 未装进 runtime；用 --clean 触发全量重装。"
+            )
+        log(f"extras gate OK (static): {gated} present")
+        return
     code = (
         "import deeptutor_cli, deeptutor, deeptutor_web; "
         "print('runtime imports OK:', deeptutor_cli.__file__)"
@@ -705,12 +826,12 @@ def smoke_test(py_exe: Path) -> None:
     res = subprocess.run([str(py_exe), "-c", code], capture_output=True, text=True, timeout=120)
     log("import check: " + (res.stdout.strip() or res.stderr.strip()))
 
-    if not PIP_EXTRAS:
+    if not ACTIVE_EXTRAS:
         return
     # {模块: 所属 extra} 映射；extra 缺门禁声明属于配置错误，宁可构建失败，
     # 不可静默跳过校验（与「防静默漏装」同一原则）。
     mapping: dict[str, str] = {}
-    for extra in PIP_EXTRAS:
+    for extra in ACTIVE_EXTRAS:
         mods = EXTRA_SMOKE_MODULES.get(extra)
         if not mods:
             raise SystemExit(
@@ -854,7 +975,10 @@ def module_gate(py_exe: Path, modules: list[str]) -> None:
     invariant, not an after-install check: it runs on every build (including
     builds that skipped pip) and again after pruning.
     """
-    issues = module_issues(module_report(py_exe, modules))
+    if CAN_EXECUTE_STAGING:
+        issues = module_issues(module_report(py_exe, modules))
+    else:
+        issues = _module_issues_static(_site_packages_for_exe(py_exe), modules)
     if issues:
         detail = "\n  ".join(issues)
         raise SystemExit(
@@ -875,6 +999,8 @@ def module_precheck(py_exe: Path, modules: list[str]) -> list[str]:
     and CI restores exactly such trees from cache. That must mean "reinstall",
     never "abort the build" — the strict verdict belongs to ``module_gate``.
     """
+    if not CAN_EXECUTE_STAGING:
+        return _module_issues_static(_site_packages_for_exe(py_exe), modules)
     try:
         return module_issues(module_report(py_exe, modules))
     except SystemExit as exc:
@@ -896,9 +1022,9 @@ def PRUNE_GLOBS() -> list[str]:
         "s3transfer", "s3transfer-*.dist-info",
         "hf_xet", "hf_xet-*.dist-info",
     ]
-    if IS_MAC:
-        # mac 上 bin/ 是 python-build-standalone 的可执行入口（python3），
-        # prune 掉会导致运行时找不到解释器；PyWin32.chm 在 mac 不存在。
+    if IS_POSIX:
+        # POSIX 树上 bin/ 是 python-build-standalone 的可执行入口（python3），
+        # prune 掉会导致运行时找不到解释器；PyWin32.chm 只存在于 Windows。
         return globs
     globs.extend(["bin", "PyWin32.chm"])
     return globs
@@ -918,6 +1044,17 @@ def prune_runtime(site_packages: Path) -> None:
             shutil.rmtree(entry, ignore_errors=True) if p.is_dir() else p.unlink(missing_ok=True)
             log(f"pruned: {p.name} ({mb:.1f} MB)")
     log(f"prune done, freed ~{removed_mb:.1f} MB")
+
+
+def _compile_py_exe(target: Path) -> Path | None:
+    """预编译用的解释器：跨架构构建时用宿主机的同版本 python。
+
+    .pyc 与 CPU 架构无关，只要求 magic number 一致；构建机与 staging 都是
+    cp312，所以宿主解释器编译出的 pyc 在手机 aarch64 上同样有效。
+    """
+    if CAN_EXECUTE_STAGING:
+        return _staging_py_exe(target)
+    return BUILD_PY if BUILD_PY and BUILD_PY.exists() else None
 
 
 def precompile_site_packages(target: Path) -> None:
@@ -940,7 +1077,10 @@ def precompile_site_packages(target: Path) -> None:
     if not sp.is_dir():
         log("precompile: site-packages missing, skip")
         return
-    py_exe = _staging_py_exe(target)
+    py_exe = _compile_py_exe(target)
+    if py_exe is None:
+        log("precompile skipped: no host interpreter available for cross-build")
+        return
     log(f"precompiling bytecode for {sp} ...")
     res = subprocess.run(
         [str(py_exe), "-m", "compileall", "-q", "-j", "0", str(sp)],
@@ -955,8 +1095,8 @@ def precompile_site_packages(target: Path) -> None:
 
 def _prepared(py: Path, node: Path) -> bool:
     """True if staging already holds an extractable python + node of the right arch."""
-    if IS_MAC:
-        # python-build-standalone：bin/python3；node darwin tarball：bin/node
+    if IS_POSIX:
+        # python-build-standalone：bin/python3；node posix tarball：bin/node
         if not ((py / "bin" / "python3").exists() and (node / "bin" / "node").exists()):
             return False
         # 检查 arch marker：切换架构时（arm64 ↔ x86_64）必须重新下载。
@@ -1114,7 +1254,7 @@ def dependencies_signature(source_root: Path) -> str:
         payload = pyproject.read_bytes()
     digest = hashlib.sha256()
     digest.update(payload)
-    digest.update(b"\0extras=" + ",".join(PIP_EXTRAS).encode("utf-8"))
+    digest.update(b"\0extras=" + ",".join(ACTIVE_EXTRAS).encode("utf-8"))
     digest.update(b"\0algo=deps-only-v2")
     return digest.hexdigest()
 
@@ -1168,7 +1308,7 @@ def build(make_zip: bool = False, source_root: Path | None = None,
         extract(PY_ZIP, STAGING_PY)
         extract(NODE_ZIP, STAGING_NODE)
         enable_site(STAGING_PY)
-        if IS_MAC:
+        if IS_POSIX:
             (STAGE / ".staging-arch").write_text(_arch, encoding="utf-8")
 
     # 把 UCRT（ucrtbase.dll + api-ms-win-crt-*.dll）拷进 staging/python/，
@@ -1334,12 +1474,17 @@ def build(make_zip: bool = False, source_root: Path | None = None,
     # 打 zip 前强制重刷品牌（rebrand 幂等）。此前 rebrand 在本脚本之后才跑，
     # zip 里装的是换牌前的旧内容——曾致 mac dmg 品牌混杂（2026-10-19）。
     # 必须在 zip 之前执行，失败即中止构建。
+    compile_py = _compile_py_exe(STAGING_PY)
+    if not CAN_EXECUTE_STAGING and compile_py is not None:
+        # rebrand 改写过 .py 后要重编译 pyc；跨架构时用宿主的同版本解释器
+        # （.pyc 与 CPU 架构无关，只要求 cp312 magic 一致）。
+        os.environ["REBRAND_COMPILE_PY"] = str(compile_py)
     _rebrand_staging(_py_site_packages(STAGING_PY))
     # zip 路径兜底：rebrand_root 末尾已预编译，这里幂等重跑（增量，秒级），
     # 保证打进 runtime.zip 的树 pyc 齐全——zip 是 mac .app 的运行时事实源。
     precompile_site_packages(STAGING_PY)
 
-    out_zip = DIST / "runtime.zip"
+    out_zip = DIST / ("runtime-android-arm64.zip" if IS_LINUX else "runtime.zip")
     out_zip.unlink(missing_ok=True)
     # compresslevel=1 而非 6：这个 zip 只存在于 mac .app 内部（Windows 的
     # build.ps1 默认 --no-zip、CI 不产 zip），而 DMG 的 hdiutil -format UDZO
@@ -1351,6 +1496,8 @@ def build(make_zip: bool = False, source_root: Path | None = None,
             "runtime-manifest.json",
             json.dumps({
                 "layout_version": 5,
+                "target": _target,
+                "arch": _arch,
                 "deeptutor_version": expected,
                 "source_fingerprint": fp,
                 "source_fingerprint_mode": mode,
@@ -1359,7 +1506,7 @@ def build(make_zip: bool = False, source_root: Path | None = None,
         for root_ in (STAGING_PY, STAGING_NODE):
             base = "python" if root_ is STAGING_PY else "node"
             for f in sorted(root_.rglob("*")):
-                if f.is_symlink() and IS_MAC:
+                if f.is_symlink() and IS_POSIX:
                     # python-build-standalone/node tarball 里 bin/python3、bin/node
                     # 是符号链接（指向同目录真实可执行文件）。zipfile 无跨条目
                     # symlink 表达，这里记录目标字符串 + S_IFLNK，解压端负责重建。
@@ -1377,7 +1524,7 @@ def build(make_zip: bool = False, source_root: Path | None = None,
                 if f.is_file():
                     arc = f"{base}/{f.relative_to(root_).as_posix()}"
                     info = zipfile.ZipInfo(arc, date_time=(2020, 1, 1, 0, 0, 0))
-                    if IS_MAC:
+                    if IS_POSIX:
                         # 只存权限位，不存 S_IFREG：运行端用 attr & 0o120000
                         # 检测符号链接，S_IFREG (0o100000) 与 S_IFLNK (0o120000)
                         # 有位重叠，加了 S_IFREG 的普通文件会被误判为符号链接。
@@ -1386,13 +1533,14 @@ def build(make_zip: bool = False, source_root: Path | None = None,
                         zf.writestr(info, fh.read())
     size = out_zip.stat().st_size / 1e6
     log(f"built {out_zip} ({size:.1f} MB)")
-    if IS_MAC:
-        # macOS 打包段自我验证：把 runtime.zip 按最终用户路径完整走一遍
+    if IS_POSIX and CAN_EXECUTE_STAGING:
+        # POSIX 打包段自我验证：把 runtime.zip 按最终用户路径完整走一遍
         # （extract -> 权限/符号链接修复 -> 真实 spawn python3/node）。
         # 这段检测的是「zip 元数据是否正确编码了 unix 模式位/符号链接」——
         # python3 修复链上所有历史 bug（无执行位、python3.12 真身漏修、
-        # S_IFLNK 放错位导致 Exec format error）都会在这里直接失败，
-        # 而不是等你下载 dmg 后在 mac 上才暴露。
+        # S_IFLNK 放错位导致 Exec format error）都会在这里直接失败。
+        # 跨架构（x86 上产 aarch64）无法 spawn，跳过——手机端由 runtime
+        # 自检（Android 壳首次启动的 smoke 输出）兜底。
         _self_check_zip_layout(out_zip)
 
 
@@ -1469,7 +1617,9 @@ def main() -> None:
     ap.add_argument("--strict-fingerprint", action="store_true",
                     help="content-hash source files instead of mtime+size "
                          "(slower; use before a release for extra assurance)")
-    if IS_MAC:
+    ap.add_argument("--target", choices=TARGETS, default="native",
+                    help="目标平台；android-arm64 产出手机端 Linux/aarch64 运行时")
+    if IS_MAC_TARGET:
         ap.add_argument("--arch", choices=["arm64", "x86_64", "native"], default="native",
                         help="macOS 目标架构：下载对应架构的 python-build-standalone + "
                              "node tarball（默认 native 跟随构建机）")

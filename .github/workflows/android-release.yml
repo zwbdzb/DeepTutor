@@ -1,0 +1,242 @@
+# ThinkBuddy Android 打包流水线（手机端 = 本地 PRoot 引擎 + WebView 壳）
+#
+# 只产出 Android 相关产物；Windows 桌面端仍由 build-desktop.yml 负责，
+# macOS / iOS 不在本流水线范围内。
+#
+# job 结构：
+#   runtime（ubuntu）：Next.js standalone -> build_runtime --target android-arm64
+#     -> build_android_bundle（Debian arm64 rootfs + 静态 PRoot）
+#     -> dist/ThinkBuddy-android-runtime-arm64.zip（首次启动下载的 ~1GB 运行时）
+#   apk（ubuntu）：下载 runtime-info.json（下载地址 + sha256）烧进 BuildConfig，
+#     Gradle 构建 APK；有签名 secrets 时出 release 包，否则出 debug 签名包。
+#
+# 发布模型：勾选 release 时两个 job 各自把产物追加到同一个 android-N release。
+# APK 里烧的运行时下载地址就指向该 release 资产，所以 runtime job 必须先完成；
+# apk job 用 needs 串行保证这一点。
+name: ThinkBuddy Android Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "构建成功后发布 GitHub Release（android-N tag：APK + 运行时 zip）"
+        type: boolean
+        default: false
+  push:
+    branches: [main, "dev**"]
+    paths:
+      - "apps/android/**"
+      - "desktop-shell/tools/build_runtime.py"
+      - "desktop-shell/tools/build_android_bundle.py"
+      - "desktop-shell/tools/rebrand.py"
+      - "web/**"
+      - "deeptutor/**"
+      - "deeptutor_cli/**"
+      - "scripts/prepare_web_package.py"
+      - "pyproject.toml"
+      - ".github/workflows/android-release.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-release-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
+
+jobs:
+  runtime:
+    name: Android · runtime bundle (linux-aarch64)
+    runs-on: ubuntu-24.04
+    env:
+      PYTHONIOENCODING: utf-8
+    outputs:
+      runtime_url: ${{ steps.info.outputs.url }}
+      runtime_sha256: ${{ steps.info.outputs.sha256 }}
+      engine_version: ${{ steps.info.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22 (frontend build)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Cache Next.js build cache
+        uses: actions/cache@v4
+        with:
+          path: web/.next/cache
+          key: next-web-${{ hashFiles('web/package-lock.json') }}
+          restore-keys: next-web-
+
+      - name: Install frontend dependencies
+        working-directory: web
+        run: npm ci --legacy-peer-deps
+
+      - name: Build frontend (Next.js standalone)
+        working-directory: web
+        run: npm run build
+
+      - name: Set up Python 3.12 (BUILD_PY)
+        id: py312
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # 本地 deeptutor-* 模块 wheel 与 pyproject build-system 都需要 setuptools。
+      - name: Install build tooling
+        run: python -m pip install --upgrade setuptools wheel
+
+      - name: Refresh deeptutor_web package
+        run: python scripts/prepare_web_package.py --skip-build
+
+      # 缓存 staging 树 + 下载缓存：手机运行时依赖集合（含 manim）很大，
+      # 缓存能把只改源码的构建从十几分钟压到几分钟。
+      - name: Cache runtime tree
+        uses: actions/cache@v4
+        with:
+          path: desktop-shell/runtime-build
+          key: thinkbuddy-runtime-android-arm64-py3127-node2222-${{ hashFiles('pyproject.toml') }}
+          restore-keys: |
+            thinkbuddy-runtime-android-arm64-py3127-node2222-
+
+      - name: Cache pip downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-android-${{ hashFiles('pyproject.toml') }}
+          restore-keys: pip-android-
+
+      - name: Build runtime (linux-aarch64)
+        working-directory: desktop-shell
+        env:
+          BUILD_PY: ${{ steps.py312.outputs.python-path }}
+          PIP_INDEX_URL: https://pypi.org/simple
+        run: python tools/build_runtime.py --target android-arm64
+
+      # PRoot + Debian rootfs 与运行时合并成一个 zip（rebrand 已在 build_runtime
+      # 的 zip 前完成，runtime.zip 内的品牌已是 ThinkBuddy）。
+      - name: Assemble Android runtime bundle
+        working-directory: desktop-shell
+        run: python tools/build_android_bundle.py
+
+      - name: Write runtime manifest for the APK job
+        id: info
+        working-directory: desktop-shell
+        env:
+          RUNTIME_TAG: android-${{ github.run_number }}
+          RELEASE_ENABLED: ${{ inputs.release }}
+        run: |
+          VERSION=$(sed -n 's/^__version__ *= *"\([^"]*\)".*/\1/p' ../deeptutor/__version__.py | head -n1)
+          SHA=$(sha256sum dist/ThinkBuddy-android-runtime-arm64.zip | cut -d' ' -f1)
+          URL=""
+          if [ "$RELEASE_ENABLED" = "true" ]; then
+            URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${RUNTIME_TAG}/ThinkBuddy-android-runtime-arm64.zip"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "runtime $VERSION sha256=$SHA"
+          echo "download url: ${URL:-<empty: users paste it in Settings>}"
+
+      - name: Upload runtime bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: ThinkBuddy-android-runtime
+          path: desktop-shell/dist/ThinkBuddy-android-runtime-arm64.zip
+          if-no-files-found: error
+
+      - name: Publish runtime to GitHub Release
+        if: inputs.release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: android-${{ github.run_number }}
+          name: ThinkBuddy Android build ${{ github.run_number }}
+          append_body: true
+          body: |
+            ## Android 运行时
+            - `ThinkBuddy-android-runtime-arm64.zip` — 手机端首次启动下载的离线运行时（Debian arm64 rootfs + python + node + PRoot）
+          files: desktop-shell/dist/ThinkBuddy-android-runtime-arm64.zip
+
+  apk:
+    name: Android · APK
+    runs-on: ubuntu-24.04
+    needs: runtime
+    env:
+      KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        run: sdkmanager "platforms;android-34" "build-tools;34.0.0" "platform-tools"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Decode release keystore (optional)
+        if: env.KEYSTORE_BASE64 != ''
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/thinkbuddy.jks"
+          echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/thinkbuddy.jks" >> "$GITHUB_ENV"
+          echo "ANDROID_KEYSTORE_PASSWORD=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" >> "$GITHUB_ENV"
+          echo "ANDROID_KEY_ALIAS=${{ secrets.ANDROID_KEY_ALIAS }}" >> "$GITHUB_ENV"
+          echo "ANDROID_KEY_PASSWORD=${{ secrets.ANDROID_KEY_PASSWORD }}" >> "$GITHUB_ENV"
+
+      - name: Build APK
+        working-directory: apps/android
+        env:
+          RUNTIME_URL: ${{ needs.runtime.outputs.runtime_url }}
+          RUNTIME_SHA256: ${{ needs.runtime.outputs.runtime_sha256 }}
+          ENGINE_VERSION: ${{ needs.runtime.outputs.engine_version }}
+        run: |
+          TASK=:app:assembleDebug
+          if [ -n "$ANDROID_KEYSTORE_PATH" ]; then TASK=:app:assembleRelease; fi
+          gradle "$TASK" --no-daemon \
+            -PversionCode="${{ github.run_number }}" \
+            -PversionName="$ENGINE_VERSION" \
+            -PruntimeUrl="$RUNTIME_URL" \
+            -PruntimeSha256="$RUNTIME_SHA256" \
+            -PengineVersion="$ENGINE_VERSION"
+
+      - name: Collect APK
+        run: |
+          mkdir -p out
+          find apps/android/app/build/outputs/apk -name "*.apk" -exec cp {} out/ \;
+          cd out
+          for f in *.apk; do mv "$f" "ThinkBuddy-android-${f}"; done
+          ls -lh
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ThinkBuddy-android-apk
+          path: out/*.apk
+          if-no-files-found: error
+
+      - name: Publish APK to GitHub Release
+        if: inputs.release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: android-${{ github.run_number }}
+          name: ThinkBuddy Android build ${{ github.run_number }}
+          append_body: true
+          body: |
+            ## Android
+            - `ThinkBuddy-android-*.apk` — 手机端（WebView 壳 + 本地 PRoot 引擎）
+            - 首次启动下载运行时：`ThinkBuddy-android-runtime-arm64.zip`（同 release 资产，~1GB）
+            - 重能力（deep_research 全文解析 / math_animator / video_lesson）可在设置里切到「远程引擎」，SSH 连接电脑上的 `deeptutor start`
+          files: out/*.apk
