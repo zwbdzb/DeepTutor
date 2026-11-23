@@ -20,6 +20,7 @@ object ProotEngine {
     private val logs = ArrayDeque<String>()
     private var backend: Process? = null
     private var frontend: Process? = null
+    private var login: Process? = null
 
     fun isRunning(): Boolean = backend?.isAlive == true
 
@@ -80,7 +81,7 @@ object ProotEngine {
     }
 
     fun stop() {
-        listOf(frontend, backend).forEach { process ->
+        listOf(login, frontend, backend).forEach { process ->
             if (process == null) return@forEach
             // --kill-on-exit 让 PRoot 退出时带走被 trace 的子进程。
             process.destroy()
@@ -93,8 +94,77 @@ object ProotEngine {
                 Thread.currentThread().interrupt()
             }
         }
+        login = null
         frontend = null
         backend = null
+    }
+
+    /**
+     * Tokengine 账号登录：在 guest 里跑一次性的 OAuth 脚本（回环回调在
+     * guest 内监听，PRoot 不隔离网络，所以 127.0.0.1 就是手机本机）。
+     *
+     * 脚本按行输出协议：`AUTHORIZE <url>` / `OK <count> <relay>` / `ERROR <msg>`。
+     */
+    fun loginTokengine(
+        context: Context,
+        onAuthorize: (String) -> Unit,
+        onResult: (Boolean, String) -> Unit,
+    ) {
+        stopLogin()
+        Thread({
+            try {
+                val runtime = RuntimeInstaller.runtimeDir(context)
+                val home = RuntimeInstaller.homeDir(context).apply { mkdirs() }
+                val tmp = RuntimeInstaller.tmpDir(context).apply { mkdirs() }
+                writeTokengineScript(home)
+                ensureExecutable(runtime)
+                val selection = selectProot(runtime, home, tmp)
+                val command = selection.args + listOf(
+                    "/opt/python/bin/python3.12",
+                    "/root/tokengine_login.py",
+                )
+                val builder = ProcessBuilder(command)
+                builder.directory(File("/"))
+                builder.redirectErrorStream(true)
+                builder.environment().clear()
+                builder.environment().putAll(selection.env)
+                val process = builder.start()
+                login = process
+                appendLog("[cmd] ${command.joinToString(" ")}")
+
+                var settled = false
+                process.inputStream.bufferedReader().forEachLine { raw ->
+                    val line = raw.trim()
+                    appendLog("[toklogin] $line")
+                    when {
+                        line.startsWith("AUTHORIZE ") ->
+                            onAuthorize(line.removePrefix("AUTHORIZE ").trim())
+                        line.startsWith("OK ") -> {
+                            settled = true
+                            onResult(true, line.removePrefix("OK ").trim())
+                        }
+                        line.startsWith("ERROR ") -> {
+                            settled = true
+                            onResult(false, line.removePrefix("ERROR ").trim())
+                        }
+                    }
+                }
+                process.waitFor()
+                if (!settled) {
+                    onResult(false, "登录进程已退出（exit=${process.exitValue()}）")
+                }
+            } catch (exc: Exception) {
+                onResult(false, exc.message ?: exc.toString())
+            } finally {
+                login = null
+            }
+        }, "tokengine-login").apply { isDaemon = true }.start()
+    }
+
+    fun stopLogin() {
+        val process = login ?: return
+        login = null
+        runCatching { process.destroy() }
     }
 
     private fun launch(
@@ -378,5 +448,17 @@ object ProotEngine {
                 main()
         """.trimIndent()
         File(home, "boot_backend.py").writeText(script + "\n")
+    }
+
+    /** 登录脚本只是 `deeptutor.services.config.tokengine_login` 的入口壳。 */
+    private fun writeTokengineScript(home: File) {
+        val script = """
+            import sys
+
+            from deeptutor.services.config.tokengine_login import main
+
+            sys.exit(main(sys.argv[1:]))
+        """.trimIndent()
+        File(home, "tokengine_login.py").writeText(script + "\n")
     }
 }

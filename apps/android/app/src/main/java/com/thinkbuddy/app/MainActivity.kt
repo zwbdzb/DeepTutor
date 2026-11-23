@@ -29,6 +29,7 @@ import android.widget.RadioButton
 import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
@@ -186,6 +187,18 @@ class MainActivity : AppCompatActivity() {
         overlay.addView(progress, wrapContent())
         overlay.addView(buttons, wrapContent())
         root.addView(overlay, matchParent())
+
+        // 引擎就绪后遮罩会隐藏；留一个常驻的小入口，否则设置（含账号登录）就进不去了。
+        root.addView(Button(this@MainActivity).apply {
+            text = "⚙"
+            textSize = 15f
+            alpha = 0.72f
+            setOnClickListener { showSettings() }
+        }, FrameLayout.LayoutParams(dp(44), dp(44)).apply {
+            gravity = Gravity.TOP or Gravity.END
+            topMargin = dp(6)
+            rightMargin = dp(6)
+        })
         setContentView(root)
     }
 
@@ -215,7 +228,8 @@ class MainActivity : AppCompatActivity() {
                     status.message + if (log.isBlank()) "" else "\n\n$log",
                     null,
                 )
-            }            Phase.IDLE, Phase.STOPPED -> showOverlay("引擎未启动", "点击「设置」选择引擎来源", null)
+            }
+            Phase.IDLE, Phase.STOPPED -> showOverlay("引擎未启动", "点击「设置」选择引擎来源", null)
         }
     }
 
@@ -295,7 +309,24 @@ class MainActivity : AppCompatActivity() {
             content.addView(field)
         }
 
-        AlertDialog.Builder(this)
+        var dialogRef: AlertDialog? = null
+        val accountHint = TextView(this).apply {
+            text = "登录 Tokengine 账号后会自动写入全部授权模型（与电脑端一致）。"
+            textSize = 12f
+            setTextColor(0xFF666666.toInt())
+            setPadding(0, dp(4), 0, dp(8))
+        }
+        content.addView(label("Tokengine 账号"))
+        content.addView(accountHint)
+        content.addView(Button(this).apply {
+            text = "登录 Tokengine 账号"
+            setOnClickListener {
+                dialogRef?.dismiss()
+                startTokengineLogin()
+            }
+        })
+
+        dialogRef = AlertDialog.Builder(this)
             .setTitle("设置")
             .setView(ScrollView(this).apply { addView(content) })
             .setPositiveButton("保存并重启引擎") { _, _ ->
@@ -319,6 +350,58 @@ class MainActivity : AppCompatActivity() {
             }
             .setNegativeButton("取消", null)
             .show()
+    }
+
+    /**
+     * Tokengine 账号登录：引擎侧完成 OAuth（回环回调）并写入 model catalog，
+     * 这里只负责把授权页交给系统浏览器，成功后刷新 WebView 让模型列表生效。
+     */
+    private fun startTokengineLogin() {
+        if (Prefs(this).mode == EngineConfig.MODE_REMOTE) {
+            toast("远程引擎模式下请在电脑上登录，手机端会直接看到电脑上的模型")
+            return
+        }
+        if (!RuntimeInstaller.isInstalled(this)) {
+            toast("运行时还没安装完成，请等本地引擎启动后再登录")
+            return
+        }
+        val progressDialog = AlertDialog.Builder(this)
+            .setTitle("登录 Tokengine")
+            .setMessage("正在准备登录…")
+            .setCancelable(true)
+            .setNegativeButton("取消") { dialog, _ ->
+                ProotEngine.stopLogin()
+                dialog.dismiss()
+            }
+            .create()
+        progressDialog.show()
+        ProotEngine.loginTokengine(
+            this,
+            onAuthorize = { url ->
+                runOnUiThread {
+                    if (progressDialog.isShowing) {
+                        progressDialog.setMessage("已在浏览器打开登录页，完成授权后会自动返回。")
+                    }
+                    runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+                        .onFailure { toast("无法打开浏览器：${it.message}") }
+                }
+            },
+            onResult = { ok, message ->
+                runOnUiThread {
+                    if (progressDialog.isShowing) progressDialog.dismiss()
+                    if (ok) {
+                        toast("登录成功，已写入模型：$message")
+                        webView.reload()
+                    } else {
+                        toast("登录失败：$message")
+                    }
+                }
+            },
+        )
+    }
+
+    private fun toast(message: String) {
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
     }
 
     private fun label(text: String): TextView = TextView(this).apply {
