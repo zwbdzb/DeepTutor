@@ -41,14 +41,14 @@ ignored.
 ### Level 1 — Tools
 
 Single-function tools the LLM picks on demand. Eight user-toggleable tools
-surface in `/settings/tools`:
+surface in `/settings/tools` (this order is the canonical display order):
 
 | Tool                 | Description                                   |
 | -------------------- | --------------------------------------------- |
 | `brainstorm`         | Breadth-first idea exploration with rationale |
 | `web_search`         | Web search with citations                     |
 | `paper_search`       | arXiv preprint search                         |
-| `zotero_search`      | Search a configured Zotero library            |
+| `zotero_search`      | Search a Zotero user library by title/creator/year |
 | `reason`             | Dedicated deep-reasoning LLM call             |
 | `geogebra_analysis`  | Analyze math images into GeoGebra commands    |
 | `imagegen`           | Generate images                               |
@@ -78,28 +78,76 @@ Multi-stage pipelines that own the turn:
 | `math_animator`  | concept_analysis → concept_design → code_generation → code_retry → summary → render_output |
 | `mastery_path`   | responding (Guided Learning — chat loop + mastery tools, gated per topic type) |
 | `immersive_reading` | responding (document- or timestamp-grounded media reading loop) |
-| `video_lesson`   | code_generation → render_check → render_output (Remotion lesson played live in the browser, with TTS narration) |
+| `course_study`   | responding (course-state sensing and hand-off loop)   |
+| `audio_overview` | retrieving → script_writing → voice_generation → publishing (grounded two-voice KB overview + transcript) |
+
+`deeptutor/runtime/bootstrap/builtin_capabilities.py` is the authoritative
+roster: `BUILTIN_CAPABILITY_CLASSES` maps each name to its `module:Class`
+path, and `BUILTIN_CAPABILITY_SPECS` adds the manifest (`stages`, `tools_used`,
+`cli_aliases`, `config_defaults`). Pipeline implementations sit where those
+class paths point: `deeptutor/agents/<name>/` for `chat`, `deep_question`,
+`deep_research`, `visualize` and `math_animator`; `deeptutor/capabilities/<name>/`
+for the rest.
 
 All capabilities converge on `emit_capability_result()` in
-`deeptutor/agents/_shared/capability_result.py` so every turn emits the same envelope
-(response payload + `cost_summary` from `UsageTracker`). Status copy and
-prompts are i18n'd via `capabilities/prompts/{en,zh}/<name>.yaml`.
+`deeptutor/agents/_shared/capability_result.py` so every turn emits the same
+envelope (response payload + `cost_summary` from `UsageTracker`). Status copy
+and prompts are i18n'd via `capabilities/prompts/{en,zh}/<name>.yaml`.
+
+### Level 2b — Loop extensions
+
+A second kind of Level 2 plugin: `deeptutor/capabilities/registry.py` declares
+14 built-in `LoopExtension`s (protocol in `deeptutor/capabilities/protocol.py`).
+A loop extension owns no pipeline — it runs *inside* the chat agent loop,
+reusing the full chat tool surface, and adds its `owned_tools` plus a
+`system_block()` prompt fragment while `is_active(context)` holds for the turn.
+The exception is the knowledge category, `KnowledgeCapability`
+(`ObsidianCapability`, `MarginNoteCapability`, `SubagentCapability`): it sets
+`exclusive_tools` and *replaces* the surface with its own tools plus the
+`ask_user` floor, dropping chat built-ins and composer toggles.
+
+Activation is context-driven, not name-driven: `SolveLoopCapability`,
+`MasteryLoopCapability` and `AskQuestionsLoopCapability` read the metadata flag
+set by their pipeline counterpart (`solve_mode`, `mastery_mode`,
+`ask_questions_mode`), while others compare `context.active_capability`
+(e.g. `course_study`). External extensions register through the
+`deeptutor.extensions` entry-point group (the legacy
+`deeptutor.loop_capabilities` group still loads but is deprecated).
+
+| Extension                | Class path |
+| ------------------------ | ---------- |
+| `ask_questions`          | `deeptutor.capabilities.ask_questions.loop:AskQuestionsLoopCapability` |
+| `mastery`                | `deeptutor.capabilities.mastery.loop:MasteryLoopCapability` |
+| `solve`                  | `deeptutor.capabilities.solve.loop:SolveLoopCapability` |
+| `obsidian`               | `deeptutor.capabilities.obsidian.capability:ObsidianCapability` |
+| `marginnote4`            | `deeptutor.capabilities.marginnote4.capability:MarginNoteCapability` |
+| `subagent`               | `deeptutor.capabilities.subagent.capability:SubagentCapability` |
+| `ima`                    | `deeptutor.capabilities.ima.capability:ImaCapability` |
+| `immersive_reading`      | `deeptutor.capabilities.reading.capability:ReadingCapability` |
+| `course_study`           | `deeptutor.capabilities.course_study.capability:CourseStudyLoopCapability` |
+| `explore_context`        | `deeptutor.capabilities.explore_context.capability:ExploreContextCapability` |
+| `setup`                  | `deeptutor.capabilities.setup.capability:SetupCapability` |
+| `partner_authoring`      | `deeptutor.capabilities.partner_authoring.capability:PartnerAuthoringCapability` |
+| `partner_group`          | `deeptutor.capabilities.partner_group.capability:PartnerGroupCapability` |
+| `visualization_generation` | `deeptutor.visualizers.loop_capability:VisualizationLoopCapability` |
+
+Names can repeat across the two rosters (`ask_questions`, `immersive_reading`,
+`course_study`), and some loop names are the short form of the pipeline
+capability that runs them (`solve` ↔ `deep_solve`, `mastery` ↔ `mastery_path`).
+The pipeline capability still owns the turn — `DeepSolveCapability` drives
+`AgenticChatPipeline`, the same agentic loop `chat` uses — and the loop
+extension only contributes tools and prompt blocks to it.
 
 ## CLI Usage
 
 ```bash
-# Install from the current dev source checkout
-python -m pip install -r requirements/full.txt
-python -m pip install -e . --no-deps
-
-# Alternative in 1.7.0: choose one in a separate wheel environment
-python -m pip install "deeptutor[full]"  # Full app, CLI + Web/API
-python -m pip install deeptutor         # Core CLI/SDK (chat + ask_questions)
-python -m pip install deeptutor-cli     # Compatibility alias for core
+# Install
+pip install deeptutor      # Full app (CLI + Web/API + packaged Web assets)
+pip install deeptutor-cli  # CLI-only
 
 # Run any capability
 deeptutor run chat "Explain Fourier transform"
-deeptutor run deep_solve "Solve x^2=4" --kb my-kb
+deeptutor run deep_solve "Solve x^2=4" -t rag --kb my-kb
 deeptutor run visualize "Animate sine wave" --config render_mode=manim_video
 
 # Interactive REPL
@@ -117,13 +165,6 @@ deeptutor serve --port 8001       # API server only
 deeptutor start                   # backend + frontend together
 ```
 
-Examples beyond core require their owning modules; use `deeptutor module list`
-to inspect installed/enabled/ready states and `deeptutor plugin list` to discover
-registered capabilities and tools. Source Web startup also needs Node.js 22 LTS
-and `npm ci --legacy-peer-deps` in `web/`. CLI-only source users can skip frontend
-setup, but still need the full Python dependencies. Follow
-[Agent Setup](docs-for-dev/AGENT_SETUP.md) for credentials and verification.
-
 ## Key Files
 
 | Path                                       | Purpose                              |
@@ -138,49 +179,35 @@ setup, but still need the full Python dependencies. Follow
 | `deeptutor/core/tool_protocol.py`          | `BaseTool` + `ToolDefinition`         |
 | `deeptutor/core/capability_protocol.py`    | `TurnCapability` + `CapabilityManifest` |
 | `deeptutor/core/context.py`                | `UnifiedContext` dataclass            |
-| `deeptutor/tools/builtin/__init__.py`      | All built-in tool wrappers           |
-| `deeptutor/capabilities/`                  | Built-in capability implementations  |
-| `deeptutor/app/`                           | `DeepTutorApp` SDK facade + durable application service |
+| `deeptutor/tools/builtin/__init__.py`      | All built-in tool wrappers + toggle/gate name lists |
+| `deeptutor/capabilities/`                  | Loop extensions + chat-loop capability implementations |
+| `deeptutor/capabilities/registry.py`       | `LoopExtension` roster + entry-point discovery |
+| `deeptutor/agents/_shared/tool_composition.py` | Tool mount rules (`ToolMountFlags`) |
+| `deeptutor/agents/_shared/capability_result.py` | `emit_capability_result()` turn envelope |
+| `deeptutor/app/service.py`                 | `TurnApplicationService` — durable turns |
+| `deeptutor/app/facade.py`                  | `DeepTutorApp` — Python SDK facade   |
+| `deeptutor/app/container.py`               | `ApplicationContainer` — process DI wiring |
+| `deeptutor/runtime/turn_engine.py`         | `TurnEngine` — shared execution engine |
 | `deeptutor_cli/main.py`                    | Typer CLI entry point                |
 | `deeptutor/api/routers/unified_ws.py`      | Unified WebSocket endpoint           |
-| `apps/desktop/`                            | Open DeepTutor desktop apps for MacOS and Windows (Electron shell + bundled core; per-target builds in `platforms/`) |
 
 ## Dependency Layers
 
-The 1.7.0 layout is modular; 1.6.15 and earlier packages use the
-previous layout. Core owns the CLI, SDK and shared runtime; feature wheels must
-match its version. `deeptutor-cli` is a metadata-only compatibility alias.
-For development, use source or [local wheels](docs-for-dev/MODULES.md).
+Public install paths and source extras are defined in `pyproject.toml`.
+Requirements files mirror the same dependency groups for Docker/CI installs.
 
-Module manifests own dependency groups; generated requirements files support
-source, Docker and CI installs. `pyproject.toml` stores extra templates under
-`tool.deeptutor.optional-dependencies`; `build_metadata.py` resolves same-version
-wheel pins. Source checkouts expose all modules and install external dependencies
-through `requirements/full.txt`, followed by `pip install -e . --no-deps`.
-Use the source helper for optional extras rather than installing feature wheels
-over the checkout:
-
-```bash
-python scripts/install_extras.py partners       # Partner channel SDKs
-python scripts/install_extras.py matrix         # Matrix channel without E2EE/libolm
-python scripts/install_extras.py matrix-e2e     # Matrix with end-to-end encryption
-python scripts/install_extras.py math-animator  # Manim; also needs system LaTeX/ffmpeg
-python scripts/install_extras.py dev            # Test / lint tooling
-python scripts/install_extras.py all            # Full + Manim + dev dependencies
 ```
+pip install deeptutor      — Full app (CLI + Web/API + packaged Web assets)
+pip install deeptutor-cli  — CLI-only (LLM + RAG + providers + document parsing)
+pip install -e .           — Source install for development
 
-Stop DeepTutor before module changes. Source supports `module enable/disable`;
-wheel environments also support `module install/uninstall`. Upgrading a legacy
-`deeptutor-cli` installation requires uninstalling it before installing the new
-packages, preserving the same `DEEPTUTOR_HOME`; see the setup guide. Validate
-with `python -m pip check`, `deeptutor module list`, and the setup readiness checks.
-
-## Desktop Release Requirement
-
-Starting with the release after v1.7.1, publish the Intel Mac (`macos-x64`)
-DMG together with the Apple Silicon (`macos-arm64`) DMG and Windows installer
-and portable ZIP for every version. Wait for the Desktop Release workflow,
-including `verify-release`, and verify the downloads on the actual GitHub
-Release before reporting completion. If any platform fails, fix and rerun it;
-do not silently omit Intel Mac or treat a partial desktop release as complete.
-See `apps/desktop/README.md` for the build and publication flow.
+Source extras (.[ extra ], defined in pyproject.toml):
+.[cli]            — CLI-only dependency set
+.[server]         — Web/API server dependencies
+.[partners]       — Partner channel SDKs  (legacy alias: .[tutorbot])
+.[matrix]         — Matrix channel for Partners (matrix-nio; needs libolm)
+.[matrix-e2e]     — Matrix with end-to-end encryption (matrix-nio[e2e])
+.[math-animator]  — Manim addon (powers `visualize` Manim renders + `deeptutor run math_animator`)
+.[dev]            — Test / lint tooling
+.[all]            — Everything above
+```
