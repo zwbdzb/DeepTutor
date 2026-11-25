@@ -3,11 +3,9 @@
 站点与接口的语义分工：
 
 * **ThinkBuddy 主站**（键 ``api_base``，默认 ``https://thinkbuddy.hanyoai.com``）：
-  产品官网 / 邀请页 / 更新源 / 遥测上报等业务入口。
+  产品官网 / 签到 / 邀请页 / 更新源 / 遥测上报 / 公共知识库等业务入口。
 * **Tokengine**（键 ``oauth_base``，默认 ``https://tokengine.hanyoai.com``）：
   登录认证（OAuth）+ token（模型中继）服务。
-* **公共知识库**（键 ``library_url``，默认
-  ``https://thinkbuddy-t.hanyoai.com/api/v1/library``）：GeekAI 下发知识库连接。
 
 端点解析优先级（高 → 低）：
 
@@ -15,8 +13,8 @@
 2. ``<ROOT>/endpoints.json``（打包版可外部覆盖，免重建就能指向本地平台）
 3. 内置默认（当前兜底为生产地址；本地联调用 endpoints.json / 环境变量覆盖）
 
-例外：更新源与遥测端点**纯硬编码派生**自主站 ``api_base``
-（``<api_base>/update``、``<api_base>/v1/events``），不吃环境变量 / 文件覆盖。
+更新源、遥测和公共知识库分别使用主站下的 ``/update``、``/api/events`` 和
+``/api/library``。
 
 ``endpoints.json`` 示例（放在 ``%LOCALAPPDATA%\\ThinkBuddy\\endpoints.json``）::
 
@@ -27,14 +25,12 @@
     }
 
 可覆写的键：``oauth_base`` / ``authorize_url`` / ``token_url`` / ``userinfo_url`` /
-``revoke_url`` / ``relay_base`` / ``api_base`` / ``library_url``。
+``revoke_url`` / ``relay_base`` / ``api_base``。
 
 环境变量：Tokengine 侧为 ``TOKENGINE_`` + 对应键的大写形式（根地址为
-``TOKENGINE_OAUTH_BASE``）；主站根地址为 ``THINKBUDDY_API_BASE``，公共知识库
-接口为 ``THINKBUDDY_LIBRARY_URL``。
-废弃键 ``thinkbuddy_website_url``（→ 改写为 ``api_base``）与 ``update_url`` /
-``telemetry_url``（→ 随 ``api_base`` 自动派生）出现在 endpoints.json 时只告警、
-不生效。
+``TOKENGINE_OAUTH_BASE``），主站根地址为 ``THINKBUDDY_API_BASE``。
+废弃键 ``thinkbuddy_website_url``、``update_url``、``telemetry_url`` 和
+``library_url`` 出现在 endpoints.json 时会记录迁移提示。
 """
 from __future__ import annotations
 
@@ -64,7 +60,6 @@ PROD_OAUTH_BASE = "https://tokengine.hanyoai.com"
 DEFAULT_OAUTH_BASE = os.environ.get("TOKENGINE_DEFAULT_OAUTH_BASE", PROD_OAUTH_BASE)
 # ThinkBuddy 主站根地址（官网/邀请页/更新源/遥测的派生基准）。
 DEFAULT_API_BASE = "https://thinkbuddy.hanyoai.com"
-DEFAULT_LIBRARY_URL = "https://thinkbuddy-t.hanyoai.com/api/v1/library"
 
 # --------------------------------------------------------------------------- #
 # 端点解析
@@ -77,7 +72,7 @@ _TOKENGINE_ENDPOINT_KEYS = (
     "revoke_url",
     "relay_base",
 )
-_CONFIG_KEYS = (*_TOKENGINE_ENDPOINT_KEYS, "api_base", "library_url")
+_CONFIG_KEYS = (*_TOKENGINE_ENDPOINT_KEYS, "api_base")
 
 
 def _read_endpoints_file(root: Optional[Path]) -> dict[str, str]:
@@ -96,13 +91,12 @@ def _read_endpoints_file(root: Optional[Path]) -> dict[str, str]:
         return {}
     # 废弃键迁移提示（只告警不读值）：
     #   thinkbuddy_website_url -> 改写为 "api_base"（主站根地址）
-    #   update_url / telemetry_url -> 已退出覆盖链，随 api_base 自动派生
-    for legacy_key in ("thinkbuddy_website_url", "update_url", "telemetry_url"):
+    #   update_url / telemetry_url / library_url -> 随 api_base 自动派生
+    for legacy_key in ("thinkbuddy_website_url", "update_url", "telemetry_url", "library_url"):
         if legacy_key in data:
             log.warning(
                 "endpoints.json 含废弃键 %r（已忽略）。迁移路径："
-                "thinkbuddy_website_url -> api_base；update_url/telemetry_url "
-                "随 api_base 自动派生，不再支持单独覆盖。",
+                "thinkbuddy_website_url -> api_base。更新、遥测和公共知识库随 api_base 自动派生。",
                 legacy_key,
             )
     out: dict[str, str] = {}
@@ -159,22 +153,15 @@ def thinkbuddy_api_base(root: Optional[Path] = None) -> str:
     return ""
 
 
-def thinkbuddy_library_url(root: Optional[Path] = None) -> str:
-    """Public GeekAI library endpoint, independent of the main-site base URL."""
-    explicit = (os.environ.get("THINKBUDDY_LIBRARY_URL") or "").strip()
-    configured = _read_endpoints_file(root).get("library_url", "")
-    return (explicit or configured or DEFAULT_LIBRARY_URL).rstrip("/")
-
-
 def telemetry_url(root: Optional[Path] = None) -> str:
     """Resolve the telemetry ingest endpoint for the shell's direct reporter.
 
-    纯硬编码派生：``<thinkbuddy_api_base(root)>/v1/events``，不读环境变量 /
+    纯硬编码派生：``<thinkbuddy_api_base(root)>/api/events``，不读环境变量 /
     endpoints.json（2026-11 键值重定位：独立覆盖链退出，随主站域名走）。
     返回空串表示遥测关闭（reporter 直接丢弃事件）。
     """
     site = thinkbuddy_api_base(root)
-    return f"{site}/v1/events" if site else ""
+    return f"{site}/api/events" if site else ""
 
 
 def update_base(root: Optional[Path] = None) -> str:

@@ -20,7 +20,7 @@ BASE = {
 
 
 def test_report_includes_environment_and_oauth_header_only():
-    reporter = TelemetryReporter("https://website.example/v1/events", BASE,
+    reporter = TelemetryReporter("https://website.example/api/events", BASE,
                                  access_token=lambda: "oauth-secret", flush_timeout=0.5)
     opener = Mock()
     opener.open.return_value = io.BytesIO(b'{"accepted":1}')
@@ -28,7 +28,7 @@ def test_report_includes_environment_and_oauth_header_only():
     with patch("desktop.telemetry_reporter.urllib.request.build_opener", return_value=opener):
         reporter.flush_exit("app_exit", props)
     request = opener.open.call_args.args[0]
-    assert request.full_url == "https://website.example/v1/events"
+    assert request.full_url == "https://website.example/api/events"
     assert request.method == "POST"
     assert request.get_header("Authorization") == "Bearer oauth-secret"
     event = json.loads(request.data)["events"][0]
@@ -44,7 +44,7 @@ def test_report_includes_environment_and_oauth_header_only():
 
 def test_identity_is_snapshotted_before_background_thread_runs():
     credential = ["account-a"]
-    reporter = TelemetryReporter("https://website.example/v1/events", BASE,
+    reporter = TelemetryReporter("https://website.example/api/events", BASE,
                                  access_token=lambda: credential[0])
     opener = Mock()
     opener.open.return_value = io.BytesIO(b"{}")
@@ -71,7 +71,7 @@ def test_identity_is_snapshotted_before_background_thread_runs():
     ("invalid", 1792576514),
 ])
 def test_occurrence_time_is_captured_before_background_send(occurred_at, expected):
-    reporter = TelemetryReporter("https://website.example/v1/events", BASE)
+    reporter = TelemetryReporter("https://website.example/api/events", BASE)
     opener = Mock()
     opener.open.return_value = io.BytesIO(b"{}")
     scheduled = []
@@ -92,7 +92,7 @@ def test_occurrence_time_is_captured_before_background_send(occurred_at, expecte
 
 
 def test_reporting_does_not_wait_for_network():
-    reporter = TelemetryReporter("https://website.example/v1/events", BASE)
+    reporter = TelemetryReporter("https://website.example/api/events", BASE)
     entered, release, completed = threading.Event(), threading.Event(), threading.Event()
 
     def blocked_open(*args, **kwargs):
@@ -115,7 +115,7 @@ def test_reporting_does_not_wait_for_network():
 
 
 def test_failed_reports_keep_circuit_breaker_and_recover():
-    reporter = TelemetryReporter("https://website.example/v1/events", BASE, fail_threshold=2)
+    reporter = TelemetryReporter("https://website.example/api/events", BASE, fail_threshold=2)
     opener = Mock()
     opener.open.side_effect = OSError("offline")
     with patch("desktop.telemetry_reporter.urllib.request.build_opener", return_value=opener):
@@ -135,7 +135,7 @@ def test_failed_reports_keep_circuit_breaker_and_recover():
 
 
 def test_error_rate_limit_does_not_block_normal_events():
-    reporter = TelemetryReporter("https://website.example/v1/events", BASE, error_rate_limit=1)
+    reporter = TelemetryReporter("https://website.example/api/events", BASE, error_rate_limit=1)
     opener = Mock()
     opener.open.return_value = io.BytesIO(b"{}")
     with patch("desktop.telemetry_reporter.urllib.request.build_opener", return_value=opener):
@@ -171,17 +171,17 @@ def test_redirect_does_not_forward_credentials_or_payload():
         worker = threading.Thread(target=server.serve_forever, daemon=True)
         worker.start()
         try:
-            reporter = TelemetryReporter(f"http://127.0.0.1:{server.server_port}/v1/events", BASE,
+            reporter = TelemetryReporter(f"http://127.0.0.1:{server.server_port}/api/events", BASE,
                                          access_token=lambda: "oauth-secret")
             reporter.flush_exit("app_exit")
         finally:
             server.shutdown()
             worker.join(timeout=2)
-    assert requests == [("/v1/events", "Bearer oauth-secret")]
+    assert requests == [("/api/events", "Bearer oauth-secret")]
 
 
 def test_telemetry_failure_cannot_interrupt_business_flow():
-    reporter = TelemetryReporter("https://website.example/v1/events", BASE)
+    reporter = TelemetryReporter("https://website.example/api/events", BASE)
     with patch("desktop.telemetry_reporter.threading.Thread", side_effect=RuntimeError("no threads")):
         reporter.report("login", access_token="oauth")
     with patch("desktop.telemetry_reporter.urllib.request.build_opener", side_effect=ValueError("bad URL")):

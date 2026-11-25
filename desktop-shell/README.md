@@ -35,7 +35,7 @@
 - 标题栏右上角账号区文案随登录态变化：`登录` → `等待浏览器…` → 用户名（点击弹原生账号菜单）。
   登录后的菜单提供“签到加积分”，不再往页面注入任何悬浮控件（ADR-004）。
 - **签到直连 thinkbuddy-website**：客户端从 OAuth `userinfo` 的 `sub` 读取稳定用户 ID，
-  直接 `POST /api/v1/checkin`，请求体只包含 `provider_user_id`。签到暂不鉴权，因此不会
+  直接 `POST /api/checkin`，请求体只包含 `provider_user_id`。签到暂不鉴权，因此不会
   向 thinkbuddy-website 发送 OAuth `access_token`、手机号、积分或 quota，也不经过
   DeepTutor 本地后端代理；额度由 thinkbuddy-website 后台异步发放。
 - **域名**三层解析，内置默认（生产
@@ -51,7 +51,7 @@
 
 | 站点 | 生产地址 | 角色 |
 |---|---|---|
-| **ThinkBuddy 主站** | `https://thinkbuddy.hanyoai.com` | 产品主站：官网跳转、签到、邀请页、更新源、遥测 |
+| **ThinkBuddy 主站** | `https://thinkbuddy.hanyoai.com` | 官网跳转、签到、邀请页、更新源、遥测、公共知识库 |
 | **Tokengine 平台** | `https://tokengine.hanyoai.com` | 登录认证（OAuth）+ token 服务（模型中继） |
 
 **文件位置**：`%LOCALAPPDATA%\ThinkBuddy\endpoints.json`
@@ -71,14 +71,14 @@
 
 | 键 | 站点 | 作用 | 缺省值 |
 |---|---|---|---|
-| `api_base` | ThinkBuddy 主站 | 主站根地址；更新源/遥测/邀请页**硬编码派生**自它 | `https://thinkbuddy.hanyoai.com` |
+| `api_base` | ThinkBuddy 主站 | 官网、签到、邀请、更新、遥测和公共知识库的根地址 | `https://thinkbuddy.hanyoai.com` |
 | `oauth_base` | Tokengine | 认证+token 服务根地址，派生全部 OAuth 端点与中继 | `https://tokengine.hanyoai.com` |
 | `authorize_url` / `token_url` / `userinfo_url` / `revoke_url` | Tokengine | 单独覆盖某个 OAuth 端点（少用） | `<oauth_base>/oauth/<name>` |
 | `relay_base` | Tokengine | OpenAI 兼容模型中继地址 | `<oauth_base>/v1` |
 
-> 更新源固定为 `<api_base>/update`、遥测固定为 `<api_base>/v1/events`——**不占
-> 环境变量和 endpoints.json 键位**，跟着主站走（联调主站时更新检查自动指向本地，
-> 不会误弹生产更新）。
+> 更新源为 `<api_base>/update`，遥测为 `<api_base>/api/events`，公共知识库为
+> `<api_base>/api/library`。旧配置 `library_url` 和 `THINKBUDDY_LIBRARY_URL`
+> 已废弃，联调时请用 `api_base` 或 `THINKBUDDY_API_BASE` 指定主站。
 
 **优先级（高 → 低）**：环境变量 > `endpoints.json` > 内置生产默认。对应环境变量：
 主站为 `THINKBUDDY_API_BASE`；Tokengine 键为 `TOKENGINE_<键名大写>`

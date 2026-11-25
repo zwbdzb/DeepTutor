@@ -23,11 +23,8 @@ class LibraryError(RuntimeError):
 
 
 def library_url() -> str:
-    explicit = os.environ.get("THINKBUDDY_LIBRARY_URL", "").strip()
-    if explicit:
-        return explicit.rstrip("/")
     site = os.environ.get("THINKBUDDY_API_BASE", "").strip().rstrip("/")
-    return f"{site}/api/v1/library" if site else ""
+    return f"{site}/api/library" if site else ""
 
 
 def remote_id(ref: str) -> str:

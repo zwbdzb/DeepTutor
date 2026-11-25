@@ -7,7 +7,7 @@ from deeptutor.services.platform_library.client import (
     LibraryError,
 )
 
-URL = "http://localhost:5678/api/v1/library"
+URL = "http://localhost:5678/api/library"
 
 
 @pytest.mark.parametrize("status", [302, 404, 503])
