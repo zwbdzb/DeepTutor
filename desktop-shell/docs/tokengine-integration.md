@@ -113,7 +113,7 @@ OpenAI 连接 profile。桌面登录刷新会同时识别顶层的 `connection_i
 ID，直接调用 thinkbuddy-website，不经过 DeepTutor 的 `:8001` 后端：
 
 ```http
-POST <thinkbuddy_website_url>/api/v1/checkin
+POST <thinkbuddy_website_url>/api/checkin
 Content-Type: application/json
 
 {"provider_user_id":"u_314"}
@@ -149,7 +149,7 @@ Content-Type: application/json
 可覆写的键：主站 `api_base`；Tokengine 侧 `oauth_base`、`authorize_url`、
 `token_url`、`userinfo_url`、`revoke_url`、`relay_base`。OAuth 端点与中继由
 `oauth_base` 派生；**更新源（`<api_base>/update`）与遥测
-（`<api_base>/v1/events`）硬编码派生自主站，不占覆盖键位**。
+（`<api_base>/api/events`）硬编码派生自主站，不占覆盖键位**。
 旧键 `thinkbuddy_website_url`/`update_url`/`telemetry_url` 已废弃（读到会告警并忽略）；
 旧语义 `api_base`（原指 Tokengine）请改写为 `oauth_base`。
 **这是给打包版准备的**——

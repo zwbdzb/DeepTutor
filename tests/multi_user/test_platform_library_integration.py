@@ -26,7 +26,7 @@ pytestmark = pytest.mark.skipif(
 def test_publish_discover_read_search_and_unpublish(as_user, monkeypatch):
     provider = "weknora"
     geekai = os.environ["THINKBUDDY_TEST_GEEKAI_URL"]
-    monkeypatch.setenv("THINKBUDDY_LIBRARY_URL", geekai + "/api/v1/library")
+    monkeypatch.setenv("THINKBUDDY_API_BASE", geekai)
     catalog._catalog.cache_clear()
     knowledge = importlib.import_module("deeptutor.api.routers.knowledge")
     app = FastAPI()
@@ -72,7 +72,7 @@ def test_publish_discover_read_search_and_unpublish(as_user, monkeypatch):
         )
         ref = "account:kb:Gift weknora"
         assert "upstream-read-key" not in str(resource)
-        published = admin.get("/api/v1/library").json()["data"]
+        published = admin.get("/api/library").json()["data"]
         connection = next(item for item in published if item["id"] == str(resource["id"]))[
             "connection"
         ]
@@ -117,6 +117,6 @@ def test_publish_discover_read_search_and_unpublish(as_user, monkeypatch):
         save("resources", {**resource, "published": True})
         source = save("sources", {**source, "api_key": "", "enabled": False})
         assert source["has_api_key"]
-        assert admin.get(f"/api/v1/library/{resource['id']}").status_code == 404
-        assert admin.get(f"/api/v1/library/{resource['id']}/documents").status_code == 404
+        assert admin.get(f"/api/library/{resource['id']}").status_code == 404
+        assert admin.get(f"/api/library/{resource['id']}/documents").status_code == 404
     catalog._catalog.cache_clear()

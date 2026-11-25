@@ -5,9 +5,9 @@
 * 两个站点：ThinkBuddy 主站（``api_base``）与 Tokengine 认证+token 服务
   （``oauth_base``），优先级链均为 环境变量 > endpoints.json > 内置默认。
 * ``update_base`` / ``telemetry_url`` **纯硬编码派生**自主站
-  （``<api_base>/update``、``<api_base>/v1/events``），不再吃 env/file 覆盖。
+  （``<api_base>/update``、``<api_base>/api/events``），不再吃 env/file 覆盖。
 * endpoints.json 中的废弃键（``thinkbuddy_website_url`` / ``update_url`` /
-  ``telemetry_url``）只告警、值被忽略。
+  ``telemetry_url`` / ``library_url``）只告警、值被忽略。
 """
 from __future__ import annotations
 
@@ -31,7 +31,6 @@ PROD_OAUTH_BASE = "https://tokengine.hanyoai.com"
 # THINKBUDDY_UPDATE_URL / TELEMETRY_URL 已退出覆盖链，这里一并清掉以证明
 # 即使宿主机残留也不会影响派生结果。
 _ENDPOINT_ENV_VARS = (
-    "THINKBUDDY_LIBRARY_URL",
     "THINKBUDDY_API_BASE",
     "TOKENGINE_OAUTH_BASE",
     "TOKENGINE_AUTHORIZE_URL",
@@ -53,16 +52,6 @@ def _clean_endpoint_env(monkeypatch: MonkeyPatch) -> None:
 def write_endpoints(root: Path, **values: str) -> None:
     root.mkdir(parents=True, exist_ok=True)
     (root / "endpoints.json").write_text(json.dumps(values), encoding="utf-8")
-
-
-def test_library_endpoint_defaults_file_and_environment(tmp_path, monkeypatch):
-    assert config.thinkbuddy_library_url(tmp_path) == PROD_API_BASE + "/api/v1/library"
-    write_endpoints(tmp_path, api_base="http://site.test")
-    assert config.thinkbuddy_library_url(tmp_path) == "http://site.test/api/v1/library"
-    write_endpoints(tmp_path, library_url="http://geekai.test/api/v1/library/")
-    assert config.thinkbuddy_library_url(tmp_path) == "http://geekai.test/api/v1/library"
-    monkeypatch.setenv("THINKBUDDY_LIBRARY_URL", "http://local.test/api/v1/library/")
-    assert config.thinkbuddy_library_url(tmp_path) == "http://local.test/api/v1/library"
 
 
 # --------------------------------------------------------------------------- #
@@ -188,7 +177,7 @@ def test_update_base_empty_when_main_site_unresolvable(
 # telemetry_url：纯硬编码派生，不吃 env / file
 # --------------------------------------------------------------------------- #
 def test_telemetry_url_defaults_to_main_site_events_endpoint(tmp_path: Path) -> None:
-    assert config.telemetry_url(tmp_path) == f"{PROD_API_BASE}/v1/events"
+    assert config.telemetry_url(tmp_path) == f"{PROD_API_BASE}/api/events"
 
 
 def test_telemetry_url_ignores_legacy_env_and_file_overrides(
@@ -199,7 +188,7 @@ def test_telemetry_url_ignores_legacy_env_and_file_overrides(
     monkeypatch.setenv("TELEMETRY_URL", "https://env.example.com/ingest")
     write_endpoints(tmp_path, telemetry_url="https://file.example.com/ingest")
 
-    assert config.telemetry_url(tmp_path) == f"{PROD_API_BASE}/v1/events"
+    assert config.telemetry_url(tmp_path) == f"{PROD_API_BASE}/api/events"
 
 
 def test_telemetry_url_follows_main_site_override(
@@ -208,7 +197,7 @@ def test_telemetry_url_follows_main_site_override(
 ) -> None:
     monkeypatch.setenv("THINKBUDDY_API_BASE", "http://127.0.0.1:8000")
 
-    assert config.telemetry_url(tmp_path) == "http://127.0.0.1:8000/v1/events"
+    assert config.telemetry_url(tmp_path) == "http://127.0.0.1:8000/api/events"
 
 
 def test_telemetry_url_empty_when_main_site_unresolvable(
@@ -229,6 +218,7 @@ def test_legacy_endpoint_keys_warn_and_are_ignored(tmp_path: Path, caplog) -> No
         thinkbuddy_website_url="https://legacy-website.example.com",
         update_url="https://legacy-updates.example.com/update",
         telemetry_url="https://legacy-telemetry.example.com/ingest",
+        library_url="https://legacy-library.example.com/api/v1/library",
         # 同时写 api_base，验证正常键不受废弃键干扰
         api_base="https://main.example.com",
     )
@@ -236,9 +226,9 @@ def test_legacy_endpoint_keys_warn_and_are_ignored(tmp_path: Path, caplog) -> No
     # 废弃键的值一律被忽略，api_base 正常生效
     assert config.thinkbuddy_api_base(tmp_path) == "https://main.example.com"
     assert config.update_base(tmp_path) == "https://main.example.com/update"
-    assert config.telemetry_url(tmp_path) == "https://main.example.com/v1/events"
+    assert config.telemetry_url(tmp_path) == "https://main.example.com/api/events"
 
-    # 单次读文件恰好触发 3 条迁移告警（每个废弃键一条）
+    # 每个废弃键触发一条迁移告警
     caplog.clear()
     with caplog.at_level(logging.WARNING, logger="dt.auth.config"):
         config.thinkbuddy_api_base(tmp_path)
@@ -249,6 +239,7 @@ def test_legacy_endpoint_keys_warn_and_are_ignored(tmp_path: Path, caplog) -> No
         if record.levelno == logging.WARNING and "废弃键" in record.getMessage()
     ]
     assert sorted(legacy_keys) == [
+        "library_url",
         "telemetry_url",
         "thinkbuddy_website_url",
         "update_url",
