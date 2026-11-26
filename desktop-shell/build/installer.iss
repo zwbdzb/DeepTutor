@@ -62,6 +62,10 @@ Compression=lzma2
 #endif
 SolidCompression=yes
 WizardStyle=modern
+; 协议页：使用 Inno 内置 License 页（与 Trae 安装器一致）——一段文本 +
+; “我同意 / 我不同意”单选框，勾选同意后才能继续。文本里放 GeekAI 门户的
+; 两个公开路由，Inno 的 RichEdit 会把 URL 自动识别为可点击链接。
+LicenseFile=legal\license.txt
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 ; CloseApplications 用 force 而非 yes：
@@ -275,6 +279,11 @@ begin
     // 于是「20 宽的框只剩 17 宽」——上、下、右边都在，独缺左边一条。
     // 把 Offset 加大即可把框整体推回可见区（Offset ≥ Size.cx - 13，175% 下需 ≥7）。
     WizardForm.TasksList.Offset := ScaleX(8);
+
+    // 协议页默认不预选任何一项：让用户自己明确选择“我同意”或“我不同意”。
+    // 未选“我同意”时 Inno 会把“下一步”保持禁用。
+    WizardForm.LicenseAcceptedRadio.Checked := False;
+    WizardForm.LicenseNotAcceptedRadio.Checked := False;
   except
     // 纯 UI 状态调整，失败只影响图标刷新，不阻断安装。
   end;
