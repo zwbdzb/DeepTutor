@@ -52,7 +52,7 @@ def checkin(
     ).encode("utf-8")
     try:
         request = urllib.request.Request(
-            f"{url}/api/v1/checkin",
+            f"{url}/api/checkin",
             data=body,
             headers={
                 "Accept": "application/json",

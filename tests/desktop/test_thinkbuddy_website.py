@@ -42,7 +42,7 @@ def test_checkin_posts_only_provider_user_id() -> None:
         result = checkin(" https://website.example.com/ ", " u_314 ", timeout=3.5)
 
     request = urlopen.call_args.args[0]
-    assert request.full_url == "https://website.example.com/api/v1/checkin"
+    assert request.full_url == "https://website.example.com/api/checkin"
     assert request.method == "POST"
     assert json.loads(request.data) == {"provider_user_id": "u_314"}
     assert request.get_header("Content-type") == "application/json"
@@ -70,7 +70,7 @@ def test_checkin_rejects_invalid_provider_user_id(provider_user_id: str) -> None
 
 def test_checkin_preserves_http_status_and_service_error() -> None:
     error = urllib.error.HTTPError(
-        "https://website.example.com/api/v1/checkin",
+        "https://website.example.com/api/checkin",
         409,
         "Conflict",
         {},

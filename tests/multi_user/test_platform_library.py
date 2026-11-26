@@ -23,7 +23,7 @@ from deeptutor.tools.rag_tool import rag_search
 
 
 def expire():
-    catalog._catalog("http://localhost:5678/api/v1/library").expires = 0
+    catalog._catalog("http://localhost:5678/api/library").expires = 0
 
 
 @pytest.fixture
@@ -43,14 +43,15 @@ def direct_platform(monkeypatch):
             "knowledge_base_id": "kb-1",
         },
     }
-    monkeypatch.setenv("THINKBUDDY_LIBRARY_URL", "http://localhost:5678/api/v1/library")
+    monkeypatch.setenv("THINKBUDDY_API_BASE", "http://localhost:5678/")
+    monkeypatch.setenv("THINKBUDDY_LIBRARY_URL", "http://legacy.test/api/v1/library")
     catalog._catalog.cache_clear()
     original = LibraryClient._options
 
     def discovery(request):
         platform["calls"].append(request)
         assert "authorization" not in request.headers and "x-api-key" not in request.headers
-        assert request.url.path == "/api/v1/library"
+        assert str(request.url) == "http://localhost:5678/api/library"
         if not platform["online"]:
             raise httpx.ConnectError("offline", request=request)
         row = {
@@ -197,7 +198,7 @@ def test_manual_and_automatic_connections_use_existing_routes_and_engine(
             assert result["sources"][0]["knowledge_id"] == "doc-1"
         assert client.delete(base).status_code == 200
         assert client.get("/api/knowledge-bases").json() == []
-        assert all(request.url.path == "/api/v1/library" for request in direct_platform["calls"])
+        assert all(request.url.path == "/api/library" for request in direct_platform["calls"])
 
 
 def test_connection_updates_and_survives_discovery_outage_or_unpublishing(as_user, direct_platform):
