@@ -37,6 +37,10 @@ object ProotEngine {
         // 老安装包的 rootfs 里没有 opt/python、opt/node；不补的话 PRoot 会丢弃
         // 这两条绑定，python/node 就完全找不到（升级用户最容易踩到）。
         RuntimeInstaller.ensureMountPoints(runtime)
+        // 运行包里的 /etc/resolv.conf 是 systemd-resolved 的悬空链接，
+        // 不重写的话 guest 里解析不了任何域名（登录和模型请求都会失败）。
+        val dns = RuntimeInstaller.prepareGuestNetwork(context, runtime)
+        appendLog("[dns] guest nameserver: ${dns.joinToString(" ")}")
         val home = RuntimeInstaller.homeDir(context).apply { mkdirs() }
         val tmp = RuntimeInstaller.tmpDir(context).apply { mkdirs() }
 
@@ -118,6 +122,9 @@ object ProotEngine {
                 val tmp = RuntimeInstaller.tmpDir(context).apply { mkdirs() }
                 writeTokengineScript(home)
                 ensureExecutable(runtime)
+                // 登录要走 HTTPS 去平台换 token，DNS 必须在起 proot 之前修好。
+                val dns = RuntimeInstaller.prepareGuestNetwork(context, runtime)
+                appendLog("[dns] guest nameserver: ${dns.joinToString(" ")}")
                 val selection = selectProot(runtime, home, tmp)
                 val command = selection.args + listOf(
                     "/opt/python/bin/python3.12",

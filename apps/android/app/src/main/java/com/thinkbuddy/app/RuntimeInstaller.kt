@@ -1,6 +1,7 @@
 package com.thinkbuddy.app
 
 import android.content.Context
+import android.net.ConnectivityManager
 import android.system.Os
 import org.apache.commons.compress.archivers.zip.ZipFile
 import org.json.JSONObject
@@ -8,6 +9,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.net.HttpURLConnection
+import java.net.Inet4Address
 import java.net.URL
 import java.security.MessageDigest
 
@@ -73,6 +75,101 @@ object RuntimeInstaller {
     fun ensureMountPoints(runtime: File) {
         File(runtime, "rootfs/opt/python").mkdirs()
         File(runtime, "rootfs/opt/node").mkdirs()
+    }
+
+    /**
+     * 修好 guest 里的 DNS。
+     *
+     * LXC 的 Debian 镜像把 ``/etc/resolv.conf`` 做成了指向
+     * ``/run/systemd/resolve/stub-resolv.conf`` 的绝对符号链接，而 PRoot 的
+     * chroot 里没有 systemd，这个链接是悬空的 —— glibc 读不到任何 nameserver，
+     * 于是 guest 里所有域名解析都失败（登录 tokengine、模型请求、联网工具）。
+     * 表现不是「连不上」，而是 ``Name or service not known``，很容易被当成
+     * 网络没开或者代理配置错。
+     *
+     * 每次启动引擎/登录前按当前网络重写一遍（换 WiFi 后运营商的 DNS 会变），
+     * 返回写进去的地址，便于打进日志核对。
+     */
+    fun prepareGuestNetwork(context: Context, runtime: File): List<String> {
+        val rootfs = File(runtime, "rootfs")
+        if (!rootfs.isDirectory) return emptyList()
+        val servers = deviceDnsServers(context)
+        writeGuestFile(
+            File(rootfs, "etc/resolv.conf"),
+            buildString {
+                servers.forEach { address ->
+                    append("nameserver ").append(address).append('\n')
+                }
+                append("options timeout:2 attempts:2\n")
+            },
+        )
+        ensureGuestHosts(File(rootfs, "etc/hosts"))
+        return servers
+    }
+
+    /** 当前网络的 IPv4 DNS；IPv6 链路本地地址写进 resolv.conf 是无效的。 */
+    private fun deviceDnsServers(context: Context): List<String> {
+        val found = LinkedHashSet<String>()
+        val manager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        if (manager != null) {
+            val networks = runCatching {
+                val active = manager.activeNetwork
+                if (active != null) listOf(active) + manager.allNetworks.toList()
+                else manager.allNetworks.toList()
+            }.getOrDefault(emptyList())
+            networks.forEach { network ->
+                runCatching {
+                    manager.getLinkProperties(network)?.dnsServers?.forEach { address ->
+                        if (address is Inet4Address &&
+                            !address.isLoopbackAddress &&
+                            !address.isLinkLocalAddress
+                        ) {
+                            val host = address.hostAddress ?: return@forEach
+                            found += host
+                        }
+                    }
+                }
+            }
+        }
+        if (found.isEmpty()) {
+            // 网络没报 DNS（或只有 IPv6）：先用国内可达的公共 DNS 顶上。
+            found += FALLBACK_DNS
+        } else {
+            // 末尾再补两个公共 DNS：运营商 DNS / 私有 DNS 挂掉时 glibc 会按顺序
+            // 重试，不至于整个 guest 断网（正常情况下轮不到它们）。
+            FALLBACK_DNS.forEach { address ->
+                if (found.size < 4) found += address
+            }
+        }
+        return found.take(4)
+    }
+
+    private val FALLBACK_DNS = listOf("223.5.5.5", "119.29.29.29")
+
+    /**
+     * 用普通文件替换 rootfs 里的符号链接或旧文件。
+     * 直接 writeText 会顺着悬空链接写到 rootfs 外面，或者直接报 ENOENT。
+     */
+    private fun writeGuestFile(file: File, content: String) {
+        file.parentFile?.mkdirs()
+        if (file.exists() && file.isDirectory) {
+            file.deleteRecursively()
+        } else {
+            file.delete() // 悬空符号链接 exists() == false，要单独删
+        }
+        file.writeText(content)
+        runCatching { Os.chmod(file.absolutePath, 420) } // 0644
+    }
+
+    private fun ensureGuestHosts(file: File) {
+        val current = runCatching { if (file.isFile) file.readText() else "" }
+            .getOrDefault("")
+        if (current.contains("127.0.0.1")) return
+        writeGuestFile(
+            file,
+            "127.0.0.1\tlocalhost\n" +
+                "::1\tlocalhost ip6-localhost ip6-loopback\n",
+        )
     }
 
     /**
@@ -174,6 +271,7 @@ object RuntimeInstaller {
         archive.delete()
         archive.parentFile?.deleteRecursively()
         ensureMountPoints(target)
+        prepareGuestNetwork(context, target)
 
         val meta = File(target, "android-bundle.json")
         val version = if (meta.isFile) {
