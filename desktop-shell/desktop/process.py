@@ -40,6 +40,42 @@ SHELL_MANAGED_ENV = "DEEPTUTOR_SHELL_MANAGED"
 # 后端 banner 行回读：zh "后端       http://127.0.0.1:PORT" / en "Backend  ..."
 BACKEND_URL_PATTERN = re.compile(r"http://127\.0\.0\.1:(\d+)")
 
+# ---- 开发者逃生口（2026-11） ----------------------------------------------- #
+# 两个环境变量只改变「壳如何对待本地服务进程」，不改变任何打包/发布行为：
+# 未设置时与线上形态完全一致（源码安装 → 生产构建，壳 spawn 自己的子进程）。
+DEV_ENV = "DEEPTUTOR_DESKTOP_DEV"
+ATTACH_URL_ENV = "DEEPTUTOR_DESKTOP_ATTACH_URL"
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def dev_mode() -> bool:
+    """壳是否要求 ``deeptutor start --dev``（前端走 next dev，窗口内 HMR）。
+
+    只影响前端：热更新产物落在 ``web/.next``，与生产构建的
+    ``web/.next-deeptutor`` 互不覆盖（见 deeptutor/runtime/launcher.py）。
+    """
+    return (os.environ.get(DEV_ENV) or "").strip().lower() in _TRUTHY
+
+
+def attach_url() -> str | None:
+    """外部已就绪的服务地址；设置后壳只当窗口，不 spawn 任何子进程。
+
+    典型用法：终端里自己跑 ``deeptutor start --dev``（日志直连终端）或
+    ``deeptutor serve --reload`` + ``npm run dev``（前后端都热），
+    然后让壳 attach 到那个前端地址。
+    """
+    raw = (os.environ.get(ATTACH_URL_ENV) or "").strip()
+    return raw or None
+
+
+def _port_of_url(url: str) -> int | None:
+    """从 attach URL 里取端口；裸 host:port 也接受。取不到返回 None。"""
+    try:
+        parsed = urlparse(url if "://" in url else f"http://{url}")
+        return parsed.port
+    except ValueError:
+        return None
+
 # 探活专用无代理 opener（教训同 deeptutor/runtime/launcher.py）：urlopen 默认
 # 读系统代理环境变量，Clash/公司代理开启且 ProxyOverride 不含 127.0.0.1 时，
 # loopback 探活会被代理劫持、必然失败，健康后端被误判死、180s 超时后弹
@@ -294,7 +330,17 @@ class DeepTutorProcess:
         self.home = Path(home)
         self.node_dir = Path(node_dir) if node_dir else None
         self.on_line = on_line
+        self.attach_url = attach_url()
+        self.attached = bool(self.attach_url)
         self.frontend_port = DEFAULT_FRONTEND_PORT
+        if self.attached:
+            port = _port_of_url(self.attach_url or "")
+            if port:
+                self.frontend_port = port
+            log.info(
+                "attach mode: external server %s (frontend :%s)",
+                self.attach_url, self.frontend_port,
+            )
         self.backend_port = DEFAULT_BACKEND_PORT
         self.proc: subprocess.Popen | None = None
         self._reader: threading.Thread | None = None
@@ -395,6 +441,20 @@ class DeepTutorProcess:
     # ------------------------------------------------------------------ #
     def start(self) -> None:
         """Spawn `deeptutor start --home <ws> --no-browser` as a hidden child."""
+        if self.attached:
+            # attach 模式：外部已有一个 deeptutor 在跑（通常是你终端里的
+            # `start --dev` 或 `serve --reload` + `npm run dev`），壳只当窗口。
+            # 这里绝不 spawn、绝不清场、绝不改端口——_kill_stale_listeners()
+            # 会把外部进程当成「本运行时孤儿」杀掉，所以必须在它之前返回。
+            log.info(
+                "attach mode: reusing external server at %s (no spawn, no sweep)",
+                self.attach_url,
+            )
+            self._stopping = False
+            self.frontend_launching.clear()
+            self.frontend_ready.set()
+            return
+
         self.home.mkdir(parents=True, exist_ok=True)
         env = os.environ.copy()
         if self.node_dir is not None:
@@ -448,6 +508,11 @@ class DeepTutorProcess:
             "--home", str(self.home),
             "--no-browser",
         ]
+        if dev_mode():
+            # 前端走 next dev（窗口内 HMR）。产物目录 web/.next 与生产构建的
+            # web/.next-deeptutor 互不覆盖，两种模式可以交替使用同一份源码。
+            cmd.append("--dev")
+            log.info("dev mode: frontend uses `next dev` (HMR inside the window)")
         log.info("spawn: %s", " ".join(cmd))
         # 文件名用品牌名 thinkbuddy.log：本目录（<工作区>/logs）是「帮助 →
         # 打开日志目录」菜单的落点，面向最终用户，不能暴露内部项目标识
@@ -502,6 +567,21 @@ class DeepTutorProcess:
         debug-only，等待期原本没有任何可见反馈）。回调异常只记日志，
         绝不影响就绪等待本身。
         """
+        if self.attached:
+            # attach 模式：外部服务的生命周期不归壳管，等它没有意义。
+            # 探一次只为在日志里留下「到底通不通」，不通过也不阻塞启动——
+            # 开发者终端的输出才是权威错误信息。
+            url = self.frontend_url
+            try:
+                with _LOOPBACK_OPENER.open(url + FRONTEND_PATH, timeout=2.0):  # noqa: S310
+                    log.info("attach mode: external server answers at %s", url)
+            except Exception:  # noqa: BLE001
+                log.warning(
+                    "attach mode: %s is not answering yet; the window may show an "
+                    "error page until the external server is up", url,
+                )
+            return url, 200
+
         start = time.monotonic()
         last_beat = start
         while True:
@@ -548,6 +628,12 @@ class DeepTutorProcess:
         超时才继续等。on_progress 语义与 wait_ready 相同（5s 心跳）。子进程
         早退抛 RuntimeError，交给调用方的重试/横幅链路。
         """
+        if self.attached:
+            # attach 模式：后端端口由外部进程（可能是 bind :0 的随机端口）持有，
+            # 壳无从探测，也不该把自己的 8001 当成后端。
+            log.info("attach mode: skipping backend probe (external process owns it)")
+            return self.frontend_url, 200
+
         url = f"http://127.0.0.1:{self.backend_port}/"
         start = time.monotonic()
         last_beat = start
@@ -613,6 +699,16 @@ class DeepTutorProcess:
         on_event(kind, message)：kind ∈ child_exit / restarting /
         restart_failed / recovered / gave_up，供壳做 UI 提示与页面重载。
         """
+        if self.attached:
+            # attach 模式没有子进程可监督：外部服务由开发者终端拥有，
+            # 自动「拉起」只会在 3782 上再起一个服务、和外部进程抢端口。
+            log.info("attach mode: supervisor disabled (external process owns the server)")
+            thread = threading.Thread(
+                target=lambda: None, daemon=True, name="dt-supervise-disabled"
+            )
+            thread.start()
+            return thread
+
         def _emit(kind: str, message: str) -> None:
             if on_event is None:
                 return
@@ -696,6 +792,11 @@ class DeepTutorProcess:
         """
         # 先立关停标记：监督线程看到后放弃自动拉起，避免关窗途中又 spawn。
         self._stopping = True
+        if self.attached:
+            # attach 模式：外部服务属于开发者终端（Ctrl+C 才该停它）。
+            # 关窗顺手杀掉用户手起的进程会造成「关个窗口后端就没了」的困惑。
+            log.info("attach mode: leaving external server at %s running", self.attach_url)
+            return
         start_pid = None
         if self.proc is not None:
             start_pid = self.proc.pid

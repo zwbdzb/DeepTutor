@@ -173,6 +173,11 @@ const Multimodal = dynamic(
   { loading },
 );
 
+const Latency = dynamic(
+  () => import("@/features/settings/sections/LatencySettingsSection"),
+  { loading },
+);
+
 const PAGES: Record<string, React.ComponentType> = {
   "data-migration": DataMigration,
   voice: Voice,
@@ -181,6 +186,7 @@ const PAGES: Record<string, React.ComponentType> = {
   general: General,
   status: Status,
   usage: Usage,
+  latency: Latency,
   appearance: Appearance,
   network: Network,
   workspace: Workspace,

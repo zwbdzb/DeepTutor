@@ -22,6 +22,7 @@ from .plugin import register as register_plugin
 from .provider_cmd import register as register_provider
 from .session_cmd import register as register_session
 from .skill import register as register_skill
+from .trace import register as register_trace
 from .workspace_cmd import register as register_workspace
 
 set_mode(RunMode.CLI)
@@ -69,6 +70,7 @@ for owner, module in manifests().items():
 
 register_doctor(app)
 register_init(app)
+register_trace(app)
 module_app = typer.Typer(help="Install, remove and inspect optional modules.")
 app.add_typer(module_app, name="module")
 register_module(module_app)

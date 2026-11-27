@@ -7249,6 +7249,34 @@
         "title": "LlamaIndexConfigUpdate",
         "type": "object"
       },
+      "LocalImportRequest": {
+        "description": "Selection of local sessions to import, identified by external id.\n\nThe server does the file parsing for local sources (the +client only sends\nthe ids it listed from ``/local-sources``), then persists through the same\nidempotent path as the browser adapters.",
+        "properties": {
+          "agent_name": {
+            "default": "",
+            "maxLength": 256,
+            "title": "Agent Name",
+            "type": "string"
+          },
+          "session_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Session Ids",
+            "type": "array"
+          },
+          "source": {
+            "minLength": 1,
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source"
+        ],
+        "title": "LocalImportRequest",
+        "type": "object"
+      },
       "LoginRequest": {
         "description": "Payload for the POST /login endpoint.",
         "properties": {
@@ -12863,6 +12891,193 @@
         "title": "TourCompletePayload",
         "type": "object"
       },
+      "TraceBreakdown": {
+        "properties": {
+          "context_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Ms"
+          },
+          "model_ms": {
+            "default": 0.0,
+            "title": "Model Ms",
+            "type": "number"
+          },
+          "other_exec_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Other Exec Ms"
+          },
+          "persist_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Persist Ms"
+          },
+          "queue_ms": {
+            "default": 0.0,
+            "title": "Queue Ms",
+            "type": "number"
+          },
+          "tool_ms": {
+            "default": 0.0,
+            "title": "Tool Ms",
+            "type": "number"
+          },
+          "unattributed_ms": {
+            "default": 0.0,
+            "title": "Unattributed Ms",
+            "type": "number"
+          },
+          "wait_ms": {
+            "default": 0.0,
+            "title": "Wait Ms",
+            "type": "number"
+          }
+        },
+        "title": "TraceBreakdown",
+        "type": "object"
+      },
+      "TraceFinding": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "severity": {
+            "default": "info",
+            "title": "Severity",
+            "type": "string"
+          },
+          "text": {
+            "default": "",
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "title": "TraceFinding",
+        "type": "object"
+      },
+      "TraceRound": {
+        "properties": {
+          "completion_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completion Tokens"
+          },
+          "gen_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gen Ms"
+          },
+          "ms": {
+            "title": "Ms",
+            "type": "number"
+          },
+          "n": {
+            "title": "N",
+            "type": "integer"
+          },
+          "status": {
+            "default": "",
+            "title": "Status",
+            "type": "string"
+          },
+          "tools": {
+            "default": 0,
+            "title": "Tools",
+            "type": "integer"
+          },
+          "ttft_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ttft Ms"
+          }
+        },
+        "required": [
+          "n",
+          "ms"
+        ],
+        "title": "TraceRound",
+        "type": "object"
+      },
+      "TraceStage": {
+        "properties": {
+          "ms": {
+            "default": 0.0,
+            "title": "Ms",
+            "type": "number"
+          },
+          "name": {
+            "default": "",
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "title": "TraceStage",
+        "type": "object"
+      },
+      "TraceTool": {
+        "properties": {
+          "ms": {
+            "title": "Ms",
+            "type": "number"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "status": {
+            "default": "",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "ms"
+        ],
+        "title": "TraceTool",
+        "type": "object"
+      },
       "TurnFailureCode": {
         "enum": [
           "worker_lost",
@@ -13530,6 +13745,132 @@
           "status"
         ],
         "title": "TurnSummary",
+        "type": "object"
+      },
+      "TurnTrace": {
+        "properties": {
+          "breakdown": {
+            "$ref": "#/components/schemas/TraceBreakdown"
+          },
+          "capability": {
+            "default": "",
+            "title": "Capability",
+            "type": "string"
+          },
+          "created_at": {
+            "default": 0.0,
+            "title": "Created At",
+            "type": "number"
+          },
+          "estimated": {
+            "default": false,
+            "title": "Estimated",
+            "type": "boolean"
+          },
+          "failed_tool_ms": {
+            "default": 0.0,
+            "title": "Failed Tool Ms",
+            "type": "number"
+          },
+          "findings": {
+            "items": {
+              "$ref": "#/components/schemas/TraceFinding"
+            },
+            "title": "Findings",
+            "type": "array"
+          },
+          "rounds": {
+            "items": {
+              "$ref": "#/components/schemas/TraceRound"
+            },
+            "title": "Rounds",
+            "type": "array"
+          },
+          "session_id": {
+            "default": "",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "stages": {
+            "items": {
+              "$ref": "#/components/schemas/TraceStage"
+            },
+            "title": "Stages",
+            "type": "array"
+          },
+          "status": {
+            "default": "",
+            "title": "Status",
+            "type": "string"
+          },
+          "tool_failure_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tool Failure Rate"
+          },
+          "tools": {
+            "items": {
+              "$ref": "#/components/schemas/TraceTool"
+            },
+            "title": "Tools",
+            "type": "array"
+          },
+          "top_bottleneck": {
+            "default": "",
+            "title": "Top Bottleneck",
+            "type": "string"
+          },
+          "total_ms": {
+            "default": 0.0,
+            "title": "Total Ms",
+            "type": "number"
+          },
+          "turn_id": {
+            "title": "Turn Id",
+            "type": "string"
+          },
+          "user_message": {
+            "default": "",
+            "title": "User Message",
+            "type": "string"
+          },
+          "user_message_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Message Id"
+          },
+          "user_message_truncated": {
+            "default": false,
+            "title": "User Message Truncated",
+            "type": "boolean"
+          },
+          "waits": {
+            "items": {
+              "additionalProperties": {
+                "type": "number"
+              },
+              "type": "object"
+            },
+            "title": "Waits",
+            "type": "array"
+          }
+        },
+        "required": [
+          "turn_id"
+        ],
+        "title": "TurnTrace",
         "type": "object"
       },
       "UISettingsUpdate": {
@@ -25955,6 +26296,152 @@
           }
         },
         "summary": "Import Chat History",
+        "tags": [
+          "imports"
+        ]
+      }
+    },
+    "/api/imports/local-import": {
+      "post": {
+        "description": "Import selected locally-discovered sessions.\n\nThe browser sends the source + the ``session_ids`` it listed via\n``/local-sources``; we parse the transcripts on this machine and persist\nthem idempotently.",
+        "operationId": "import_local_sources_api_imports_local_import_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "dt_token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Dt Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LocalImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Import Local Sources Api Imports Local Import Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Import Local Sources",
+        "tags": [
+          "imports"
+        ]
+      }
+    },
+    "/api/imports/local-sources": {
+      "get": {
+        "description": "Discover synchronizable agent sources on this machine (loopback only).\n\nCurrently WorkBuddy. This is the desktop-oriented counterpart of the\nbrowser File System Access flow: no hidden-folder picking, and server-side\nreads can consult the source's SQLite metadata (soft-delete flags, real\ntitles) that a pure file scan cannot see.",
+        "operationId": "list_local_import_sources_api_imports_local_sources_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "dt_token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Dt Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Local Import Sources Api Imports Local Sources Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Local Import Sources",
         "tags": [
           "imports"
         ]
@@ -67247,6 +67734,266 @@
         "summary": "List Builtin Tools",
         "tags": [
           "tools"
+        ]
+      }
+    },
+    "/api/traces/sessions/{session_id}/turns": {
+      "get": {
+        "description": "Newest-first time breakdown for every turn in a conversation.",
+        "operationId": "session_turn_traces_api_traces_sessions__session_id__turns_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "dt_token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Dt Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/TurnTrace"
+                  },
+                  "title": "Response Session Turn Traces Api Traces Sessions  Session Id  Turns Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Session Turn Traces",
+        "tags": [
+          "traces"
+        ]
+      }
+    },
+    "/api/traces/turns": {
+      "get": {
+        "description": "Newest-first breakdown for recent turns, newest conversation first.\n\nOne request returns everything a row needs to expand inline, so the page\nnever has to round-trip per row while the reader is looking at it.",
+        "operationId": "recent_turn_traces_api_traces_turns_get",
+        "parameters": [
+          {
+            "description": "Restrict to one conversation.",
+            "in": "query",
+            "name": "session_id",
+            "required": false,
+            "schema": {
+              "default": "",
+              "description": "Restrict to one conversation.",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "dt_token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Dt Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/TurnTrace"
+                  },
+                  "title": "Response Recent Turn Traces Api Traces Turns Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Recent Turn Traces",
+        "tags": [
+          "traces"
+        ]
+      }
+    },
+    "/api/traces/turns/{turn_id}": {
+      "get": {
+        "description": "Full breakdown for one turn: phases, rounds, tools and findings.",
+        "operationId": "turn_trace_api_traces_turns__turn_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "turn_id",
+            "required": true,
+            "schema": {
+              "title": "Turn Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "dt_token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Dt Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TurnTrace"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Turn Trace",
+        "tags": [
+          "traces"
         ]
       }
     },

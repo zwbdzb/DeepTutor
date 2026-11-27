@@ -2197,6 +2197,55 @@ export interface paths {
     readonly patch?: never;
     readonly trace?: never;
   };
+  readonly "/api/imports/local-import": {
+    readonly parameters: {
+      readonly query?: never;
+      readonly header?: never;
+      readonly path?: never;
+      readonly cookie?: never;
+    };
+    readonly get?: never;
+    readonly put?: never;
+    /**
+     * Import Local Sources
+     * @description Import selected locally-discovered sessions.
+     *
+     *     The browser sends the source + the ``session_ids`` it listed via
+     *     ``/local-sources``; we parse the transcripts on this machine and persist
+     *     them idempotently.
+     */
+    readonly post: operations["import_local_sources_api_imports_local_import_post"];
+    readonly delete?: never;
+    readonly options?: never;
+    readonly head?: never;
+    readonly patch?: never;
+    readonly trace?: never;
+  };
+  readonly "/api/imports/local-sources": {
+    readonly parameters: {
+      readonly query?: never;
+      readonly header?: never;
+      readonly path?: never;
+      readonly cookie?: never;
+    };
+    /**
+     * List Local Import Sources
+     * @description Discover synchronizable agent sources on this machine (loopback only).
+     *
+     *     Currently WorkBuddy. This is the desktop-oriented counterpart of the
+     *     browser File System Access flow: no hidden-folder picking, and server-side
+     *     reads can consult the source's SQLite metadata (soft-delete flags, real
+     *     titles) that a pure file scan cannot see.
+     */
+    readonly get: operations["list_local_import_sources_api_imports_local_sources_get"];
+    readonly put?: never;
+    readonly post?: never;
+    readonly delete?: never;
+    readonly options?: never;
+    readonly head?: never;
+    readonly patch?: never;
+    readonly trace?: never;
+  };
   readonly "/api/knowledge-bases": {
     readonly parameters: {
       readonly query?: never;
@@ -11195,6 +11244,69 @@ export interface paths {
     readonly patch?: never;
     readonly trace?: never;
   };
+  readonly "/api/traces/sessions/{session_id}/turns": {
+    readonly parameters: {
+      readonly query?: never;
+      readonly header?: never;
+      readonly path?: never;
+      readonly cookie?: never;
+    };
+    /**
+     * Session Turn Traces
+     * @description Newest-first time breakdown for every turn in a conversation.
+     */
+    readonly get: operations["session_turn_traces_api_traces_sessions__session_id__turns_get"];
+    readonly put?: never;
+    readonly post?: never;
+    readonly delete?: never;
+    readonly options?: never;
+    readonly head?: never;
+    readonly patch?: never;
+    readonly trace?: never;
+  };
+  readonly "/api/traces/turns": {
+    readonly parameters: {
+      readonly query?: never;
+      readonly header?: never;
+      readonly path?: never;
+      readonly cookie?: never;
+    };
+    /**
+     * Recent Turn Traces
+     * @description Newest-first breakdown for recent turns, newest conversation first.
+     *
+     *     One request returns everything a row needs to expand inline, so the page
+     *     never has to round-trip per row while the reader is looking at it.
+     */
+    readonly get: operations["recent_turn_traces_api_traces_turns_get"];
+    readonly put?: never;
+    readonly post?: never;
+    readonly delete?: never;
+    readonly options?: never;
+    readonly head?: never;
+    readonly patch?: never;
+    readonly trace?: never;
+  };
+  readonly "/api/traces/turns/{turn_id}": {
+    readonly parameters: {
+      readonly query?: never;
+      readonly header?: never;
+      readonly path?: never;
+      readonly cookie?: never;
+    };
+    /**
+     * Turn Trace
+     * @description Full breakdown for one turn: phases, rounds, tools and findings.
+     */
+    readonly get: operations["turn_trace_api_traces_turns__turn_id__get"];
+    readonly put?: never;
+    readonly post?: never;
+    readonly delete?: never;
+    readonly options?: never;
+    readonly head?: never;
+    readonly patch?: never;
+    readonly trace?: never;
+  };
   readonly "/api/video-learning/invidious/account/authorize": {
     readonly parameters: {
       readonly query?: never;
@@ -15223,6 +15335,25 @@ export interface components {
       readonly reasoning_effort: string | null;
     };
     /**
+     * LocalImportRequest
+     * @description Selection of local sessions to import, identified by external id.
+     *
+     *     The server does the file parsing for local sources (the +client only sends
+     *     the ids it listed from ``/local-sources``), then persists through the same
+     *     idempotent path as the browser adapters.
+     */
+    readonly LocalImportRequest: {
+      /**
+       * Agent Name
+       * @default
+       */
+      readonly agent_name: string;
+      /** Session Ids */
+      readonly session_ids?: readonly string[];
+      /** Source */
+      readonly source: string;
+    };
+    /**
      * LoginRequest
      * @description Payload for the POST /login endpoint.
      */
@@ -17924,6 +18055,103 @@ export interface components {
         readonly [key: string]: string;
       } | null;
     };
+    /** TraceBreakdown */
+    readonly TraceBreakdown: {
+      /** Context Ms */
+      readonly context_ms?: number | null;
+      /**
+       * Model Ms
+       * @default 0
+       */
+      readonly model_ms: number;
+      /** Other Exec Ms */
+      readonly other_exec_ms?: number | null;
+      /** Persist Ms */
+      readonly persist_ms?: number | null;
+      /**
+       * Queue Ms
+       * @default 0
+       */
+      readonly queue_ms: number;
+      /**
+       * Tool Ms
+       * @default 0
+       */
+      readonly tool_ms: number;
+      /**
+       * Unattributed Ms
+       * @default 0
+       */
+      readonly unattributed_ms: number;
+      /**
+       * Wait Ms
+       * @default 0
+       */
+      readonly wait_ms: number;
+    };
+    /** TraceFinding */
+    readonly TraceFinding: {
+      /** Code */
+      readonly code: string;
+      /**
+       * Severity
+       * @default info
+       */
+      readonly severity: string;
+      /**
+       * Text
+       * @default
+       */
+      readonly text: string;
+    };
+    /** TraceRound */
+    readonly TraceRound: {
+      /** Completion Tokens */
+      readonly completion_tokens?: number | null;
+      /** Gen Ms */
+      readonly gen_ms?: number | null;
+      /** Ms */
+      readonly ms: number;
+      /** N */
+      readonly n: number;
+      /**
+       * Status
+       * @default
+       */
+      readonly status: string;
+      /**
+       * Tools
+       * @default 0
+       */
+      readonly tools: number;
+      /** Ttft Ms */
+      readonly ttft_ms?: number | null;
+    };
+    /** TraceStage */
+    readonly TraceStage: {
+      /**
+       * Ms
+       * @default 0
+       */
+      readonly ms: number;
+      /**
+       * Name
+       * @default
+       */
+      readonly name: string;
+    };
+    /** TraceTool */
+    readonly TraceTool: {
+      /** Ms */
+      readonly ms: number;
+      /** Name */
+      readonly name: string;
+      /**
+       * Status
+       * @default
+       */
+      readonly status: string;
+    };
     /**
      * TTSRequest
      * @description Text-to-speech request body.
@@ -18239,6 +18467,78 @@ export interface components {
        * @default null
        */
       readonly updated_at: number | null;
+    };
+    /** TurnTrace */
+    readonly TurnTrace: {
+      readonly breakdown?: components["schemas"]["TraceBreakdown"];
+      /**
+       * Capability
+       * @default
+       */
+      readonly capability: string;
+      /**
+       * Created At
+       * @default 0
+       */
+      readonly created_at: number;
+      /**
+       * Estimated
+       * @default false
+       */
+      readonly estimated: boolean;
+      /**
+       * Failed Tool Ms
+       * @default 0
+       */
+      readonly failed_tool_ms: number;
+      /** Findings */
+      readonly findings?: readonly components["schemas"]["TraceFinding"][];
+      /** Rounds */
+      readonly rounds?: readonly components["schemas"]["TraceRound"][];
+      /**
+       * Session Id
+       * @default
+       */
+      readonly session_id: string;
+      /** Stages */
+      readonly stages?: readonly components["schemas"]["TraceStage"][];
+      /**
+       * Status
+       * @default
+       */
+      readonly status: string;
+      /** Tool Failure Rate */
+      readonly tool_failure_rate?: number | null;
+      /** Tools */
+      readonly tools?: readonly components["schemas"]["TraceTool"][];
+      /**
+       * Top Bottleneck
+       * @default
+       */
+      readonly top_bottleneck: string;
+      /**
+       * Total Ms
+       * @default 0
+       */
+      readonly total_ms: number;
+      /** Turn Id */
+      readonly turn_id: string;
+      /**
+       * User Message
+       * @default
+       */
+      readonly user_message: string;
+      /** User Message Id */
+      readonly user_message_id?: number | null;
+      /**
+       * User Message Truncated
+       * @default false
+       */
+      readonly user_message_truncated: boolean;
+      /** Waits */
+      readonly waits?: readonly {
+        readonly [key: string]: number;
+      }[];
     };
     /**
      * UISettingsUpdate
@@ -19451,6 +19751,8 @@ export type SchemaListImaResponse = components["schemas"]["ListImaResponse"];
 export type SchemaLlamaIndexConfigUpdate =
   components["schemas"]["LlamaIndexConfigUpdate"];
 export type SchemaLlmSelection = components["schemas"]["LLMSelection"];
+export type SchemaLocalImportRequest =
+  components["schemas"]["LocalImportRequest"];
 export type SchemaLoginRequest = components["schemas"]["LoginRequest"];
 export type SchemaManagedUpdateRequest =
   components["schemas"]["ManagedUpdateRequest"];
@@ -19691,12 +19993,18 @@ export type SchemaTopicSourceRequest =
   components["schemas"]["TopicSourceRequest"];
 export type SchemaTourCompletePayload =
   components["schemas"]["TourCompletePayload"];
+export type SchemaTraceBreakdown = components["schemas"]["TraceBreakdown"];
+export type SchemaTraceFinding = components["schemas"]["TraceFinding"];
+export type SchemaTraceRound = components["schemas"]["TraceRound"];
+export type SchemaTraceStage = components["schemas"]["TraceStage"];
+export type SchemaTraceTool = components["schemas"]["TraceTool"];
 export type SchemaTtsRequest = components["schemas"]["TTSRequest"];
 export type SchemaTurnFailureCode = components["schemas"]["TurnFailureCode"];
 export type SchemaTurnQueryState = components["schemas"]["TurnQueryState"];
 export type SchemaTurnRequest = components["schemas"]["TurnRequest"];
 export type SchemaTurnStatus = components["schemas"]["TurnStatus"];
 export type SchemaTurnSummary = components["schemas"]["TurnSummary"];
+export type SchemaTurnTrace = components["schemas"]["TurnTrace"];
 export type SchemaUiSettingsUpdate = components["schemas"]["UISettingsUpdate"];
 export type SchemaUnitText = components["schemas"]["UnitText"];
 export type SchemaUpdateBlockRequest =
@@ -24705,6 +25013,80 @@ export interface operations {
         readonly "application/json": components["schemas"]["ChatHistoryImportRequest"];
       };
     };
+    readonly responses: {
+      /** @description Successful Response */
+      readonly 200: {
+        headers: {
+          readonly [name: string]: unknown;
+        };
+        content: {
+          readonly "application/json": {
+            readonly [key: string]: unknown;
+          };
+        };
+      };
+      /** @description Validation Error */
+      readonly 422: {
+        headers: {
+          readonly [name: string]: unknown;
+        };
+        content: {
+          readonly "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  readonly import_local_sources_api_imports_local_import_post: {
+    readonly parameters: {
+      readonly query?: never;
+      readonly header?: {
+        readonly Authorization?: string | null;
+      };
+      readonly path?: never;
+      readonly cookie?: {
+        readonly dt_token?: string | null;
+      };
+    };
+    readonly requestBody: {
+      readonly content: {
+        readonly "application/json": components["schemas"]["LocalImportRequest"];
+      };
+    };
+    readonly responses: {
+      /** @description Successful Response */
+      readonly 200: {
+        headers: {
+          readonly [name: string]: unknown;
+        };
+        content: {
+          readonly "application/json": {
+            readonly [key: string]: unknown;
+          };
+        };
+      };
+      /** @description Validation Error */
+      readonly 422: {
+        headers: {
+          readonly [name: string]: unknown;
+        };
+        content: {
+          readonly "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  readonly list_local_import_sources_api_imports_local_sources_get: {
+    readonly parameters: {
+      readonly query?: never;
+      readonly header?: {
+        readonly Authorization?: string | null;
+      };
+      readonly path?: never;
+      readonly cookie?: {
+        readonly dt_token?: string | null;
+      };
+    };
+    readonly requestBody?: never;
     readonly responses: {
       /** @description Successful Response */
       readonly 200: {
@@ -44585,6 +44967,115 @@ export interface operations {
         };
         content: {
           readonly "application/json": components["schemas"]["ToolsListResponse"];
+        };
+      };
+      /** @description Validation Error */
+      readonly 422: {
+        headers: {
+          readonly [name: string]: unknown;
+        };
+        content: {
+          readonly "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  readonly session_turn_traces_api_traces_sessions__session_id__turns_get: {
+    readonly parameters: {
+      readonly query?: {
+        readonly limit?: number;
+      };
+      readonly header?: {
+        readonly Authorization?: string | null;
+      };
+      readonly path: {
+        readonly session_id: string;
+      };
+      readonly cookie?: {
+        readonly dt_token?: string | null;
+      };
+    };
+    readonly requestBody?: never;
+    readonly responses: {
+      /** @description Successful Response */
+      readonly 200: {
+        headers: {
+          readonly [name: string]: unknown;
+        };
+        content: {
+          readonly "application/json": readonly components["schemas"]["TurnTrace"][];
+        };
+      };
+      /** @description Validation Error */
+      readonly 422: {
+        headers: {
+          readonly [name: string]: unknown;
+        };
+        content: {
+          readonly "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  readonly recent_turn_traces_api_traces_turns_get: {
+    readonly parameters: {
+      readonly query?: {
+        readonly limit?: number;
+        /** @description Restrict to one conversation. */
+        readonly session_id?: string;
+      };
+      readonly header?: {
+        readonly Authorization?: string | null;
+      };
+      readonly path?: never;
+      readonly cookie?: {
+        readonly dt_token?: string | null;
+      };
+    };
+    readonly requestBody?: never;
+    readonly responses: {
+      /** @description Successful Response */
+      readonly 200: {
+        headers: {
+          readonly [name: string]: unknown;
+        };
+        content: {
+          readonly "application/json": readonly components["schemas"]["TurnTrace"][];
+        };
+      };
+      /** @description Validation Error */
+      readonly 422: {
+        headers: {
+          readonly [name: string]: unknown;
+        };
+        content: {
+          readonly "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  readonly turn_trace_api_traces_turns__turn_id__get: {
+    readonly parameters: {
+      readonly query?: never;
+      readonly header?: {
+        readonly Authorization?: string | null;
+      };
+      readonly path: {
+        readonly turn_id: string;
+      };
+      readonly cookie?: {
+        readonly dt_token?: string | null;
+      };
+    };
+    readonly requestBody?: never;
+    readonly responses: {
+      /** @description Successful Response */
+      readonly 200: {
+        headers: {
+          readonly [name: string]: unknown;
+        };
+        content: {
+          readonly "application/json": components["schemas"]["TurnTrace"];
         };
       };
       /** @description Validation Error */

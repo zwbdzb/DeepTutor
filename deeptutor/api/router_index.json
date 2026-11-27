@@ -1,5 +1,5 @@
 {
-  "fingerprint": "ad377f8a50ffd8412a8e2d122b8b5b8424e22a8b0be0b18e021517d70099f1af",
+  "fingerprint": "872eb341f766354ea7ae772a3609803633d58885774d014253a1e44ed7063c0c",
   "routers": {
     "deeptutor.api.routers.auth:router": [
       {
@@ -1163,6 +1163,22 @@
         "kind": "http",
         "methods": [
           "POST"
+        ]
+      },
+      {
+        "path": "/local-import",
+        "name": "import_local_sources",
+        "kind": "http",
+        "methods": [
+          "POST"
+        ]
+      },
+      {
+        "path": "/local-sources",
+        "name": "list_local_import_sources",
+        "kind": "http",
+        "methods": [
+          "GET"
         ]
       },
       {
@@ -3343,6 +3359,32 @@
         "kind": "http",
         "methods": [
           "POST"
+        ]
+      }
+    ],
+    "deeptutor.api.routers.traces:router": [
+      {
+        "path": "/turns",
+        "name": "recent_turn_traces",
+        "kind": "http",
+        "methods": [
+          "GET"
+        ]
+      },
+      {
+        "path": "/sessions/{session_id}/turns",
+        "name": "session_turn_traces",
+        "kind": "http",
+        "methods": [
+          "GET"
+        ]
+      },
+      {
+        "path": "/turns/{turn_id}",
+        "name": "turn_trace",
+        "kind": "http",
+        "methods": [
+          "GET"
         ]
       }
     ],

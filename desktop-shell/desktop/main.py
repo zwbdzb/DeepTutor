@@ -57,7 +57,7 @@ from desktop.native_menu_backend import (
     install_windows_shell_menu as install_windows_shell_menu,
     set_account_chip_hidden,
 )
-from desktop.process import DEFAULT_FRONTEND_PORT, DeepTutorProcess
+from desktop.process import DEFAULT_FRONTEND_PORT, DeepTutorProcess, attach_url
 import desktop.runtime as rt
 from desktop.splash import splash_html
 from desktop.telemetry_reporter import (
@@ -661,7 +661,11 @@ def bootstrap(window, api: Api, auth: AuthManager) -> None:
                 api.set_status(
                     "boot",
                     "正在启动本地服务…",
-                    f"{proc.frontend_url}（后端 :{proc.backend_port} + 前端 :{proc.frontend_port}）",
+                    (
+                        f"{proc.frontend_url}（外部服务，attach 模式）"
+                        if proc.attached
+                        else f"{proc.frontend_url}（后端 :{proc.backend_port} + 前端 :{proc.frontend_port}）"
+                    ),
                 )
                 log.info(
                     "waiting for frontend readiness (attempt %d, timeout=%ss)...",
@@ -827,7 +831,11 @@ def main() -> int:
     # build_native_menu 的 文件 / 编辑 / 视图 / 帮助（避免中英文菜单重复）。
     webview.settings["SHOW_DEFAULT_MENUS"] = False
 
-    frontend_url = f"http://127.0.0.1:{DEFAULT_FRONTEND_PORT}"
+    # attach 模式（DEEPTUTOR_DESKTOP_ATTACH_URL）下窗口加载的是外部服务地址；
+    # Api 的 origin 必须与之一致，否则 injector/账号区会按错的 URL 判断页面阶段。
+    # 未设置时与线上完全一致：默认 3782（此处只用于 Api 的 origin / 「在浏览器中
+    # 打开」入口，窗口实际加载的地址来自 wait_ready() 返回的 proc.frontend_url）。
+    frontend_url = attach_url() or f"http://127.0.0.1:{DEFAULT_FRONTEND_PORT}"
     def _on_login(access_token: str) -> None:
         reporter = _shared.get("reporter")
         if reporter is not None:

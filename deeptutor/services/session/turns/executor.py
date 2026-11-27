@@ -7,6 +7,7 @@ from collections.abc import Callable
 import contextlib
 from contextvars import Token
 import logging
+import time
 from typing import TYPE_CHECKING, Any
 
 from deeptutor.core.stream import StreamEvent, StreamEventType
@@ -141,6 +142,16 @@ class TurnExecutor:
 
     @workspace_writer
     async def _run_turn(self, execution: _TurnExecution) -> None:
+        # Coarse, observability-only phase clocks. They are published as
+        # ``phase_timings`` on the DONE envelope so the read-only trace
+        # derivation can split a turn into context assembly / capability
+        # execution / persistence without instrumenting the hot path further.
+        # ``perf_counter`` for durations, ``time()`` for the wall-clock anchor
+        # that lines these phases up with ``turn_events.timestamp``.
+        turn_perf_start = time.perf_counter()
+        turn_started_at = time.time()
+        ctx_ready_at = turn_perf_start
+        execute_done_at = turn_perf_start
         payload = execution.payload
         session_id = execution.session_id
         capability_name = execution.capability
@@ -1117,6 +1128,7 @@ class TurnExecutor:
                     },
                 },
             )
+            ctx_ready_at = time.perf_counter()
 
             pending_done_event: StreamEvent | None = None
             async for event in self.turn_engine.execute(context):
@@ -1150,6 +1162,7 @@ class TurnExecutor:
                         seen_artifact_urls.add(attachment["url"])
                         generated_attachments.append(attachment)
 
+            execute_done_at = time.perf_counter()
             provider_response_state = normalize_provider_response_state(
                 context.runtime.provider_response_state
             )
@@ -1350,6 +1363,22 @@ class TurnExecutor:
             if not transitioned:
                 execution.lease_lost = True
                 raise asyncio.CancelledError
+            # Best-effort: failing to time the turn must never sink it, so the
+            # merge is guarded and DONE simply carries no ``phase_timings``.
+            try:
+                persist_done_at = time.perf_counter()
+                pending_done_event.metadata = {
+                    **pending_done_event.metadata,
+                    "phase_timings": {
+                        "started_at": round(turn_started_at, 3),
+                        "context_ms": round((ctx_ready_at - turn_perf_start) * 1000, 1),
+                        "execute_ms": round((execute_done_at - ctx_ready_at) * 1000, 1),
+                        "persist_ms": round((persist_done_at - execute_done_at) * 1000, 1),
+                        "total_ms": round((persist_done_at - turn_perf_start) * 1000, 1),
+                    },
+                }
+            except Exception:  # noqa: BLE001
+                logger.debug("phase timing unavailable for turn %s", turn_id, exc_info=True)
             await self._publish_live_event(execution, pending_done_event)
             stream_done_sent = True
             await self._flush_buffered_events(execution)
