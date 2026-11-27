@@ -1,0 +1,97 @@
+{
+  "version": 1,
+  "generated": "2026-11-27",
+  "note": [
+    "裁剪策略，由 tools/prune_staging.py 消费。state 语义：",
+    "  candidate -> 仅参与 dry-run 统计，--apply 会直接拒绝；",
+    "  approved  -> 允许 --apply（仍然逐条过 protected 名单）；",
+    "  rejected  -> 留档，永不参与（写明否决理由，避免后人重复提案）。",
+    "重要：本文件的规则清单必须依据 tools/audit_staging.py 的真实分布数据定稿。",
+    "当前四条 candidate 均为「低风险、路径精确」类型；尚未获批。",
+    "protected 的语义（v2）：按【代码资产类型】+【自有包目录】保护，而不是整目录保护。",
+    "  理由：整目录保护 deeptutor_web 会让 web-sourcemaps 这类只删 *.map 的规则失效；",
+    "  而按扩展名保护（*.py/*.pyc/*.js/*.json/*.html/...）恰好把「误删代码」这类最危险",
+    "  的事故挡在外面，同时允许删除调试产物（*.map）与包管理器 CLI（npm 等无扩展名文件）。",
+    "  依赖级删减（如整包移除某个 SDK）不在本机制内——那属于 build_runtime/pip 层决策。"
+  ],
+  "protected": [
+    "deeptutor",
+    "deeptutor_cli",
+    "run_deeptutor.py",
+    "**/__init__.py",
+    "**/*.py",
+    "**/*.pyc",
+    "**/*.js",
+    "**/*.mjs",
+    "**/*.cjs",
+    "**/*.json",
+    "**/*.html",
+    "**/*.css",
+    "**/*.node",
+    "**/*.exe",
+    "**/*.dll",
+    "**/*.pyd",
+    "**/*.so",
+    "**/*.wasm"
+  ],
+  "rules": [
+    {
+      "id": "node-npm",
+      "kind": "path-prefix",
+      "scope": "node",
+      "match": ["node/npm", "node/npm.cmd", "node/npx", "node/npx.cmd"],
+      "state": "candidate",
+      "risk": "low",
+      "rationale": "运行时只执行 node.exe（server.js）；npm/npx 是包管理器 CLI",
+      "verify": ["backend-boot"]
+    },
+    {
+      "id": "node-corepack",
+      "kind": "path-prefix",
+      "scope": "node",
+      "match": ["node/corepack", "node/corepack.cmd", "node/node_modules/corepack"],
+      "state": "candidate",
+      "risk": "low",
+      "rationale": "corepack 只用于拉取/切换包管理器版本，运行时不使用",
+      "verify": ["backend-boot"]
+    },
+    {
+      "id": "node-headers",
+      "kind": "path-prefix",
+      "scope": "node",
+      "match": ["node/include", "node/CHANGELOG.md", "node/README.md"],
+      "state": "candidate",
+      "risk": "low",
+      "rationale": "C 头文件仅供编译原生模块；README/CHANGELOG 无运行时用途",
+      "verify": ["backend-boot"]
+    },
+    {
+      "id": "web-sourcemaps",
+      "kind": "glob-in-scope",
+      "scope": "deeptutor_web",
+      "match": ["**/*.map"],
+      "state": "candidate",
+      "risk": "low",
+      "rationale": "浏览器调试用 source map；生产运行不加载。需确认未被打包进 standalone 的 manifest",
+      "verify": ["frontend-boot"]
+    },
+    {
+      "id": "tests-anywhere",
+      "kind": "glob-in-scope",
+      "scope": "*",
+      "match": ["**/tests/**", "**/test/**"],
+      "state": "rejected",
+      "rationale": "评审否决：跨树通配不可控。setuptools/urllib3 等包内的 tests 子包可能被 __init__ 或 importlib 引用，误删导致运行期 ModuleNotFoundError，且难以定位。若确需清理，改为逐个包的精确 path-prefix 规则并逐条验证",
+      "verify": []
+    },
+    {
+      "id": "distinfo-except-deeptutor",
+      "kind": "glob-in-scope",
+      "scope": "python",
+      "match": ["python/Lib/site-packages/*.dist-info/**"],
+      "state": "rejected",
+      "rationale": "评审否决：部分库在 import 期通过 importlib.metadata 读自身 METADATA，删除会抛 PackageNotFoundError；deeptutor-*.dist-info/METADATA 更是关于页版本号的唯一来源",
+      "verify": []
+    }
+  ]
+}

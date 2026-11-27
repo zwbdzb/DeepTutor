@@ -29,6 +29,15 @@
 #define MyAppPublisher "HKUDS"
 #define MyAppExeName "ThinkBuddyDesktop.exe"
 
+; 运行时归档格式（由 build.ps1 通过 /DRuntimeArchive=... 注入；裸跑 ISCC 时回退 xz）。
+; 为什么可切换：同一批文件实测 .tar.zst(L19) 比 .tar.xz(-3) 更小（ratio 4.61x vs 4.37x）
+; 且解压快 3 倍（bsdtar 解码 171.7 vs 57.8 MB/s）。但 zstd 需要 bsdtar >= 3.3
+; （Windows 10 1803+ 自带版本满足），故保留 xz 作为默认与回退。
+; 决策依据见 docs/packaging-optimization.md §6。
+#ifndef RuntimeArchive
+  #define RuntimeArchive "runtime.tar.xz"
+#endif
+
 [Setup]
 ; AppId for the ThinkBuddy brand; internal-test install base ~0, no upgrade
 ; path needed.
@@ -113,10 +122,11 @@ Source: "..\assets\icon_owl.png";        DestDir: "{app}\assets"; Flags: ignorev
 ; 实测只要 30.06s（快 11 倍）。
 ; 因此 [Files] 只投递一个 runtime.tar.xz（由 build.ps1 的 [2c] 生成），
 ; 解包与就位由 CurStepChanged(ssPostInstall) 调 {sys}\tar.exe 完成。
-; nocompression：归档本身已是 xz 压缩体，让 Inno 再套一层只会白耗一次
+; nocompression：归档本身已是压缩体（xz 或 zstd），让 Inno 再套一层只会白耗一次
 ; 压缩/解压；标记后 setup 内以原样存储，安装时是纯拷贝（实测 318MB/0.3s）。
 ; ignoreversion：归档没有可比较的版本资源。
-Source: "..\build\runtime.tar.xz"; DestDir: "{app}"; Flags: nocompression ignoreversion
+; 文件名由 {#RuntimeArchive} 决定（默认 runtime.tar.xz；build.ps1 -ZstdArchive 时为 .zst）。
+Source: "..\build\{#RuntimeArchive}"; DestDir: "{app}"; Flags: nocompression ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\assets\icon.ico"
@@ -169,6 +179,10 @@ var
   // 传进来）。部署阶段往这里追加 deploy 行，进度小窗轮询该文件映射成阶段
   // 文案——否则那 40+ 秒里小窗只会一直显示「正在完成收尾…」。
   TBDeployLog: string;
+
+  // 本次是「首次安装」还是「覆盖升级」。升级时目标文件早被 Defender 实时防护
+  // 扫过，预热收益低且会白占 CPU，因此只在首装时做后台预热（见 ssPostInstall 尾部）。
+  WasInstalled: Boolean;
 
 (* ===== 交互安装前的旧实例抢先清理（InitializeSetup） =====================
    背景：双击 setup.exe 交互安装新版时若旧版还在运行，Inno 的 Restart Manager
@@ -398,6 +412,15 @@ var
 begin
   Result := True;
   try
+    // 升级判定：卸载键存在即视为覆盖安装（与 InitializeWizard 里的判定同源）。
+    // 纯读注册表，放在进程清理之前、try 内，任何异常都不影响后续流程。
+    WasInstalled := RegKeyExists(HKEY_CURRENT_USER,
+      '{3B4FC0AE-E3E3-491F-B3B6-59BBBF1D6305}_is1');
+    if WasInstalled then
+      Log('TB-DEPLOY was_installed=1')
+    else
+      Log('TB-DEPLOY was_installed=0');
+
     // ---- 第 1 步：先杀壳，终结 supervise() 自愈源（顺序不能反） ----
     // 无实例在跑时 taskkill 报「没有找到进程」(128)，属正常，忽略返回码。
     Exec(ExpandConstant('{sys}\taskkill.exe'),
@@ -464,10 +487,14 @@ end;
    为什么先解压后删旧（而不是反过来）：解压失败时旧 runtime 完好，新壳配旧
    运行时只是版本滞后，仍然可用；先删就等于在失败时把用户的应用彻底删掉。
 
-   预热（原逻辑保留）：复制/解压完成后、[Run] 拉起新壳之前，用装好的解释器
-   静默导入一次完整应用栈。新装运行时的 15000+ 个 pyc 首次被读都要过杀软
+   预热（2026-11 改为异步）：复制/解压完成后、[Run] 拉起新壳之前，用装好的
+   解释器静默导入一次完整应用栈。新装运行时的 15000+ 个 pyc 首次被读都要过杀软
    实时扫描（用户机实测：后端导入 29s、首请求惰性初始化 ~13s，首装 ~139s
-   才见主界面），这里把扫描成本吸收进安装阶段。这也是预热的**唯一路径**：
+   才见主界面），预热把这份扫描成本吸收进安装窗口。
+   历史：早期版本 ewWaitUntilTerminated 阻塞等待，用户要为它多等 6~15s（实测
+   6.26~13s）；现在改为 ewNoWait，进程起即返回，预热与「点完成 / 首窗打开」
+   并行，不再占用关键路径。仅在首次安装执行（WasInstalled=False）——升级时
+   目标目录里的文件早已被实时防护扫过，再预热纯属白占 CPU。
    新装与静默更新（/VERYSILENT 覆盖安装）两条路都会走到 ssPostInstall；
    updater.bat 里曾有的同款预热段已删除（跑在热缓存上是纯重复），bat 仅保留
    ping 15s 作杀软扫描缓冲后再拉起新壳。
@@ -546,7 +573,7 @@ begin
   if CurStep <> ssPostInstall then
     Exit;
 
-  Archive    := ExpandConstant('{app}\runtime.tar.xz');
+  Archive    := ExpandConstant('{app}\{#RuntimeArchive}');
   StagingDir := ExpandConstant('{app}\runtime.new');
   TargetDir  := ExpandConstant('{app}\runtime');
   TarExe     := ExpandConstant('{sys}\tar.exe');
@@ -593,8 +620,19 @@ begin
 
   DeployStage('extract', '正在解压运行环境（约 30 秒，请勿关闭窗口）…');
   PhaseTicks := TbTickCount;
-  Exec(TarExe, '-xf "' + Archive + '" -C "' + StagingDir + '"', '',
-       SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  // 单趟解压：bsdtar 原生吃 .tar.xz 与 .tar.zst（本机 bsdtar 3.8.9 已链接 libzstd）。
+  // 极旧系统（bsdtar < 3.3，无 zstd 解码）会返回非 0：此时若包内带了 tools\zstd.exe
+  // 就退到「zstd 解压 → 管道喂给 tar」，仍不落中间 .tar。
+  if not (Exec(TarExe, '-xf "' + Archive + '" -C "' + StagingDir + '"', '',
+               SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0)) then
+  begin
+    Log('TB-DEPLOY note tar_extract_failed rc=' + IntToStr(ResultCode));
+    if FileExists(ExpandConstant('{app}\tools\zstd.exe')) then
+      Exec(ExpandConstant('{cmd}'),
+           '/c ""' + ExpandConstant('{app}\tools\zstd.exe') + '" -d -c "' + Archive +
+           '" | "' + TarExe + '" -xf - -C "' + StagingDir + '""',
+           '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  end;
   Log('TB-DEPLOY timing extract ' + IntToStr(TbTickCount - PhaseTicks) + 'ms');
 
   // 就位判定：解压成功必然出现 python\python.exe（约 4 万文件、实测 30s）。
@@ -632,14 +670,28 @@ begin
   // 只在部署成功后删——失败时保留归档，用户重跑安装包无需重新下载 300MB。
   DeleteFile(Archive);
 
-  // 预热：用装好的解释器冷导入一次完整应用栈，把杀软首次扫描成本吸收进
-  // 安装阶段（详见函数头注释）。实测约 13s，是部署块里第二贵的动作。
-  DeployStage('warmup', '正在预热运行环境（约 15 秒）…');
-  PhaseTicks := TbTickCount;
-  Exec(ExpandConstant('{app}\runtime\python\python.exe'),
-       '-c "import deeptutor.api.main"', '', SW_HIDE,
-       ewWaitUntilTerminated, ResultCode);
-  Log('TB-DEPLOY timing warmup ' + IntToStr(TbTickCount - PhaseTicks) + 'ms');
+  // 预热：把杀软对 15k+ pyc 的首扫成本提前到安装窗口内，但**不再阻塞安装**：
+  //   * ewNoWait：进程起来即返回，用户点「完成」、首窗打开都与预热并行；
+  //   * 仅首装执行：升级时文件早被扫过，收益低；
+  //   * 无需额外清理：覆盖安装 / 卸载的既有「按安装目录杀进程」逻辑会兜住它；
+  //   * 副作用：首窗打开后的头几秒 CPU 略高（预期行为，写入发布说明）。
+  //   * 若日后需要更低优先级，可改为 {cmd} + 'start "" /LOW /B ...'（多一层
+  //     cmd 引号解析，收益有限，暂不引入）。
+  if not WasInstalled then
+  begin
+    // Tag 保持 'warmup'：updater.py 的进度小窗按 'deploy warmup' 匹配文案，
+    // 换新 tag 会让静默更新的阶段文案掉回通用分支。计时键也保持 'warmup'
+    // （tools/diag/measure-inno-install.ps1 的正则只认 extract|swap|warmup|total），
+    // 它的数值现在代表「派发耗时」而非「等待耗时」，另见下方 note 行。
+    DeployStage('warmup', '正在后台预热运行环境（不影响完成）…');
+    PhaseTicks := TbTickCount;
+    Exec(ExpandConstant('{app}\runtime\python\python.exe'),
+         '-c "import deeptutor.api.main"', '', SW_HIDE, ewNoWait, ResultCode);
+    Log('TB-DEPLOY timing warmup ' + IntToStr(TbTickCount - PhaseTicks) + 'ms');
+    Log('TB-DEPLOY note warmup async=1 (not blocking)');
+  end
+  else
+    Log('TB-DEPLOY warmup skipped (upgrade)');
   Log('TB-DEPLOY timing total ' + IntToStr(TbTickCount - T0) + 'ms');
   DeployStage('done', '运行环境部署完成');
 end;

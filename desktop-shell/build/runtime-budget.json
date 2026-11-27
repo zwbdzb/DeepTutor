@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "enforce": false,
+  "generated": "2026-11-27",
+  "note": [
+    "CI 体积/文件数预算。enforce=false 时只打 warning 注释，不失败构建——",
+    "因为首版尚未拿到 audit_staging.py 的实测基线，任何硬编码数字都是猜的。",
+    "收紧流程：",
+    "  1) 先跑一次构建，取 staging-audit artifact 里的 totals.files 与 archive MB；",
+    "  2) 把它们填进下面的 max_* 字段（当前为 null = 不判定）；",
+    "  3) 验证 1~2 个 PR 后把 enforce 改为 true；",
+    "  4) 每完成一条裁剪规则，就把预算下调到新实测值再减 2%。",
+    "max_setup_mb 对应 dist/ThinkBuddySetup-*.exe；max_archive_mb 对应 build/runtime.tar*。"
+  ],
+  "max_staged_files": null,
+  "max_archive_mb": null,
+  "max_setup_mb": null
+}

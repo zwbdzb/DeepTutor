@@ -14,7 +14,7 @@
 #          standard path (only needed for step 3).
 # Run:     powershell -ExecutionPolicy Bypass -File build\build.ps1
 #              [-SkipRuntime] [-SkipWebBuild] [-MakePortable] [-MakeZip] [-SkipInstaller]
-#              [-StrictRuntime] [-FastInstaller] [-NoCompression]
+#              [-StrictRuntime] [-FastInstaller] [-NoCompression] [-ZstdArchive]
 
 param(
     [switch]$SkipRuntime,       # kept for compatibility; the version gate ALWAYS runs (see below)
@@ -25,6 +25,11 @@ param(
     [switch]$StrictRuntime,     # content-hash runtime sources (slower; release-time assurance)
     [switch]$FastInstaller,     # Inno lzma2/fast（开发迭代用，安装包体积 +10~15%，压缩时间大幅缩短）
     [switch]$NoCompression,    # Inno Compression=none（CI 日常 push 用，秒级完成，安装包 ~500MB）
+    # 运行时归档改用 zstd（.tar.zst）而不是 xz（.tar.xz）。默认关闭 = 现有发布链路不变。
+    # 实测（8000 文件 / 51.7MB 子集）：zstd-19 11.21MB vs xz-3 11.84MB（更小 5.3%），
+    # bsdtar 解码 171.7 vs 57.8 MB/s，落盘快 28.6%。
+    # 需要 zstd.exe（或 Python 3.14+ 的 compression.zstd）；缺工具时直接报错，不静默回退。
+    [switch]$ZstdArchive,
     # ADR-006 更新发布参数：出包后自动生成「带版本名安装包 + latest.json」（dist/）
     [string]$UpdateBase = "https://thinkbuddy.hanyoai.com/update",
     [string]$MinVersion = "0.1.0",
@@ -198,10 +203,13 @@ try {
     # 完成。归档保留文件秒级 mtime —— CPython 的 pyc 校验按整秒比较时间戳，
     # 实测解压后不会触发重编译（否则首启会退回 4 分钟编译）。
     if (-not $SkipInstaller) {
-        Write-Host "[2c] packing runtime.tar.xz (single-archive install path) ..."
+        # 归档文件名：installer.iss 的 [Files] 与 [Code] 都通过 /DRuntimeArchive 注入，
+        # 因此这里必须是脚本级变量（第 3 步 ISCC 也要用）。
+        $script:RuntimeArchiveName = if ($ZstdArchive) { 'runtime.tar.zst' } else { 'runtime.tar.xz' }
+        Write-Host "[2c] packing $script:RuntimeArchiveName (single-archive install path) ..."
         Start-Stage
         $stageRoot = Join-Path $Root "runtime-build\staging"
-        $arcPath   = Join-Path $Root "build\runtime.tar.xz"
+        $arcPath   = Join-Path $Root "build\$script:RuntimeArchiveName"
         $tarPath   = Join-Path $Root "build\runtime.tar"
         if (-not (Test-Path -LiteralPath $stageRoot)) { throw "runtime staging missing: $stageRoot (run build_runtime.py first)" }
 
@@ -213,7 +221,7 @@ try {
                           Measure-Object -Property LastWriteTimeUtc -Maximum
             if ($newestFile.Maximum -and ($newestFile.Maximum -le $arcTime)) {
                 $needPack = $false
-                Write-Host ("  reused runtime.tar.xz ({0:N1} MB, newer than staging)" -f ((Get-Item -LiteralPath $arcPath).Length / 1MB))
+                Write-Host ("  reused {0} ({1:N1} MB, newer than staging)" -f $script:RuntimeArchiveName, ((Get-Item -LiteralPath $arcPath).Length / 1MB))
             }
         }
 
@@ -242,7 +250,66 @@ try {
             & $tarExe -cf $tarPath -C $stageRoot .
             if ($LASTEXITCODE -ne 0) { throw "tar packing failed (rc=$LASTEXITCODE)" }
 
-            if ($xzExe) {
+            if ($ZstdArchive) {
+                # zstd 分支：先把 staging 打成未压缩 .tar，再整块压缩。
+                # 用单线程 -19（体积/速度实测最优档）；-T0 只影响编码耗时，不影响解压。
+                # 禁止 --long=27（128MB 窗口）：部分 libarchive/旧 bsdtar 会拒绝大窗口。
+                $zstdExe = (Get-Command zstd.exe -ErrorAction SilentlyContinue).Source
+                if (-not $zstdExe) {
+                    foreach ($cand in @(
+                        "$env:ProgramFiles\zstd\zstd.exe",
+                        (Join-Path $Root "tools\bin\zstd.exe")
+                    )) { if (Test-Path -LiteralPath $cand) { $zstdExe = $cand; break } }
+                }
+                if (-not $zstdExe) {
+                    # 回退：Python 3.14+ 内置 compression.zstd（PEP 784），流式压缩不占内存。
+                    $pyZ = $null
+                    foreach ($cand in @($env:BUILD_PY, (Get-Command python -ErrorAction SilentlyContinue).Source, $VenPy)) {
+                        if (-not $cand -or -not (Test-Path -LiteralPath $cand)) { continue }
+                        & $cand -c "from compression import zstd" 2>$null
+                        if ($LASTEXITCODE -eq 0) { $pyZ = $cand; break }
+                    }
+                    if (-not $pyZ) {
+                        throw "-ZstdArchive requires zstd.exe on PATH (or tools\bin\zstd.exe), or Python 3.14+ for compression.zstd. Download zstd: https://github.com/facebook/zstd/releases"
+                    }
+                    Write-Host "  compressing with $pyZ compression.zstd (level 19, streaming) ..."
+                    if (Test-Path -LiteralPath $arcPath) { Remove-Item -LiteralPath $arcPath -Force }
+                    $pyScript = @'
+import sys
+from compression import zstd
+src, dst = sys.argv[1], sys.argv[2]
+c = zstd.ZstdCompressor(level=19)
+with open(src, "rb") as fi, open(dst, "wb") as fo:
+    while True:
+        chunk = fi.read(1 << 20)
+        if not chunk:
+            break
+        out = c.compress(chunk)
+        if out:
+            fo.write(out)
+    tail = c.flush()
+    if tail:
+        fo.write(tail)
+'@
+                    $pyTmp = Join-Path $env:TEMP "tb-zstd-$PID.py"
+                    Set-Content -LiteralPath $pyTmp -Value $pyScript -Encoding UTF8
+                    & $pyZ $pyTmp $tarPath $arcPath
+                    $rc = $LASTEXITCODE
+                    Remove-Item -LiteralPath $pyTmp -Force -ErrorAction SilentlyContinue
+                    if ($rc -ne 0) { throw "zstd (python) compression failed (rc=$rc)" }
+                } else {
+                    Write-Host "  compressing with $zstdExe -19 -T0 ..."
+                    if (Test-Path -LiteralPath $arcPath) { Remove-Item -LiteralPath $arcPath -Force }
+                    & $zstdExe -19 -T0 -f -o $arcPath $tarPath
+                    if ($LASTEXITCODE -ne 0) { throw "zstd compression failed (rc=$LASTEXITCODE)" }
+                }
+                # 交付前自检：本机 bsdtar 必须能直接读 .zst（installer 端首选单趟解压依赖它）
+                & $tarExe -tf $arcPath > $null 2>&1
+                if ($LASTEXITCODE -ne 0) {
+                    throw "local tar.exe cannot read $arcPath - bsdtar lacks zstd support; do not ship this archive"
+                }
+            }
+            elseif ($xzExe) {
                 Write-Host "  compressing with $xzExe -T0 -3 ..."
                 & $xzExe -T0 -3 -f $tarPath
                 if ($LASTEXITCODE -ne 0) { throw "xz compression failed (rc=$LASTEXITCODE)" }
@@ -251,10 +318,10 @@ try {
                 & $tarExe -cJf $arcPath -C $stageRoot .
                 if ($LASTEXITCODE -ne 0) { throw "tar+xz packing failed (rc=$LASTEXITCODE)" }
             }
-            if (-not (Test-Path -LiteralPath $arcPath)) { throw "runtime.tar.xz missing after packing" }
-            # xz -f 会删掉中间 .tar；-cJf 路径不会有。兜底清一次防残留。
+            if (-not (Test-Path -LiteralPath $arcPath)) { throw "$script:RuntimeArchiveName missing after packing" }
+            # xz -f / zstd -o 都不删中间 .tar；兜底清一次防残留（318MB 级派生文件）。
             if (Test-Path -LiteralPath $tarPath) { Remove-Item -LiteralPath $tarPath -Force -ErrorAction SilentlyContinue }
-            Write-Host ("  runtime.tar.xz = {0:N1} MB" -f ((Get-Item -LiteralPath $arcPath).Length / 1MB))
+            Write-Host ("  {0} = {1:N1} MB" -f $script:RuntimeArchiveName, ((Get-Item -LiteralPath $arcPath).Length / 1MB))
         }
         Stop-Stage "runtime archive"
     }
@@ -286,6 +353,8 @@ try {
             $isccArgs = @()
             if ($NoCompression) { $isccArgs += "/DNoCompression" }
             elseif ($FastInstaller) { $isccArgs += "/DFastCompression" }
+            # 归档文件名注入：iss 的 [Files] / [Code] 都读它（默认 xz，-ZstdArchive 时 .zst）
+            $isccArgs += "/DRuntimeArchive=$script:RuntimeArchiveName"
             $isccArgs += @("/DMyAppVersion=$appVer", "/DMyOutputName=$safeVer", "build\installer.iss")
             & $iscc @isccArgs
             if ($LASTEXITCODE -ne 0) { throw "iscc failed" }

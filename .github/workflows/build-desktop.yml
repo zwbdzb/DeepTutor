@@ -232,6 +232,102 @@ jobs:
         # 安装包从 ~170MB 涨到 ~320MB，用户下载一次拿到完整离线运行时。
         run: powershell -ExecutionPolicy Bypass -File build\build.ps1 -SkipWebBuild -FastInstaller
 
+      # 批次0（只读）：量化 staging 构成，为「裁剪文件数」提供决策数据。
+      # 不删除任何文件、不改打包参数；JSON 作为 artifact 留存，便于两次构建间对比回归。
+      # 目的：66,912 个文件的构成必须先量出来（按子树/扩展名/.py-.pyc 配对），
+      # 再决定裁剪规则——避免 **/tests 这类通配符误伤运行时依赖。
+      #
+      # if: always() + continue-on-error —— 上面「Build runtime + exe + installer」
+      # 若挂在 ISCC 编译（installer.iss 语法错误一类），staging 在 [2c] 打包前就已
+      # 生成，通常仍然完好，不该因为后续步骤失败就放弃采集。同理下面两个 upload
+      # 步骤也要 always()：job 已 failed 时默认的 if: success() 会把 artifact 丢掉，
+      # 那样「采到了也拿不走」。
+      - name: Audit runtime staging (read-only)
+        working-directory: desktop-shell
+        shell: pwsh
+        if: always()
+        continue-on-error: true
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'audit-staging.json'
+          python tools\audit_staging.py --top 20 --json $out
+          if (Test-Path $out) {
+            Get-Content $out -Raw -Encoding UTF8 | ConvertFrom-Json |
+              Select-Object -ExpandProperty totals | Format-List
+          } else {
+            Write-Host "::warning title=staging audit::staging 不可用，未生成审计 JSON（构建可能未走到 [2c]）"
+          }
+
+      - name: Upload staging audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-audit
+          path: ${{ runner.temp }}/audit-staging.json
+          if-no-files-found: warn
+
+      # 批次2 前置（只读）：按 build/prune-policy.json 跑一次 dry-run。
+      # 当前 policy 里的规则全部是 candidate，prune_staging.py 会拒绝 --apply，
+      # 所以这一步保证「不删任何文件」，只输出「若批准会删什么」。
+      # 规则获批后，把下面的 --report 行去掉 --report 前的 dry-run 语义并加 --apply。
+      - name: Prune dry-run (policy is candidate-only, deletes nothing)
+        working-directory: desktop-shell
+        shell: pwsh
+        if: always()
+        continue-on-error: true
+        run: |
+          python tools\prune_staging.py --policy build\prune-policy.json `
+            --samples 3 --report "$env:RUNNER_TEMP\prune-dryrun.json"
+
+      - name: Upload prune dry-run report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: prune-dryrun
+          path: ${{ runner.temp }}/prune-dryrun.json
+          if-no-files-found: warn
+
+      # 预算门禁：enforce=false 时只 warning，不红。数字来自 audit 实测，
+      # 见 build/runtime-budget.json 的收紧流程说明。
+      - name: Runtime budget gate
+        working-directory: desktop-shell
+        shell: pwsh
+        run: |
+          $budget = Get-Content build\runtime-budget.json -Raw -Encoding UTF8 | ConvertFrom-Json
+          # 审计步骤是 continue-on-error，可能没产出 JSON；缺失时跳过比对而不是红构建。
+          $auditPath = Join-Path $env:RUNNER_TEMP 'audit-staging.json'
+          if (Test-Path $auditPath) {
+            $files = (Get-Content $auditPath -Raw -Encoding UTF8 | ConvertFrom-Json).totals.files
+          } else {
+            Write-Host "::warning title=Runtime budget::audit-staging.json 缺失，跳过文件数预算比对"
+            $files = $null
+          }
+          $archive = Get-ChildItem build\runtime.tar.* -ErrorAction SilentlyContinue |
+            Sort-Object Length -Descending | Select-Object -First 1
+          $archiveMb = if ($archive) { [math]::Round($archive.Length / 1MB, 1) } else { $null }
+          $setup = Get-ChildItem dist\ThinkBuddySetup-*.exe -ErrorAction SilentlyContinue |
+            Sort-Object Length -Descending | Select-Object -First 1
+          $setupMb = if ($setup) { [math]::Round($setup.Length / 1MB, 1) } else { $null }
+
+          Write-Host "staged_files=$files (budget $($budget.max_staged_files))"
+          Write-Host "archive=$archiveMb MB (budget $($budget.max_archive_mb))"
+          Write-Host "setup=$setupMb MB (budget $($budget.max_setup_mb))"
+
+          $violations = @()
+          if ($budget.max_staged_files -and $files -gt $budget.max_staged_files) {
+            $violations += "staged_files $files > $($budget.max_staged_files)"
+          }
+          if ($budget.max_archive_mb -and $archiveMb -and $archiveMb -gt $budget.max_archive_mb) {
+            $violations += "archive $archiveMb MB > $($budget.max_archive_mb) MB"
+          }
+          if ($budget.max_setup_mb -and $setupMb -and $setupMb -gt $budget.max_setup_mb) {
+            $violations += "setup $setupMb MB > $($budget.max_setup_mb) MB"
+          }
+          foreach ($v in $violations) {
+            if ($budget.enforce) { throw "budget exceeded: $v" }
+            Write-Host "::warning title=Runtime budget::budget exceeded (warn-only): $v"
+          }
+          if (-not $violations) { Write-Host "budget OK" }
+
       - name: List outputs
         working-directory: desktop-shell
         run: Get-ChildItem dist -Filter *.exe | Select-Object Name, @{n='MB';e={[math]::Round($_.Length/1MB,1)}} | Format-Table -AutoSize

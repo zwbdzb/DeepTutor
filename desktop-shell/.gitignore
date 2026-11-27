@@ -21,6 +21,8 @@ build/build_last.log
 # 318MB 派生资产，绝不入库；由 build_runtime.py 的 staging 随时重建。
 build/runtime.tar
 build/runtime.tar.xz
+# -ZstdArchive 产物（同一份 staging 的 zstd 版本），体量同量级，同样绝不入库。
+build/runtime.tar.zst
 
 # pip 构建隔离临时目录（build isolation 的 site/ 与 tracker 哈希）。
 # 曾在 "合并mackpage" 提交里被误纳入版本库，纯噪声，永不入库。

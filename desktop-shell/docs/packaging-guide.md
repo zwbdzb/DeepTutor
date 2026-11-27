@@ -161,7 +161,16 @@ powershell -ExecutionPolicy Bypass -File build\build.ps1
 build\build.ps1 -SkipInstaller   # 只要 ThinkBuddyDesktop.exe，不编安装包（调试壳最快）
 build\build.ps1 -MakePortable    # 额外做 ThinkBuddyPortable.zip（~8 分钟，默认不做）
 build\build.ps1 -MakeZip         # 额外产 dist/runtime.zip（onefile 分发路径用）
+build\build.ps1 -ZstdArchive     # 运行时归档用 .tar.zst 而非 .tar.xz（实验性，见下）
 ```
+
+> **`-ZstdArchive`（实验性，默认关闭）**：把 `[2c]` 的 `runtime.tar.xz` 换成
+> `runtime.tar.zst`，installer 侧通过 `{#RuntimeArchive}` 自动跟随，仍是单趟
+> `tar -xf` 解压（bsdtar ≥ 3.3 原生支持 zstd）。
+> 本机实测（8,000 文件子集）：zstd-19 比 xz-3 **体积小 5.3%**、解压 **快 28.6%**。
+> 需要 `zstd.exe`（PATH 或 `tools\bin\zstd.exe`），或 Python 3.14+ 的
+> `compression.zstd` 作回退；都没有会直接报错，不静默降级。
+> 决策数据与启用前置条件见 [`packaging-optimization.md`](packaging-optimization.md) §6。
 
 > `-SkipRuntime` 参数仅为兼容保留：**版本门禁现在永远执行，无法跳过**（曾因跳过
 > 把 1.6.9 旧运行时打进新包，见 ADR-005）。日常不需要传它。
@@ -200,6 +209,27 @@ cd D:\studio\DeepTutor\desktop-shell
 3. **查安装包版本**：右键 `ThinkBuddySetup.exe` → 属性 → 详细信息 → ProductVersion 应为
    `0.2.0+dt<源码版本>`。看到 `dtSET-BY-build.ps1` = 绕过 build.ps1 裸跑的 ISCC，无效包；
 4. **装机验证**：安装后侧边栏徽章/关于页应显示新版本（壳读的运行时与显示版本同源，ADR-005）。
+
+### 6.1 运行时构成审计（`tools\audit_staging.py`，只读）
+
+「安装慢」要先看 staging 到底有多少文件、都是什么，而不是先换压缩算法：
+同一台机器上 bsdtar 解小文件约 **0.39 ms/个**，Inno 逐文件写入约 **6.21 ms/个**
+（见 `build/installer.iss` 注释里的历史实测），所以文件数才是主变量。
+
+```powershell
+cd desktop-shell
+.venv\Scripts\python.exe tools\audit_staging.py --top 20 --json "$env:TEMP\audit-staging.json"
+```
+
+- **只读**：不删不改 staging，唯一副作用是 `--json` 落一份报告文件；
+- **输出**：总体 / 按扩展名 / 按子树 / 按叶子目录（TopN）+ `.py`/`.pyc` 配对
+  + 裁剪信号（`node/npm`、`node/include`、`*.map`、`.dist-info`、`test*/` 目录内文件数）；
+- **只给数据、不给结论**：任何裁剪规则都必须先看这里的分布再定；**禁止**用 `**/tests`
+  这类跨树通配（会误伤 setuptools/urllib3 等包内被 `__init__` 引用的 tests 子包）；
+- `.pyc`-only 分发已被否决（traceback 丢失 + `pkgutil.iter_modules` 动态插件发现失效），
+  审计里只做量化，不做建议；
+- CI 的 build job 已内置同一只读步骤，报告以 `staging-audit` artifact 上传，
+  便于两次构建之间对比回归。
 
 ## 7. 已知坑
 
