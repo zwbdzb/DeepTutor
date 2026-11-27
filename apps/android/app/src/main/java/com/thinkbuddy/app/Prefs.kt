@@ -3,32 +3,17 @@ package com.thinkbuddy.app
 import android.content.Context
 
 /**
- * 引擎来源：本地（PRoot 里跑 python + node）或远程（SSH 转发到电脑上的引擎）。
+ * 手机端偏好设置。
+ *
+ * 本期只做**本地引擎**（PRoot 里跑 python + node），远程 / SSH 形态已移除，
+ * 因此这里不再保留 sshHost / sshPassword / 端口转发等字段 —— 留着只会让
+ * 「登录 → 解压 → 启动」这条唯一路径出现第二个入口。
  */
-data class EngineConfig(
-    val mode: String,
-    val runtimeUrl: String,
-    val sshHost: String,
-    val sshPort: Int,
-    val sshUser: String,
-    val sshPassword: String,
-    val sshKeyPath: String,
-    val remoteEnginePort: Int,
-) {
-    companion object {
-        const val MODE_LOCAL = "local"
-        const val MODE_REMOTE = "remote"
-    }
-}
-
 class Prefs(context: Context) {
     private val sp = context.applicationContext
         .getSharedPreferences("thinkbuddy", Context.MODE_PRIVATE)
 
-    var mode: String
-        get() = sp.getString("mode", EngineConfig.MODE_LOCAL) ?: EngineConfig.MODE_LOCAL
-        set(value) = sp.edit().putString("mode", value).apply()
-
+    /** 运行时包下载地址；BUNDLED_RUNTIME=true 时此值不生效。 */
     var runtimeUrl: String
         get() = sp.getString("runtime_url", BuildConfig.RUNTIME_URL) ?: BuildConfig.RUNTIME_URL
         set(value) = sp.edit().putString("runtime_url", value).apply()
@@ -37,38 +22,13 @@ class Prefs(context: Context) {
         get() = sp.getString("installed_version", "") ?: ""
         set(value) = sp.edit().putString("installed_version", value).apply()
 
-    var sshHost: String
-        get() = sp.getString("ssh_host", "") ?: ""
-        set(value) = sp.edit().putString("ssh_host", value).apply()
+    /** dsh-Go 风格的六套主题色索引。 */
+    var themeIndex: Int
+        get() = sp.getInt("theme_index", 0)
+        set(value) = sp.edit().putInt("theme_index", value).apply()
 
-    var sshPort: Int
-        get() = sp.getInt("ssh_port", 22)
-        set(value) = sp.edit().putInt("ssh_port", value).apply()
-
-    var sshUser: String
-        get() = sp.getString("ssh_user", "") ?: ""
-        set(value) = sp.edit().putString("ssh_user", value).apply()
-
-    var sshPassword: String
-        get() = sp.getString("ssh_password", "") ?: ""
-        set(value) = sp.edit().putString("ssh_password", value).apply()
-
-    var sshKeyPath: String
-        get() = sp.getString("ssh_key_path", "") ?: ""
-        set(value) = sp.edit().putString("ssh_key_path", value).apply()
-
-    var remoteEnginePort: Int
-        get() = sp.getInt("remote_engine_port", BuildConfig.FRONTEND_PORT)
-        set(value) = sp.edit().putInt("remote_engine_port", value).apply()
-
-    fun config(): EngineConfig = EngineConfig(
-        mode = mode,
-        runtimeUrl = runtimeUrl,
-        sshHost = sshHost,
-        sshPort = sshPort,
-        sshUser = sshUser,
-        sshPassword = sshPassword,
-        sshKeyPath = sshKeyPath,
-        remoteEnginePort = remoteEnginePort,
-    )
+    /** Tokengine 登录态（仅供展示；真正的判定以种子文件 / catalog 为准）。 */
+    var tokengineLoggedIn: Boolean
+        get() = sp.getBoolean("tokengine_logged_in", false)
+        set(value) = sp.edit().putBoolean("tokengine_logged_in", value).apply()
 }

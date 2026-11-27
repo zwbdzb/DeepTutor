@@ -20,7 +20,6 @@ object ProotEngine {
     private val logs = ArrayDeque<String>()
     private var backend: Process? = null
     private var frontend: Process? = null
-    private var login: Process? = null
 
     fun isRunning(): Boolean = backend?.isAlive == true
 
@@ -85,7 +84,7 @@ object ProotEngine {
     }
 
     fun stop() {
-        listOf(login, frontend, backend).forEach { process ->
+        listOf(frontend, backend).forEach { process ->
             if (process == null) return@forEach
             // --kill-on-exit 让 PRoot 退出时带走被 trace 的子进程。
             process.destroy()
@@ -98,81 +97,12 @@ object ProotEngine {
                 Thread.currentThread().interrupt()
             }
         }
-        login = null
         frontend = null
         backend = null
     }
 
-    /**
-     * Tokengine 账号登录：在 guest 里跑一次性的 OAuth 脚本（回环回调在
-     * guest 内监听，PRoot 不隔离网络，所以 127.0.0.1 就是手机本机）。
-     *
-     * 脚本按行输出协议：`AUTHORIZE <url>` / `OK <count> <relay>` / `ERROR <msg>`。
-     */
-    fun loginTokengine(
-        context: Context,
-        onAuthorize: (String) -> Unit,
-        onResult: (Boolean, String) -> Unit,
-    ) {
-        stopLogin()
-        Thread({
-            try {
-                val runtime = RuntimeInstaller.runtimeDir(context)
-                val home = RuntimeInstaller.homeDir(context).apply { mkdirs() }
-                val tmp = RuntimeInstaller.tmpDir(context).apply { mkdirs() }
-                writeTokengineScript(home)
-                ensureExecutable(runtime)
-                // 登录要走 HTTPS 去平台换 token，DNS 必须在起 proot 之前修好。
-                val dns = RuntimeInstaller.prepareGuestNetwork(context, runtime)
-                appendLog("[dns] guest nameserver: ${dns.joinToString(" ")}")
-                val selection = selectProot(runtime, home, tmp)
-                val command = selection.args + listOf(
-                    "/opt/python/bin/python3.12",
-                    "/root/tokengine_login.py",
-                )
-                val builder = ProcessBuilder(command)
-                builder.directory(File("/"))
-                builder.redirectErrorStream(true)
-                builder.environment().clear()
-                builder.environment().putAll(selection.env)
-                val process = builder.start()
-                login = process
-                appendLog("[cmd] ${command.joinToString(" ")}")
-
-                var settled = false
-                process.inputStream.bufferedReader().forEachLine { raw ->
-                    val line = raw.trim()
-                    appendLog("[toklogin] $line")
-                    when {
-                        line.startsWith("AUTHORIZE ") ->
-                            onAuthorize(line.removePrefix("AUTHORIZE ").trim())
-                        line.startsWith("OK ") -> {
-                            settled = true
-                            onResult(true, line.removePrefix("OK ").trim())
-                        }
-                        line.startsWith("ERROR ") -> {
-                            settled = true
-                            onResult(false, line.removePrefix("ERROR ").trim())
-                        }
-                    }
-                }
-                process.waitFor()
-                if (!settled) {
-                    onResult(false, "登录进程已退出（exit=${process.exitValue()}）")
-                }
-            } catch (exc: Exception) {
-                onResult(false, exc.message ?: exc.toString())
-            } finally {
-                login = null
-            }
-        }, "tokengine-login").apply { isDaemon = true }.start()
-    }
-
-    fun stopLogin() {
-        val process = login ?: return
-        login = null
-        runCatching { process.destroy() }
-    }
+    // Tokengine 登录已前置到原生层（TokengineAuth）：登录发生在下载/解压本
+    // 运行时之前，因此这里不再保留 guest 内的 OAuth 脚本进程。
 
     private fun launch(
         command: List<String>,
@@ -425,20 +355,50 @@ object ProotEngine {
     /**
      * 后端启动脚本：桌面端的 launcher 会做用户目录/设置初始化，这里直接跑
      * uvicorn 就必须自己补上，否则首启时 settings 文件缺失。
+     *
+     * 另外消费 Tokengine 登录种子：登录已经前置到原生 Kotlin 层（在解压本
+     * 运行时之前完成），业务令牌和模型名单通过 ``<home>/tokengine_seed.json``
+     * 传递。这里调用后端自己的 ``ensure_tokengine_catalog`` 写入 catalog，
+     * 保证字段名、model_type 分流规则与桌面端/设置页完全一致。
      */
     private fun writeBootScript(home: File, backendPort: Int) {
         val script = """
+            import json
             import os
+            import sys
+            from pathlib import Path
 
             from deeptutor.runtime.home import get_runtime_home
             from deeptutor.services.config import ensure_runtime_settings_files
             from deeptutor.services.setup import init_user_directories
 
 
+            def apply_tokengine_seed() -> None:
+                seed = Path(get_runtime_home()) / "tokengine_seed.json"
+                if not seed.exists():
+                    return
+                try:
+                    data = json.loads(seed.read_text(encoding="utf-8"))
+                    from deeptutor.services.config.tokengine_catalog import ensure_tokengine_catalog
+
+                    ensure_tokengine_catalog(
+                        api_key=str(data.get("api_key") or ""),
+                        base_url=str(data.get("base_url") or ""),
+                        models=list(data.get("models") or []),
+                        model_types=dict(data.get("model_types") or {}),
+                        model_context_windows=dict(data.get("model_context_windows") or {}),
+                    )
+                    seed.unlink()
+                    print("[tokengine-seed] catalog updated", flush=True)
+                except Exception as exc:  # noqa: BLE001 - 种子失败不阻断引擎启动
+                    print("[tokengine-seed] failed: " + str(exc), file=sys.stderr, flush=True)
+
+
             def main() -> None:
                 home = get_runtime_home()
                 init_user_directories(home)
                 ensure_runtime_settings_files()
+                apply_tokengine_seed()
 
                 import uvicorn
 
@@ -455,17 +415,5 @@ object ProotEngine {
                 main()
         """.trimIndent()
         File(home, "boot_backend.py").writeText(script + "\n")
-    }
-
-    /** 登录脚本只是 `deeptutor.services.config.tokengine_login` 的入口壳。 */
-    private fun writeTokengineScript(home: File) {
-        val script = """
-            import sys
-
-            from deeptutor.services.config.tokengine_login import main
-
-            sys.exit(main(sys.argv[1:]))
-        """.trimIndent()
-        File(home, "tokengine_login.py").writeText(script + "\n")
     }
 }

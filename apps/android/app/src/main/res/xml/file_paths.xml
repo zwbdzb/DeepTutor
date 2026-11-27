@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 系统相机 App 通过 FileProvider 把照片写进 cache/photos/。 -->
+    <cache-path name="photos" path="photos/" />
+</paths>

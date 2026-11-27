@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+<title>ThinkBuddy</title>
+<link rel="stylesheet" href="./style.css">
+</head>
+<body>
+
+<!-- ═══ 1. 对话：chat / ask_questions / immersive_reading；只读消费 visualize / math_animator / video_lesson ═══ -->
+<section class="view active" id="view-chat">
+  <div class="subbar">
+    <button class="icon-btn" id="sessionsBtn" aria-label="会话列表">☰</button>
+    <div class="subbar-title" id="sessionTitle">新对话</div>
+    <button class="icon-btn" id="newChatBtn" aria-label="新对话">＋</button>
+  </div>
+
+  <div class="chip-row" id="capChips">
+    <button class="chip active" data-cap="chat">💬 对话</button>
+    <button class="chip" data-cap="ask_questions">🙋 被提问</button>
+    <button class="chip" data-cap="immersive_reading">📖 听读</button>
+    <button class="chip" data-cap="deep_question">🧪 出题</button>
+  </div>
+
+  <div class="picker-note" id="pickerNote"></div>
+
+  <div class="messages" id="messages">
+    <div class="welcome-card">
+      <div class="welcome-emoji">🎒</div>
+      <div class="welcome-title">开始一段学习</div>
+      <div class="welcome-sub">提问、刷题、听读短篇；可视化与视频课在这里只读查看。</div>
+      <div class="welcome-tags">
+        <span>对话</span><span>练习</span><span>技能</span><span>专家</span><span>拍照</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="composer">
+    <div class="attach-preview hidden" id="attachPreview">
+      <img id="attachThumb" alt="附件预览">
+      <button class="attach-remove" id="attachRemove">×</button>
+    </div>
+    <div class="composer-row">
+      <button class="icon-btn" id="attachBtn" aria-label="添加图片">📎</button>
+      <textarea id="input" rows="1" placeholder="输入你的问题…"></textarea>
+      <button class="send-btn" id="sendBtn" aria-label="发送">➤</button>
+    </div>
+    <div class="composer-foot">
+      <span id="connState">连接中…</span>
+      <span class="foot-actions">
+        <button id="stopBtn" class="text-btn hidden">停止</button>
+        <button id="regenBtn" class="text-btn hidden">重生成</button>
+      </span>
+    </div>
+  </div>
+
+  <div class="drawer hidden" id="sessionDrawer">
+    <div class="drawer-head">
+      <span>会话</span><button class="icon-btn" id="closeDrawer">×</button>
+    </div>
+    <div class="drawer-list" id="sessionList"></div>
+  </div>
+</section>
+
+<!-- ═══ 2. 练习：mastery_path / practice / question（手机端最高价值） ═══ -->
+<section class="view" id="view-practice">
+  <div class="subbar"><div class="subbar-title">练习</div><button class="icon-btn" id="practiceRefresh">↻</button></div>
+  <div class="scroll-body">
+    <div class="stat-grid" id="practiceSummary">
+      <div class="stat"><b>—</b><span>今日待复习</span></div>
+      <div class="stat"><b>—</b><span>连续天数</span></div>
+      <div class="stat"><b>—</b><span>掌握主题</span></div>
+    </div>
+
+    <div class="section-head">今日刷题 <span class="section-hint">碎片时间刷几题</span></div>
+    <div id="practiceQueue" class="card-list"></div>
+
+    <div class="section-head">掌握路径 <span class="section-hint">按主题推进</span></div>
+    <div id="masteryTopics" class="card-list"></div>
+
+    <div class="readonly-note">
+      深度研究、深度求解、Co-Writer、命令行与 MCP 工具链属于桌面端能力，手机端不提供入口。
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 3. 技能 ═══ -->
+<section class="view" id="view-skills">
+  <div class="subbar"><div class="subbar-title">技能</div><button class="icon-btn" id="skillsRefresh">↻</button></div>
+  <div class="scroll-body">
+    <div class="hint-card">选中的技能会随本轮对话一起发送（可多选）。</div>
+    <div id="skillList" class="card-list"></div>
+  </div>
+</section>
+
+<!-- ═══ 4. 专家（persona） ═══ -->
+<section class="view" id="view-experts">
+  <div class="subbar"><div class="subbar-title">专家</div><button class="icon-btn" id="expertsRefresh">↻</button></div>
+  <div class="scroll-body">
+    <div class="hint-card">专家以 persona 形式作用于对话，差异化靠角色而不是另一个对话框。</div>
+    <div id="expertList" class="card-list"></div>
+  </div>
+</section>
+
+<!-- ═══ 5. 拍照 ═══ -->
+<section class="view" id="view-camera">
+  <div class="subbar"><div class="subbar-title">拍照</div></div>
+  <div class="scroll-body camera-body">
+    <div class="camera-preview" id="cameraPreview">
+      <div class="camera-placeholder" id="cameraPlaceholder">📸<small>拍一张照片，让 AI 帮你理解</small></div>
+      <img id="photoPreview" class="hidden" alt="照片预览">
+    </div>
+    <div class="camera-actions">
+      <button class="primary-btn" id="takePhotoBtn">📷 拍照</button>
+      <button class="ghost-btn" id="pickImageBtn">🖼 相册</button>
+    </div>
+    <button class="primary-btn wide hidden" id="sendPhotoBtn">发送到对话</button>
+    <p class="camera-tip">支持拍照解题、识别图形、文档分析等</p>
+  </div>
+</section>
+
+<div class="toast hidden" id="toast"></div>
+
+<script src="./app.js"></script>
+</body>
+</html>
