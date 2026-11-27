@@ -38,6 +38,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import java.io.File
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 
@@ -50,6 +51,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var progress: ProgressBar
     private var loadedUrl: String? = null
     private var fileChooserCallback: ValueCallback<Array<Uri>>? = null
+    private var modelPromptShown = false
 
     private val fileChooser = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
@@ -218,6 +220,7 @@ class MainActivity : AppCompatActivity() {
                     loadedUrl = status.url
                     webView.loadUrl(status.url)
                 }
+                promptLoginIfUnconfigured()
             }
             Phase.INSTALLING -> showOverlay("首次使用需要下载运行时", status.message, status.message)
             Phase.STARTING -> showOverlay("正在启动引擎", status.message, null)
@@ -403,6 +406,42 @@ class MainActivity : AppCompatActivity() {
     private fun toast(message: String) {
         Toast.makeText(this, message, Toast.LENGTH_LONG).show()
     }
+
+    /**
+     * 引擎就绪后检查本地是否已有可用模型；没有就直接引导登录。
+     * 只在本次进程里提示一次，避免每次状态回调都弹。
+     */
+    private fun promptLoginIfUnconfigured() {
+        if (modelPromptShown || Prefs(this).mode == EngineConfig.MODE_REMOTE) return
+        modelPromptShown = true
+        if (hasConfiguredModel()) return
+        AlertDialog.Builder(this)
+            .setTitle("还没有可用的模型")
+            .setMessage(
+                "登录 Tokengine 账号会自动写入账号下的全部模型，和电脑端一致。\n" +
+                    "也可以稍后到网页设置里手动填写 API Key。",
+            )
+            .setPositiveButton("登录 Tokengine") { _, _ -> startTokengineLogin() }
+            .setNegativeButton("稍后", null)
+            .show()
+    }
+
+    /** 读沙盒里的 model_catalog.json，判断是否存在带模型的 llm profile。 */
+    private fun hasConfiguredModel(): Boolean = runCatching {
+        val catalog = File(RuntimeInstaller.homeDir(this), "data/user/settings/model_catalog.json")
+        if (!catalog.isFile) return false
+        val root = org.json.JSONObject(catalog.readText())
+        val profiles = root.optJSONObject("services")
+            ?.optJSONObject("llm")
+            ?.optJSONArray("profiles")
+            ?: return false
+        (0 until profiles.length()).any { index ->
+            val profile = profiles.optJSONObject(index) ?: return@any false
+            val apiKey = profile.optString("api_key").trim()
+            val models = profile.optJSONArray("models")?.length() ?: 0
+            apiKey.isNotEmpty() && models > 0
+        }
+    }.getOrDefault(false)
 
     private fun label(text: String): TextView = TextView(this).apply {
         this.text = text
