@@ -92,12 +92,13 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.activity:activity-ktx:1.9.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.4")
+    implementation("com.google.android.material:material:1.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     // 手机端运行包是 zip + 符号链接 + 权限位，java.util.zip 读不到 external
     // attributes，用 commons-compress 才能重建 python3 -> python3.12 这类链接。
     implementation("org.apache.commons:commons-compress:1.26.2")
     implementation("commons-io:commons-io:2.16.1")
     implementation("org.tukaani:xz:1.9")
-    // 远程模式：SSH 本地端口转发到电脑上的引擎。
+    // 远程模式：SSH 本地端口转发到电脑上的引擎（保留依赖但 UI 不再展示）。
     implementation("com.jcraft:jsch:0.1.55")
 }

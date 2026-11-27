@@ -3,4 +3,39 @@
     <string name="app_name">ThinkBuddy</string>
     <string name="notification_channel">引擎运行中</string>
     <string name="notification_title">ThinkBuddy</string>
+
+    <!-- 启动/登录 -->
+    <string name="welcome_title">ThinkBuddy</string>
+    <string name="welcome_subtitle">你的智能学习伙伴</string>
+    <string name="login_tokengine">登录 Tokengine 账号</string>
+    <string name="login_description">登录后会自动获取你的可用模型</string>
+    <string name="skip_login">稍后登录</string>
+    <string name="start_engine">开始使用</string>
+
+    <!-- 引擎状态 -->
+    <string name="installing_runtime">正在安装运行时</string>
+    <string name="starting_engine">正在启动引擎</string>
+    <string name="engine_ready">引擎已就绪</string>
+    <string name="engine_error">启动失败</string>
+
+    <!-- Tab -->
+    <string name="tab_chat">对话</string>
+    <string name="tab_skills">技能</string>
+    <string name="tab_experts">专家</string>
+    <string name="tab_camera">拍照</string>
+
+    <!-- 对话 -->
+    <string name="chat_hint">输入你的问题…</string>
+    <string name="new_chat">新对话</string>
+    <string name="chat_empty">开始一个新对话吧</string>
+    <string name="send">发送</string>
+
+    <!-- 设置 -->
+    <string name="settings">设置</string>
+    <string name="logs">日志</string>
+    <string name="retry">重试</string>
+    <string name="save">保存</string>
+    <string name="cancel">取消</string>
+    <string name="login_success">登录成功</string>
+    <string name="login_failed">登录失败</string>
 </resources>
